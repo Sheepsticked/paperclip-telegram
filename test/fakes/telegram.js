@@ -5,7 +5,20 @@ const ALLOWED_TAGS = new Set(['b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike
 const ENTITY = /^&(amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);/;
 const ICON_COLORS = [7322096, 16766590, 13338331, 9367192, 16749490, 16478047];
 const REACTIONS = ['\u{1F44D}', '\u{1F44E}', '\u2764', '\u{1F525}', '\u{1F389}'];
-const FULL_RIGHTS = { can_manage_topics: true, can_pin_messages: true };
+const FULL_RIGHTS = { can_manage_topics: true, can_pin_messages: true, can_delete_messages: true };
+// Telegram's topic icons: the emoji each custom emoji id stands for (some are written with U+FE0F, as Telegram does).
+const DEFAULT_ICON_EMOJI = ['📰', '💬', '❗', '✅', '📁', '💻', '📝', '💡', '⚡️', '🔥', '📚', '🎯', '🔬', '📊', '📦', '🧩', '🏆', '🎨'];
+const iconSticker = (emoji, index) => ({
+  file_id: `icon-file-${index}`,
+  file_unique_id: `icon-unique-${index}`,
+  type: 'custom_emoji',
+  width: 512,
+  height: 512,
+  is_animated: false,
+  is_video: false,
+  emoji,
+  custom_emoji_id: `icon-${index}`,
+});
 const BOT_DOWNLOAD_LIMIT = 20 * 1024 * 1024;
 const BUTTON_STYLES = ['danger', 'success', 'primary'];
 
@@ -81,6 +94,8 @@ export async function startFakeTelegram({
   botRights = FULL_RIGHTS,
   botId = 4242,
   firstMessageId = 100,
+  iconStickers = DEFAULT_ICON_EMOJI.map(iconSticker),
+  ownerPremium = true,
 } = {}) {
   const chat = { type: forum ? 'supergroup' : 'private', isForum: forum, botRights: forum ? botRights : null };
   const calls = [];
@@ -101,6 +116,7 @@ export async function startFakeTelegram({
   let nextMessageId = firstMessageId;
   let nextUpdateId = 1;
   let dropMentions = false;
+  let premium = ownerPremium;
   let commands = null;
   let shortDescription = null;
   let description = null;
@@ -131,7 +147,8 @@ export async function startFakeTelegram({
   // Telegram refuses callback data of 0 or more than 64 bytes, more than 100 buttons and a style other than the three colours.
   function checkMarkup(res, markup) {
     const buttons = (markup?.inline_keyboard ?? []).flat();
-    for (const b of buttons) note('button', b.text);
+    // The icon picker's buttons are emoji by design.
+    for (const b of buttons) if (!/^L:s:/.test(b.callback_data ?? '')) note('button', b.text);
     note('placeholder', markup?.input_field_placeholder);
     if (buttons.length > 100) return error(res, 400, 'Bad Request: reply markup is too long'), false;
     for (const b of buttons) {
@@ -139,6 +156,11 @@ export async function startFakeTelegram({
       const size = Buffer.byteLength(b.callback_data ?? '');
       if (b.callback_data !== undefined && (size === 0 || size > 64)) return error(res, 400, 'Bad Request: BUTTON_DATA_INVALID'), false;
       if (typeof b.text !== 'string' || b.text.length === 0) return error(res, 400, 'Bad Request: text buttons are unallowed in the inline keyboard'), false;
+      // A button icon needs a real icon id and an owner with Premium (the refusal text is a stand-in).
+      if (b.icon_custom_emoji_id !== undefined) {
+        if (!iconStickers.some((sticker) => sticker.custom_emoji_id === b.icon_custom_emoji_id)) return error(res, 400, 'Bad Request: DOCUMENT_INVALID'), false;
+        if (!premium) return error(res, 400, 'Bad Request: BUTTON_ICON_PREMIUM_REQUIRED'), false;
+      }
     }
     return true;
   }
@@ -299,8 +321,10 @@ export async function startFakeTelegram({
       if (!mayManage()) return error(res, 400, 'Bad Request: not enough rights to create a topic');
       if (typeof params.name !== 'string' || params.name.length < 1 || params.name.length > 128) return error(res, 400, 'Bad Request: invalid topic name length');
       if (params.icon_color !== undefined && !ICON_COLORS.includes(params.icon_color)) return error(res, 400, 'Bad Request: invalid topic icon color');
+      const iconId = params.icon_custom_emoji_id ?? '';
+      if (iconId !== '' && !iconStickers.some((sticker) => sticker.custom_emoji_id === iconId)) return error(res, 400, 'Bad Request: DOCUMENT_INVALID');
       const id = nextMessageId++;
-      topics.set(id, { id, name: params.name, icon_color: params.icon_color ?? ICON_COLORS[0], closed: false, deleted: false, by: 'bot' });
+      topics.set(id, { id, name: params.name, icon_color: params.icon_color ?? ICON_COLORS[0], iconId, closed: false, deleted: false, by: 'bot' });
       return respond(res, 200, { ok: true, result: { message_thread_id: id, name: params.name, icon_color: params.icon_color ?? ICON_COLORS[0] } });
     },
     editForumTopic(res, params) {
@@ -310,8 +334,13 @@ export async function startFakeTelegram({
       if (!topic || topic.deleted) return error(res, 400, 'Bad Request: TOPIC_ID_INVALID');
       if (!mayManage() && topic.by !== 'bot') return error(res, 400, 'Bad Request: not enough rights to manage topics');
       if (params.name !== undefined && (params.name.length < 1 || params.name.length > 128)) return error(res, 400, 'Bad Request: invalid topic name length');
-      if (params.name === undefined || params.name === topic.name) return error(res, 400, 'Bad Request: TOPIC_NOT_MODIFIED');
-      topic.name = params.name;
+      const icon = params.icon_custom_emoji_id;
+      if (icon !== undefined && icon !== '' && !iconStickers.some((sticker) => sticker.custom_emoji_id === icon)) return error(res, 400, 'Bad Request: DOCUMENT_INVALID');
+      const renamed = params.name !== undefined && params.name !== topic.name;
+      const reiconed = icon !== undefined && icon !== topic.iconId;
+      if (!renamed && !reiconed) return error(res, 400, 'Bad Request: TOPIC_NOT_MODIFIED');
+      if (renamed) topic.name = params.name;
+      if (reiconed) topic.iconId = icon;
       return respond(res, 200, { ok: true, result: true });
     },
     closeForumTopic(res, params) {
@@ -331,6 +360,18 @@ export async function startFakeTelegram({
       if (!topic.closed) return error(res, 400, 'Bad Request: TOPIC_NOT_MODIFIED');
       topic.closed = false;
       return respond(res, 200, { ok: true, result: true });
+    },
+    // Deleting a topic needs the Delete messages right and takes its messages with it.
+    deleteForumTopic(res, params) {
+      if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found');
+      const topic = topics.get(params.message_thread_id);
+      if (!topic || topic.deleted) return error(res, 400, 'Bad Request: TOPIC_ID_INVALID');
+      if (!isAdmin() || chat.botRights.can_delete_messages !== true) return error(res, 400, 'Bad Request: not enough rights to delete the topic');
+      api.deleteTopic(topic.id);
+      return respond(res, 200, { ok: true, result: true });
+    },
+    getForumTopicIconStickers(res) {
+      return respond(res, 200, { ok: true, result: iconStickers });
     },
     pinChatMessage(res, params) {
       if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found');
@@ -411,6 +452,7 @@ export async function startFakeTelegram({
     },
     botId,
     topics,
+    iconStickers,
     reactions,
     callsTo: (method) => calls.filter((c) => c.method === method),
     // Every visible string the bot sent (messages, buttons, answers, topic names, profile text) that holds an emoji.
@@ -435,6 +477,10 @@ export async function startFakeTelegram({
     dropMentions(value = true) {
       dropMentions = value;
     },
+    // Whether the bot owner has Telegram Premium, which button icons need.
+    setOwnerPremium(value) {
+      premium = value;
+    },
     setForum(value) {
       chat.isForum = value;
       chat.type = value ? 'supergroup' : 'private';
@@ -445,8 +491,12 @@ export async function startFakeTelegram({
     // The owner starts a topic in the group.
     ownerTopic(name = 'Side topic') {
       const id = nextMessageId++;
-      topics.set(id, { id, name, icon_color: ICON_COLORS[0], closed: false, deleted: false, by: 'owner' });
+      topics.set(id, { id, name, icon_color: ICON_COLORS[0], iconId: '', closed: false, deleted: false, by: 'owner' });
       return id;
+    },
+    // The owner deletes one of the bot's messages.
+    deleteMessage(messageId) {
+      messages.delete(messageId);
     },
     // The owner deletes a topic together with its messages.
     deleteTopic(threadId) {

@@ -95,7 +95,7 @@ test('done and in-review messages in the task\'s own topic are the kind word alo
   assert.equal(review.text, '<b>In review</b>\n<blockquote>Ready for review.</blockquote>');
   assert.deepEqual(rowsOf(w, done.message_id), []);
   assert.deepEqual(rowsOf(w, review.message_id), []);
-  assert.equal(w.tg.sent().filter((m) => m.thread === null).length, 0, 'nothing went to General');
+  assert.equal(w.tg.sent().filter((m) => m.thread === null && m.message_id !== bot.state.boardMessageId).length, 0, 'nothing but the board went to General');
 });
 
 test('a task without any agent comment still gets a message', async (t) => {

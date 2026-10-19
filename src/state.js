@@ -36,6 +36,7 @@ function loadMutedCounts(saved) {
 }
 
 // Keeps only well-formed topic entries, so a hand-edited file cannot break the lookups.
+// `projectId` is undefined for an entry that does not know its project yet (saved by an older version).
 function loadTopics(saved) {
   const topics = new Map();
   for (const [rootId, topic] of Object.entries(saved && typeof saved === 'object' ? saved : {})) {
@@ -43,7 +44,17 @@ function loadTopics(saved) {
     const closed = topic.closed === 'done' || topic.closed === 'cancelled' ? topic.closed : null;
     // An entry without the flag that is closed is taken to carry a status suffix in its name.
     const suffixed = typeof topic.suffixed === 'boolean' ? topic.suffixed : closed !== null;
-    topics.set(rootId, { thread: topic.thread, identifier: String(topic.identifier ?? ''), title: String(topic.title ?? ''), closed, suffixed });
+    const projectId = typeof topic.projectId === 'string' || topic.projectId === null ? topic.projectId : undefined;
+    topics.set(rootId, {
+      thread: topic.thread,
+      identifier: String(topic.identifier ?? ''),
+      title: String(topic.title ?? ''),
+      closed,
+      suffixed,
+      closedAt: closed !== null && Number.isFinite(topic.closedAt) ? topic.closedAt : null,
+      projectId,
+      iconId: typeof topic.iconId === 'string' ? topic.iconId : '',
+    });
   }
   return topics;
 }
@@ -102,6 +113,13 @@ function loadPrefixCounts(saved) {
   const counts = {};
   for (const [prefix, count] of Object.entries(isObject(saved) ? saved : {})) if (Number.isInteger(count) && count > 0) counts[prefix] = count;
   return counts;
+}
+
+// Project id to the custom emoji id of its topics; "" means no icon.
+function loadProjectIcons(saved) {
+  const icons = new Map();
+  for (const [projectId, iconId] of Object.entries(isObject(saved) ? saved : {})) if (typeof iconId === 'string') icons.set(projectId, iconId);
+  return icons;
 }
 
 function loadReviewSent(saved) {
@@ -173,6 +191,9 @@ export class State {
     this.shownComments = loadShownComments(data.shownComments);
     this.topics = loadTopics(data.topics);
     this.roots = loadRoots(data.roots);
+    this.projectIcons = loadProjectIcons(data.projectIcons);
+    this.boardMessageId = Number.isInteger(data.boardMessageId) ? data.boardMessageId : null;
+    this.boardHash = stringOrNull(data.boardHash);
   }
 
   // A missing file starts fresh; an unreadable one is set aside and the bot starts fresh too.
@@ -206,6 +227,8 @@ export class State {
     this.inbox.clear();
     this.offers.clear();
     this.topics.clear();
+    this.boardMessageId = null;
+    this.boardHash = null;
     this.shownComments.clear();
     this.inboxSyncDone = false;
     this.cardResync = true;
@@ -393,6 +416,33 @@ export class State {
     return null;
   }
 
+  // The top-level task of an issue, from what is already known; nothing is read. Null when it is not known.
+  knownRoot(issueId, parentId) {
+    const direct = this.roots.get(issueId) ?? (this.topics.has(issueId) ? issueId : null);
+    if (direct || !parentId) return direct;
+    return this.roots.get(parentId) ?? (this.topics.has(parentId) ? parentId : null);
+  }
+
+  // A closed topic that was saved without the time it was closed counts from now.
+  stampClosedTopics(nowMs) {
+    let changed = false;
+    for (const topic of this.topics.values()) {
+      if (topic.closed !== null && topic.closedAt === null) {
+        topic.closedAt = nowMs;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  // Drops the topic of a task, and the offers that were made in that topic.
+  forgetTopic(rootId) {
+    const topic = this.topics.get(rootId);
+    if (!topic) return;
+    this.topics.delete(rootId);
+    for (const [key, offer] of this.offers) if (offer.thread === topic.thread) this.offers.delete(key);
+  }
+
   // Counts the company prefix of an identifier so /task <number> can guess it.
   notePrefix(identifier) {
     const dash = String(identifier ?? '').indexOf('-');
@@ -437,6 +487,9 @@ export class State {
       prefixCounts: this.prefixCounts,
       topics: Object.fromEntries(this.topics),
       roots: Object.fromEntries(this.roots),
+      projectIcons: Object.fromEntries(this.projectIcons),
+      boardMessageId: this.boardMessageId,
+      boardHash: this.boardHash,
       reviewSent: [...this.reviewSent],
       statusRetries: Object.fromEntries(this.statusRetries),
       shownComments: [...this.shownComments],

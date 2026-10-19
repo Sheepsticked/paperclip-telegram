@@ -295,10 +295,34 @@ test('parseConfig defaults topics to auto and accepts only auto or off', () => {
   assert.match(bad.problems.join('\n'), /topics must be "auto" or "off"/);
 });
 
+test('parseConfig defaults closedTopicDays to 7 and accepts 0 or more only', () => {
+  assert.equal(parseConfig(baseConfig).config.closedTopicDays, 7);
+  assert.equal(parseConfig({ ...baseConfig, closedTopicDays: 0 }).config.closedTopicDays, 0);
+  assert.equal(parseConfig({ ...baseConfig, closedTopicDays: 30 }).config.closedTopicDays, 30);
+  for (const bad of [-1, '7', null, Number.NaN]) {
+    const result = parseConfig({ ...baseConfig, closedTopicDays: bad });
+    assert.equal(result.config, null, String(bad));
+    assert.match(result.problems.join('\n'), /closedTopicDays must be a number of days/);
+  }
+});
+
+test('forgetTopic drops the topic and the offers made in its thread', (t) => {
+  const state = new State(path.join(tempDir(t), 'state.json'));
+  state.topics.set('root-1', { thread: 77, identifier: 'TST-1', title: 'A task', closed: null, suffixed: false, closedAt: null, projectId: null, iconId: '' });
+  const inside = state.addOffer('inside', 1, 2, 0, 77);
+  const outside = state.addOffer('outside', 3, 4, 0, 78);
+  state.forgetTopic('root-1');
+  assert.equal(state.topics.has('root-1'), false);
+  assert.equal(state.offers.has(inside), false);
+  assert.equal(state.offers.has(outside), true);
+  state.forgetTopic('missing');
+});
+
 test('State keeps topics and the issue to root cache across a save, capped at 2000 roots', (t) => {
   const file = path.join(tempDir(t), 'state.json');
   const state = new State(file);
-  state.topics.set('root-1', { thread: 77, identifier: 'TST-1', title: 'A task', closed: 'done', suffixed: false });
+  const topic = { thread: 77, identifier: 'TST-1', title: 'A task', closed: 'done', suffixed: false, closedAt: 1_000, projectId: 'project-1', iconId: 'icon-1' };
+  state.topics.set('root-1', topic);
   for (let i = 0; i < 2100; i += 1) state.noteRoot(`issue-${i}`, 'root-1');
   assert.equal(state.roots.size, 2000);
   assert.ok(!state.roots.has('issue-0'));
@@ -306,7 +330,7 @@ test('State keeps topics and the issue to root cache across a save, capped at 20
   state.save();
 
   const loaded = State.load(file);
-  assert.deepEqual(loaded.topics.get('root-1'), { thread: 77, identifier: 'TST-1', title: 'A task', closed: 'done', suffixed: false });
+  assert.deepEqual(loaded.topics.get('root-1'), topic);
   assert.equal(loaded.roots.size, 2000);
   assert.equal(loaded.rootForThread(77), 'root-1');
   assert.equal(loaded.rootForThread(78), null);

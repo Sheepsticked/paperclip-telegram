@@ -32,11 +32,11 @@ test('/tasks lists open tasks, newest update first, ten per page', async (t) => 
   assert.equal(list.replyTo, update.message.message_id);
   assert.match(list.text, /^<b>Open tasks<\/b> · All open · page 1$/);
   const rows = rowsOf(w, list.message_id);
-  assert.equal(rows.length, 12);
+  assert.equal(rows.length, 13);
   assert.deepEqual(rows[0], ['TST-25 · Task number 25']);
   assert.deepEqual(rows[9], ['TST-16 · Task number 16']);
   assert.deepEqual(rows[10], ['▶']);
-  assert.deepEqual(styledRows(w, list.message_id)[11], ['All open [primary]', 'Running', 'Review', 'Blocked']);
+  assert.deepEqual(styledRows(w, list.message_id).slice(11), [['All open [primary]', 'Running', 'Review'], ['Blocked', 'Done']]);
   assert.deepEqual(w.tg.buttons(list.message_id)[0].callback_data, `T:v:${tasks[24].id}`);
   assert.equal(validateTelegramHtml(list.text), null);
 
@@ -57,25 +57,25 @@ test('paging and filtering edit the list message in place', async (t) => {
   await bot.handleUpdate(w.tg.tapButton(list.message_id, '▶'));
   assert.match(w.tg.messages.get(list.message_id).text, /page 2$/);
   let rows = rowsOf(w, list.message_id);
-  assert.equal(rows.length, 12);
+  assert.equal(rows.length, 13);
   assert.deepEqual(rows[10], ['◀', '▶']);
 
   await bot.handleUpdate(w.tg.tapButton(list.message_id, '▶'));
   rows = rowsOf(w, list.message_id);
-  assert.equal(rows.length, 10, 'the last page holds the remaining eight tasks');
+  assert.equal(rows.length, 11, 'the last page holds the remaining eight tasks');
   assert.deepEqual(rows[8], ['◀']);
 
   await bot.handleUpdate(w.tg.tapButton(list.message_id, 'Running'));
   assert.match(w.tg.messages.get(list.message_id).text, /Open tasks<\/b> · Running · page 1$/);
-  assert.deepEqual(styledRows(w, list.message_id), [['TST-26 · Busy one'], ['All open', 'Running [primary]', 'Review', 'Blocked']]);
+  assert.deepEqual(styledRows(w, list.message_id), [['TST-26 · Busy one'], ['All open', 'Running [primary]', 'Review'], ['Blocked', 'Done']]);
   assert.match(issueListRequests(w).at(-1).query, /status=in_progress(&|$)/);
 
   await bot.handleUpdate(w.tg.tapButton(list.message_id, 'Review'));
   assert.deepEqual(rowsOf(w, list.message_id)[0], ['TST-27 · Waiting one']);
-  assert.deepEqual(styledRows(w, list.message_id)[1], ['All open', 'Running', 'Review [primary]', 'Blocked']);
+  assert.deepEqual(styledRows(w, list.message_id).slice(1), [['All open', 'Running', 'Review [primary]'], ['Blocked', 'Done']]);
   await bot.handleUpdate(w.tg.tapButton(list.message_id, 'Blocked'));
   assert.deepEqual(rowsOf(w, list.message_id)[0], ['TST-28 · Stuck one']);
-  assert.deepEqual(styledRows(w, list.message_id)[1], ['All open', 'Running', 'Review', 'Blocked [primary]']);
+  assert.deepEqual(styledRows(w, list.message_id).slice(1), [['All open', 'Running', 'Review'], ['Blocked [primary]', 'Done']]);
   assert.equal(w.tg.sent().length, sent, 'no new message was sent');
 });
 
@@ -84,7 +84,7 @@ test('an empty list says so and keeps the filter row', async (t) => {
   await bot.handleUpdate(w.tg.message('/tasks'));
   const list = w.tg.lastMessage();
   assert.match(list.text, /Nothing here\.$/);
-  assert.deepEqual(styledRows(w, list.message_id), [['All open [primary]', 'Running', 'Review', 'Blocked']]);
+  assert.deepEqual(styledRows(w, list.message_id), [['All open [primary]', 'Running', 'Review'], ['Blocked', 'Done']]);
 });
 
 test('list buttons open the task view', async (t) => {
@@ -200,4 +200,58 @@ test('/agents lists every agent as a button with its status and work', async (t)
   const agentRequests = w.pc.requests.filter((r) => r.path.endsWith('/agents'));
   assert.ok(agentRequests.length > 0);
   assert.ok(agentRequests.every((r) => r.query === ''));
+});
+
+test('the Done tab lists finished tasks, newest update first, and opens them', async (t) => {
+  const { w, bot } = await setup(t);
+  w.pc.addIssue({ title: 'Still open', status: 'todo' });
+  const older = w.pc.addIssue({ title: 'Older finish', status: 'done' });
+  w.pc.addIssue({ title: 'Dropped', status: 'cancelled' });
+  const newer = w.pc.addIssue({ title: 'Newer finish', status: 'done' });
+  await bot.handleUpdate(w.tg.message('/tasks'));
+  const list = w.tg.lastMessage();
+  await bot.handleUpdate(w.tg.tapButton(list.message_id, 'Done'));
+
+  assert.equal(w.tg.messages.get(list.message_id).text, '<b>Tasks</b> · Done · page 1');
+  assert.deepEqual(styledRows(w, list.message_id), [
+    ['TST-4 · Newer finish'],
+    ['TST-2 · Older finish'],
+    ['All open', 'Running', 'Review'],
+    ['Blocked', 'Done [primary]'],
+  ]);
+  assert.match(issueListRequests(w).at(-1).query, /status=done(&|$)/);
+  assert.equal(w.tg.buttons(list.message_id)[0].callback_data, `T:v:${newer.id}`);
+  assert.ok(older.id);
+
+  await bot.handleUpdate(w.tg.tapButton(list.message_id, 'Newer finish'));
+  assert.match(w.tg.lastMessage().text.split('\n')[0], /TST-4.*Newer finish/);
+});
+
+test('the Done tab works with the project filter and pages like the others', async (t) => {
+  const { w, bot } = await setup(t);
+  const alpha = w.pc.addProject({ name: 'Alpha' });
+  const beta = w.pc.addProject({ name: 'Beta' });
+  for (let i = 0; i < 12; i += 1) w.pc.addIssue({ title: `Alpha finish ${i}`, status: 'done', projectId: alpha.id });
+  w.pc.addIssue({ title: 'Beta finish', status: 'done', projectId: beta.id });
+  w.pc.addIssue({ title: 'Alpha open', status: 'todo', projectId: alpha.id });
+  await bot.handleUpdate(w.tg.message('/projects'));
+  await bot.handleUpdate(w.tg.tapButton(w.tg.lastMessage().message_id, 'Alpha'));
+  const view = w.tg.lastMessage();
+  await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Done'));
+
+  assert.equal(w.tg.messages.get(view.message_id).text, '<b>Tasks</b> · Done · Alpha · page 1');
+  const query = new URLSearchParams(issueListRequests(w).at(-1).query);
+  assert.equal(query.get('status'), 'done');
+  assert.equal(query.get('projectId'), alpha.id);
+  const rows = rowsOf(w, view.message_id);
+  assert.equal(rows.filter((row) => row[0].startsWith('TST-')).length, 10);
+  assert.ok(!rows.flat().some((label) => label.includes('Beta') || label.includes('Alpha open')));
+  assert.deepEqual(rows.at(-1), ['All projects']);
+  assert.ok(w.tg.buttons(view.message_id).find((b) => b.text === '▶').callback_data.endsWith(`:${alpha.id}`));
+
+  await bot.handleUpdate(w.tg.tapButton(view.message_id, '▶'));
+  assert.equal(rowsOf(w, view.message_id).filter((row) => row[0].startsWith('TST-')).length, 2);
+  await bot.handleUpdate(w.tg.tapButton(view.message_id, 'All projects'));
+  assert.ok(rowsOf(w, view.message_id).flat().some((label) => label.includes('Beta finish')), 'the project filter is gone, the Done tab stays');
+  assert.match(w.tg.messages.get(view.message_id).text, /^<b>Tasks<\/b> · Done · page 1$/);
 });

@@ -1,11 +1,13 @@
 import { routeCallback } from './callbacks.js';
 import { handleMessage } from './commands.js';
 import { MESSAGE_LIMIT, truncate, withMention } from './format.js';
+import { warnHourly } from './guard.js';
+import { iconList } from './icons.js';
 import { pollPaperclip } from './notifications.js';
 import { PaperclipClient, PaperclipError } from './paperclip.js';
 import { SerialQueue } from './queue.js';
 import { TelegramClient, TelegramError, defaultSleep } from './telegram.js';
-import { dropTopic, topicTarget } from './topics.js';
+import { DELETE_RIGHT_WARNING, dropTopic, topicTarget } from './topics.js';
 import { COMMENT_REACTION, isServiceMessage, threadGone } from './thread.js';
 
 export const LONG_POLL_SECONDS = 50;
@@ -59,8 +61,10 @@ export class Bot {
     this.projectStatsCache = null;
     this.armed = new Map();
     this.profileRegistered = false;
-    this.topics = { on: false, canPin: false };
-    this.topicWarnedAt = null;
+    this.topics = { on: false, canPin: false, canDelete: false };
+    this.icons = { list: null, triedAt: null, plainLabels: false, iconsLogged: false };
+    this.warnedAt = new Map();
+    this.sweptAt = null;
     this.ignoredChats = new Set();
     this.topicCheck = null;
     this.botId = null;
@@ -70,6 +74,7 @@ export class Bot {
       log.info('chat changed: dropped the message ids of the old chat; open cards and inbox items are sent again');
       state.save();
     }
+    if (state.stampClosedTopics(this.now())) state.save();
   }
 
   // Every outgoing message goes to the one configured chat; `thread` picks a topic (none means the main chat).
@@ -361,9 +366,11 @@ export class Bot {
     const creator = member.status === 'creator';
     if (!creator && member.status !== 'administrator') return off('the bot is not an admin');
     if (!creator && member.can_manage_topics !== true) return off('the bot lacks the Manage topics right');
-    this.topics = { on: true, canPin: creator || member.can_pin_messages === true };
+    this.topics = { on: true, canPin: creator || member.can_pin_messages === true, canDelete: creator || member.can_delete_messages === true };
     this.log.info('topics on');
     if (!this.topics.canPin) this.log.warn('the bot lacks the Pin messages right, so task views are not pinned');
+    if (!this.topics.canDelete && this.config.closedTopicDays > 0) warnHourly(this, 'delete-right', DELETE_RIGHT_WARNING);
+    await iconList(this);
     return undefined;
   }
 

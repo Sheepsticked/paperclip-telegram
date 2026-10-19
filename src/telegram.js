@@ -169,6 +169,14 @@ export class TelegramClient {
     return this.call('reopenForumTopic', params);
   }
 
+  deleteForumTopic(params) {
+    return this.call('deleteForumTopic', params);
+  }
+
+  getForumTopicIconStickers() {
+    return this.call('getForumTopicIconStickers');
+  }
+
   pinChatMessage(params) {
     return this.call('pinChatMessage', params);
   }

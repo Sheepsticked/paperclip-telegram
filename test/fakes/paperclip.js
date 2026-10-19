@@ -764,6 +764,13 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
       issue.updatedAt = tick();
       return issue;
     },
+    // Moves a task to another project (null for none), like the project picker does.
+    setProject(issueId, projectId) {
+      const issue = getIssue(issueId);
+      issue.projectId = projectId;
+      issue.updatedAt = tick();
+      return issue;
+    },
     addInteraction(issueId, { kind, title = null, summary = null, payload, createdAt } = {}) {
       getIssue(issueId);
       const now = createdAt ?? tick();

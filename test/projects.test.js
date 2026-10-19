@@ -72,7 +72,8 @@ test('a project button opens the open tasks of that project with an All projects
   assert.deepEqual(styledRows(w, view.message_id), [
     ['TST-2 · Alpha two'],
     ['TST-1 · Alpha one'],
-    ['All open [primary]', 'Running', 'Review', 'Blocked'],
+    ['All open [primary]', 'Running', 'Review'],
+    ['Blocked', 'Done'],
     ['All projects'],
   ]);
   const query = new URLSearchParams(issueCalls(w).at(-1).query);
@@ -90,7 +91,7 @@ test('the filter row keeps the project and All projects drops it', async (t) => 
   await tap(w, bot, view, 'Running');
   assert.equal(w.tg.messages.get(view.message_id).text, '<b>Open tasks</b> · Running · Alpha · page 1');
   assert.deepEqual(rowsOf(w, view.message_id).slice(0, 1), [['TST-2 · Alpha two']]);
-  assert.deepEqual(styledRows(w, view.message_id).slice(1), [['All open', 'Running [primary]', 'Review', 'Blocked'], ['All projects']], 'the active filter is blue inside a project');
+  assert.deepEqual(styledRows(w, view.message_id).slice(1), [['All open', 'Running [primary]', 'Review'], ['Blocked', 'Done'], ['All projects']], 'the active filter is blue inside a project');
   assert.equal(new URLSearchParams(issueCalls(w).at(-1).query).get('projectId'), alpha.id);
 
   await tap(w, bot, view, 'All projects');
@@ -98,7 +99,7 @@ test('the filter row keeps the project and All projects drops it', async (t) => 
   assert.equal(new URLSearchParams(issueCalls(w).at(-1).query).get('projectId'), null);
   assert.ok(!rowsOf(w, view.message_id).flat().includes('All projects'));
   assert.ok(rowsOf(w, view.message_id).flat().length > 3, 'tasks of other projects are listed again');
-  assert.ok(styledRows(w, view.message_id).at(-1).includes('Running [primary]'), 'the filter stays active');
+  assert.ok(styledRows(w, view.message_id).at(-2).includes('Running [primary]'), 'the filter stays active');
 });
 
 test('paging inside a project keeps the project', async (t) => {
@@ -109,7 +110,7 @@ test('paging inside a project keeps the project', async (t) => {
   await bot.handleUpdate(w.tg.message('/projects'));
   await tap(w, bot, w.tg.lastMessage(), 'Busy');
   const view = w.tg.lastMessage();
-  assert.deepEqual(rowsOf(w, view.message_id).at(-3), ['▶']);
+  assert.deepEqual(rowsOf(w, view.message_id).at(-4), ['▶']);
   assert.equal(w.tg.buttons(view.message_id).find((b) => b.text === '▶').callback_data, `L:t:a:1:${project.id}`);
 
   await tap(w, bot, view, '▶');

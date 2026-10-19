@@ -295,6 +295,18 @@ export function statusEntry(bot, item) {
   return { label, issueId, data: issueId ? `T:v:${issueId}` : `I:m:${adopt(bot, item).key}` };
 }
 
+// What an item is about, as plain facts for a one-line summary; nothing is created or read.
+export function itemSummary(item) {
+  const issue = itemIssue(item);
+  return {
+    issueId: itemIssueId(item),
+    identifier: issue?.identifier ?? null,
+    title: issue?.title || text(item.subject?.title) || 'Untitled',
+    kind: HEAD[item.sourceKind],
+    href: text(item.subject?.href),
+  };
+}
+
 // A record without a message, so a button can send the message later.
 function adopt(bot, item) {
   const existing = bot.state.inboxByDedupKey(item.dedupKey);

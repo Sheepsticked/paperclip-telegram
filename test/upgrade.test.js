@@ -133,12 +133,13 @@ test('a move to another chat sends at most ten open items and one summary line',
   w.tg.switchChat({ chatId: GROUP_ID, forum: true });
   const moved = w.makeBot({ config: { ...w.config, telegramChatId: GROUP_ID } });
   await moved.pollOnce();
-  const sent = w.tg.sent();
+  const sentBeforeBoard = () => w.tg.sent().filter((m) => m.message_id !== moved.state.boardMessageId);
+  const sent = sentBeforeBoard();
   assert.equal(sent.length, 11);
   assert.equal(sent.slice(0, 10).filter((m) => headOf(m) === 'Approval').length, 10);
   assert.equal(sent[10].text, '+3 more, see /status');
   await moved.pollOnce();
-  assert.equal(w.tg.sent().length, 11);
+  assert.equal(sentBeforeBoard().length, 11);
 });
 
 test('the first poll after an upgrade sends ten inbox items, in order of importance, and one summary line', async (t) => {

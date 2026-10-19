@@ -77,6 +77,7 @@ Edit it:
 | `telegramUserId` | Your Telegram user id from step 3. Only this user is served. |
 | `telegramChatId` | Chat the bot writes to. Optional; defaults to `telegramUserId`. For a group with topics, the group id (a negative number). |
 | `topics` | Optional, `"auto"` (default) or `"off"`. With `"auto"` topics are used when the chat is a forum group where the bot is an admin who may manage topics; `"off"` keeps everything in one chat. |
+| `closedTopicDays` | Optional, default `7`. Topics of finished tasks are deleted this many days after they were closed; `0` keeps them for ever. See [Finished topics](#finished-topics). |
 | `telegramTokenFile`, `paperclipTokenFile` | Paths of the two token files. `~/` is expanded. |
 | `telegramApiUrl` | Optional, defaults to `https://api.telegram.org`. |
 | `pollSeconds` | Optional, seconds between Paperclip polls (default 15). |
@@ -187,7 +188,7 @@ If Paperclip refuses a change, its error text is shown as an alert and the view 
 
 ### Finding tasks
 
-- `/tasks` lists the open tasks (to do, in progress, in review, blocked), most recently updated first, 10 per page with ◀ ▶ and a filter row (All open, Running, Review, Blocked; the chosen one is blue). Each task is a button that opens the task view.
+- `/tasks` lists the open tasks (to do, in progress, in review, blocked), most recently updated first, 10 per page with ◀ ▶ and a filter row on two lines (All open, Running, Review, Blocked, Done; the chosen one is blue). The Done tab lists finished tasks, newest first. Each task is a button that opens the task view.
 - `/find <text>` searches tasks (10 results at most).
 - `/status` shows what is running and what waits for you (cards and every kind of inbox item), as buttons: the task view when the item has a task, otherwise the item's message again.
 - `/following` lists the tasks you follow.
@@ -209,7 +210,7 @@ The bot cannot terminate agents or change their configuration, budget or team.
 
 ### Projects
 
-`/projects` lists the projects as buttons with their number of open tasks, most recently active first, 10 per page. A button opens the list of open tasks limited to that project; the filter row keeps the project, and **All projects** drops it.
+`/projects` lists the projects as buttons with their number of open tasks, most recently active first, 10 per page. A button opens the list of open tasks limited to that project; the filter row keeps the project, and **All projects** drops it. With topics on, the project list also has an **Icon** button (see [Topic icons](#topic-icons)).
 
 When no default project is set in the config and there is a project to pick, `/new` without `#project` and the plain-text offer ask "Which project?" before the task is created: the projects, most recently active first (8 per page), **No project** and **Cancel**. `/new #project ...` skips the question. The waiting text is kept for 24 hours, like an offer.
 
@@ -265,7 +266,7 @@ A forum group gives every top-level task its own topic, so each task is a separa
 
 1. In Telegram, create a group and add yourself. In the group settings turn on **Topics**; the group becomes a forum.
 2. If Telegram does not let you add the bot to a group, open [@BotFather](https://t.me/BotFather), send `/setjoingroups`, pick your bot and choose **Enable**.
-3. Add the bot to the group, open the group's administrators and make the bot an admin. Give it **Manage topics** and **Pin messages** and nothing else. Admin bots receive every message in the group, so the privacy mode setting does not matter.
+3. Add the bot to the group, open the group's administrators and make the bot an admin. Give it **Manage topics**, **Pin messages** and **Delete messages** and nothing else. Admin bots receive every message in the group, so the privacy mode setting does not matter. **Pin messages** is for the task views and the board, **Delete messages** only for removing finished topics (see [Finished topics](#finished-topics)).
 4. Write any message in the group. The bot ignores it, and logs the group id once:
 
    ```bash
@@ -279,7 +280,7 @@ A forum group gives every top-level task its own topic, so each task is a separa
    systemctl --user restart paperclip-telegram
    ```
 
-6. The first log lines after the start say `topics on`, or `topics off: <reason>` (not a forum, the bot is not an admin, the bot lacks the Manage topics right, off in the config, or the chat cannot be read). Without **Pin messages** topics still work; the task views are just not pinned, and one warning is logged.
+6. The first log lines after the start say `topics on`, or `topics off: <reason>` (not a forum, the bot is not an admin, the bot lacks the Manage topics right, off in the config, or the chat cannot be read). Without **Pin messages** topics still work; the task views and the board are just not pinned, and one warning is logged. Without **Delete messages** finished topics are kept, and one warning is logged.
 
 Only the configured user in the configured chat is served. Updates from any other chat are ignored.
 
@@ -293,8 +294,31 @@ When `telegramChatId` changes, the bot logs `chat changed` and forgets the messa
 - Plain text you write in a task topic is a comment on that task, and the bot reacts to it with a thumbs-up. If Paperclip refuses it, the bot replies with the error. A reply to a bot message about a subtask is a comment on that subtask. `/task` without an ID shows the topic's task.
 - Plain text in a topic that has no task yet offers "Create a task from this?" in the same topic. Creating the task renames the topic, links it and pins the task view; **Cancel** links nothing.
 - Commands such as `/status`, `/tasks`, `/agents` and `/settings` are answered in the topic they were sent from. The mute summary, token alerts and anything not about one task go to General.
+- A topic gets the icon of its task's project (see [Topic icons](#topic-icons)). Finished topics are deleted after a while (see [Finished topics](#finished-topics)).
 - If you delete a topic, the bot makes a new one the next time it has something to say about that task. If a topic cannot be created, the message goes to General and one warning an hour is logged.
 - With `"topics": "off"`, or in a chat that is not a forum, the bot behaves as in a private chat: everything goes to the one chat.
+
+### The board
+
+With topics on, one message in General is kept up to date and pinned: what needs you, what is running and what waits for review. It has up to three sections, each left out when empty:
+
+- **Needs you** (n): the cards and inbox items that `/status` shows under "Waiting for you".
+- **Working** (n): tasks in progress, each followed by the agent's name.
+- **In review** (n): tasks in review that are not already under Needs you.
+
+When all three are empty the board says `Nothing waiting or running.` Each line is the task id and as much of its title as fits one line. The whole line is a link to the topic of the task's top-level task, or to the task in Paperclip when it has no topic. A section shows 10 lines and then `+N more`. The board is built at the end of every poll and edited only when its text changed. It never makes a sound, never mentions you and has no buttons. If you delete it, the next change sends a new one. Without **Pin messages** it is sent but not pinned.
+
+### Topic icons
+
+Every project has one icon for its topics. A project that needs an icon for the first time takes the first of these that is in Telegram's set of topic icons and not used by another project: file folder, laptop, memo, light bulb, high voltage, fire, books, direct hit, microscope, bar chart, package, puzzle piece. When none is left, topics of that project have no icon. A task that moves to another project changes the icon of its open topic once; closed topics are never edited. Telegram adds a grey line to the topic for every icon change, so the bot only edits on a real change. An open topic made without an icon gets its project's icon once.
+
+To change a project's icon, open the project from `/projects` and tap **Icon**: a grid of Telegram's topic icons (8 to a row, 48 to a page, paged with ◀ ▶), **No icon** and **Back**. The icon the project has is blue. A tap saves the icon, changes the project's open topics and returns to the task list. The buttons show the icons themselves when your Telegram account has Premium (Telegram allows that only then); when Telegram refuses them the grid is sent again with plain emoji labels, and the labels are used until the bot restarts. If the list of icons cannot be read, topics are made without icons and the bot tries again at most once an hour.
+
+### Finished topics
+
+When a task is done or cancelled its topic is closed, and the bot notes the time. After `closedTopicDays` days (default 7) the topic is deleted with everything in it, and the bot forgets it, together with offers made in it. Reopening a task before that clears the time. The check runs once an hour. `closedTopicDays: 0` never deletes.
+
+Deleting needs the **Delete messages** right. Without it the bot keeps the topics, tries again at every check and logs `the bot lacks the Delete messages right, so finished topics are kept` at most once an hour. A task whose topic was deleted gets a new topic the next time the bot has something to say about it. General, and topics that are not linked to a task, are never deleted.
 
 ## Security
 

@@ -1,4 +1,5 @@
 import { refreshCard, sendCard } from './actions.js';
+import { updateBoard } from './board.js';
 import { pollFollowing } from './follow.js';
 import { ALERT_LIMIT, MESSAGE_LIMIT, QUOTE_LEVELS, escapeHtml, firstLine, fitMessage, headline, issueUrl, kindWord, link, openRows, prefixOf, quote, runUrl, truncate } from './format.js';
 import { guarded, isTelegramOutage, isUnauthorized } from './guard.js';
@@ -388,4 +389,5 @@ export async function pollPaperclip(bot) {
   await sendReviews(bot, reviews, coveredIssueIds(bot, items, sentIssueIds, reviewed));
   state.lastPollAt = iso(startedAt);
   state.save();
+  await updateBoard(bot, items);
 }

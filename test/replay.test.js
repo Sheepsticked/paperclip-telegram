@@ -78,7 +78,7 @@ test('replay in a forum group: each thing is said once, the topic is closed and 
   assert.equal(w.tg.callsTo('closeForumTopic').length, 1);
   assert.equal(w.tg.topics.get(thread).name, `TST-1 ${TITLE}`);
   assert.equal(w.tg.topics.get(thread).closed, true);
-  assert.equal(w.tg.sent().filter((m) => m.thread !== thread).length, 0, 'nothing went to General');
+  assert.equal(w.tg.sent().filter((m) => m.thread !== thread && m.message_id !== bot.state.boardMessageId).length, 0, 'nothing but the board went to General');
   assert.ok(!w.tg.sent().some((m) => m.text.includes('Open in Paperclip')));
 });
 

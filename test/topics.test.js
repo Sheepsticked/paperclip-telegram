@@ -10,10 +10,10 @@ const TASK_LINK = `<a href="${TASK_URL}">TST-1</a>`;
 const NO_PIN = { can_manage_topics: true, can_pin_messages: false };
 const THREAD_GONE = { ok: false, error_code: 400, description: 'Bad Request: message thread not found' };
 
-async function setup(t, { telegram, config } = {}) {
+async function setup(t, { telegram, config, prime = true } = {}) {
   const w = await startWorld({ telegram: { chatId: GROUP_ID, forum: true, ...telegram }, config });
   t.after(() => w.close());
-  const bot = await w.primedBot();
+  const bot = prime ? await w.primedBot() : w.makeBot();
   return { w, bot };
 }
 
@@ -59,7 +59,7 @@ for (const [name, options, line] of OFF_CASES) {
 }
 
 test('topics stay off when the chat cannot be read', async (t) => {
-  const { w, bot } = await setup(t);
+  const { w, bot } = await setup(t, { prime: false });
   w.tg.failNext('getChat', 400, { ok: false, error_code: 400, description: 'Bad Request: chat not found' });
   await bot.topicsReady();
   assert.equal(bot.topics.on, false);
@@ -67,7 +67,7 @@ test('topics stay off when the chat cannot be read', async (t) => {
 });
 
 test('a failed topic check is tried again instead of being remembered', async (t) => {
-  const { w, bot } = await setup(t);
+  const { w, bot } = await setup(t, { prime: false });
   w.tg.failNext('getChat', 500, { ok: false, error_code: 500, description: 'Internal Server Error' }, Infinity);
   await assert.rejects(bot.topicsReady());
   w.tg.clearFailures();
@@ -132,7 +132,17 @@ test('the first message about a task creates its topic with a name, a colour and
   assert.deepEqual(view.pinned, { silent: true });
   assert.equal(notice.text, '<b>In review</b>', 'inside its own topic the notice is the kind word alone');
   assert.equal(w.tg.callsTo('createForumTopic').length, 1);
-  assert.deepEqual(bot.state.topics.get(issue.id), { thread, identifier: 'TST-1', title: 'Plan the launch', closed: null, suffixed: false });
+  const folder = w.tg.iconStickers.find((sticker) => sticker.emoji === '\u{1F4C1}').custom_emoji_id;
+  assert.deepEqual(bot.state.topics.get(issue.id), {
+    thread,
+    identifier: 'TST-1',
+    title: 'Plan the launch',
+    closed: null,
+    suffixed: false,
+    closedAt: null,
+    projectId: project.id,
+    iconId: folder,
+  });
   assert.ok(bot.state.isFollowing(issue.id), 'a task with a topic is followed');
 
   w.pc.addComment(issue.id, { body: 'Agent update' });
@@ -290,7 +300,7 @@ test('messages in the task\'s own topic have no buttons, and a card keeps only i
   );
   assert.deepEqual(rowsBefore, [[['Deploy', 'Hold']], [], []]);
   assert.deepEqual(rowsOf(w, added.at(-1).message_id), []);
-  assert.equal(w.tg.sent().filter((m) => m.thread !== thread).length, 0, 'nothing went to General');
+  assert.equal(w.tg.sent().filter((m) => m.thread !== thread && m.message_id !== bot.state.boardMessageId).length, 0, 'nothing but the board went to General');
 });
 
 test('command replies, lists and settings go to General', async (t) => {
@@ -473,7 +483,7 @@ test('when a topic cannot be created the message goes to General, with one warni
   w.pc.setStatus(second.id, 'in_review');
   await bot.pollOnce();
 
-  const notices = w.tg.sent().filter((m) => m.text.includes('In review'));
+  const notices = w.tg.sent().filter((m) => m.text.includes('In review') && m.message_id !== bot.state.boardMessageId);
   assert.equal(notices.length, 2);
   for (const notice of notices) {
     assert.equal(notice.thread, null);
