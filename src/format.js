@@ -2,15 +2,21 @@ export const MESSAGE_LIMIT = 4096;
 export const CALLBACK_DATA_LIMIT = 64;
 const BUTTON_LABEL_MAX = 60;
 
-export const STATUS_ICONS = {
-  backlog: '📥',
-  todo: '⏳',
-  in_progress: '🔄',
-  in_review: '👀',
-  blocked: '🚧',
-  done: '✅',
-  cancelled: '🚫',
-};
+// First words of line 1 of every task message.
+export const KINDS = [
+  'Question',
+  'Done',
+  'In review',
+  'Run failed',
+  'Comment',
+  'Task',
+  'Created',
+  'Approval',
+  'Decision',
+  'Review',
+  'Blocked',
+  'Recovery',
+];
 
 export const STATUS_NAMES = {
   backlog: 'Backlog',
@@ -21,10 +27,6 @@ export const STATUS_NAMES = {
   done: 'Done',
   cancelled: 'Cancelled',
 };
-
-export function statusIcon(status) {
-  return STATUS_ICONS[status] ?? '•';
-}
 
 export function statusName(status) {
   return STATUS_NAMES[status] ?? String(status ?? 'Unknown');
@@ -38,7 +40,7 @@ export function button(label, data) {
 
 // The extra button on messages about one task; it sends the task view.
 export function taskButton(issueId) {
-  return button('📋 Task', `T:v:${issueId}`);
+  return button('Open task', `T:v:${issueId}`);
 }
 
 // "5 min ago", "3 h ago", "2 d ago".
@@ -92,6 +94,13 @@ export function truncateLines(text, maxLines, maxChars) {
 
 export function link(url, label) {
   return `<a href="${escapeAttribute(url)}">${escapeHtml(label)}</a>`;
+}
+
+// Line 1 of a task message; the title is left out inside the task's own topic.
+export function headline(kind, issue, { own = false, titleMax = 100 } = {}) {
+  if (!KINDS.includes(kind)) throw new Error(`unknown message kind: ${kind}`);
+  const title = !own && issue.title ? ` ${escapeHtml(truncate(issue.title, titleMax))}` : '';
+  return `<b>${kind}</b> · ${escapeHtml(issue.identifier)}${title}`;
 }
 
 export function prefixOf(identifier) {

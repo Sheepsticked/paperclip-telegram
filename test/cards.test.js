@@ -16,7 +16,7 @@ async function cardWorld(t, { kind, payload, title = 'Ship v2' }) {
 }
 
 const posts = (w, suffix) => w.pc.requests.filter((r) => r.method === 'POST' && r.path.endsWith(suffix));
-const TASK_BUTTON = '📋 Task';
+const TASK_BUTTON = 'Open task';
 // The answer buttons of a card; the trailing task button is checked on its own.
 const labels = (w, message) => w.tg.buttons(message.message_id).map((b) => b.text).filter((text) => text !== TASK_BUTTON);
 
@@ -44,8 +44,8 @@ test('confirmation accept: calls accept, drops the keyboard and closes the card'
   assert.deepEqual(accepts[0].body, {});
   assert.equal(w.pc.interactions.get(interaction.id).status, 'accepted');
   assert.deepEqual(w.tg.buttons(message.message_id), []);
-  assert.match(w.tg.messages.get(message.message_id).text, /✅ Confirmed/);
-  assert.equal(w.tg.callbackAnswers.at(-1).text, '✅ Confirmed');
+  assert.match(w.tg.messages.get(message.message_id).text, /^Confirmed$/m);
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Confirmed');
 });
 
 test('confirmation decline without a required reason rejects at once', async (t) => {
@@ -53,7 +53,7 @@ test('confirmation decline without a required reason rejects at once', async (t)
   await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Hold'));
   assert.deepEqual(posts(w, '/reject')[0].body, {});
   assert.equal(w.pc.interactions.get(interaction.id).status, 'rejected');
-  assert.match(w.tg.messages.get(message.message_id).text, /❌ Declined/);
+  assert.match(w.tg.messages.get(message.message_id).text, /^Declined$/m);
 });
 
 test('decline with a required reason asks for it and sends the reply as the reason', async (t) => {
@@ -79,14 +79,14 @@ test('decline with a required reason asks for it and sends the reply as the reas
   assert.equal(w.pc.interactions.get(interaction.id).status, 'rejected');
   assert.equal(posts(w, '/comments').length, 0, 'the reason is not also posted as a comment');
   assert.deepEqual(w.tg.buttons(message.message_id), []);
-  assert.match(w.tg.messages.get(message.message_id).text, /❌ Declined: Too risky before the freeze/);
+  assert.match(w.tg.messages.get(message.message_id).text, /^Declined: Too risky before the freeze$/m);
   assert.ok(issue);
 });
 
 test('single-question form submits on tap and sends no otherText', async (t) => {
   const payload = questionsPayload([choiceQuestion('env', 'Which environment?', ['Staging', 'Production'])]);
   const { w, bot, interaction, message } = await cardWorld(t, { kind: 'ask_user_questions', payload });
-  assert.deepEqual(labels(w, message), ['○ Staging', '○ Production']);
+  assert.deepEqual(labels(w, message), ['☐ Staging', '☐ Production']);
 
   await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Production'));
   const responds = posts(w, '/respond');
@@ -95,7 +95,7 @@ test('single-question form submits on tap and sends no otherText', async (t) => 
   assert.equal('otherText' in responds[0].body.answers[0], false);
   assert.equal(w.pc.interactions.get(interaction.id).status, 'answered');
   assert.deepEqual(w.tg.buttons(message.message_id), []);
-  assert.match(w.tg.messages.get(message.message_id).text, /✅ Answered/);
+  assert.match(w.tg.messages.get(message.message_id).text, /^Answered$/m);
 });
 
 test('single text question: the reply is submitted as otherText', async (t) => {
@@ -120,13 +120,13 @@ test('multi-question form: choices, a multi choice and a text reply go out in on
   ]);
   const { w, bot, interaction, message } = await cardWorld(t, { kind: 'ask_user_questions', payload });
   const id = message.message_id;
-  assert.deepEqual(labels(w, message), ['1. ○ EU', '1. ○ US', '2. ☐ Alpha', '2. ☐ Beta', '2. ☐ Gamma', 'Submit']);
+  assert.deepEqual(labels(w, message), ['1. ☐ EU', '1. ☐ US', '2. ☐ Alpha', '2. ☐ Beta', '2. ☐ Gamma', 'Submit']);
 
   await bot.handleUpdate(w.tg.tapButton(id, 'EU'));
   await bot.handleUpdate(w.tg.tapButton(id, 'Gamma'));
   await bot.handleUpdate(w.tg.tapButton(id, 'Alpha'));
   assert.equal(posts(w, '/respond').length, 0, 'a multi-question form waits for Submit');
-  assert.deepEqual(labels(w, message).slice(0, 5), ['1. ◉ EU', '1. ○ US', '2. ☑ Alpha', '2. ☐ Beta', '2. ☑ Gamma']);
+  assert.deepEqual(labels(w, message).slice(0, 5), ['1. ☑ EU', '1. ☐ US', '2. ☑ Alpha', '2. ☐ Beta', '2. ☑ Gamma']);
 
   // The text question is still open, so Submit is refused with an alert.
   await bot.handleUpdate(w.tg.tapButton(id, 'Submit'));
@@ -161,9 +161,9 @@ test('a tap on the chosen option again clears it in a multi-question form', asyn
     choiceQuestion('b', 'Second?', ['Yes', 'No'], { required: false }),
   ]);
   const { w, bot, message } = await cardWorld(t, { kind: 'ask_user_questions', payload });
-  await bot.handleUpdate(w.tg.tapButton(message.message_id, '1. ○ Yes'));
-  await bot.handleUpdate(w.tg.tapButton(message.message_id, '1. ◉ Yes'));
-  assert.deepEqual(labels(w, message).slice(0, 2), ['1. ○ Yes', '1. ○ No']);
+  await bot.handleUpdate(w.tg.tapButton(message.message_id, '1. ☐ Yes'));
+  await bot.handleUpdate(w.tg.tapButton(message.message_id, '1. ☑ Yes'));
+  assert.deepEqual(labels(w, message).slice(0, 2), ['1. ☐ Yes', '1. ☐ No']);
   await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Submit'));
   assert.match(w.tg.callbackAnswers.at(-1).text, /Answer the required question first/);
 });
@@ -313,7 +313,7 @@ test('a failed single-question submit keeps the form usable', async (t) => {
   await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Staging'));
   w.pc.setDropConnections(false);
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Paperclip unreachable, try again');
-  assert.deepEqual(labels(w, message), ['○ Staging', '○ Production']);
+  assert.deepEqual(labels(w, message), ['☐ Staging', '☐ Production']);
   await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Staging'));
   assert.deepEqual(posts(w, '/respond').at(-1).body, { answers: [{ questionId: 'env', optionIds: ['env-opt1'] }] });
   assert.equal(w.pc.interactions.get(interaction.id).status, 'answered');

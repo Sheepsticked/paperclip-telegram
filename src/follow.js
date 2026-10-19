@@ -1,5 +1,5 @@
 import { authorName, isBoardComment } from './comments.js';
-import { escapeHtml, issueUrl, link, taskButton, truncate, truncateLines } from './format.js';
+import { escapeHtml, headline, issueUrl, link, taskButton, truncate, truncateLines } from './format.js';
 import { gate } from './settings.js';
 import { PaperclipError } from './paperclip.js';
 
@@ -29,17 +29,20 @@ export function unfollowIssue(bot, issueId) {
 
 async function sendFollowComment(bot, issue, comment) {
   const author = await authorName(bot, comment);
-  const lines = [`💬 <b>${escapeHtml(truncate(author, 80))}</b> · <b>${escapeHtml(issue.identifier)}</b> ${escapeHtml(truncate(issue.title, 100))}`];
   const excerpt = truncateLines(comment.body, 5, 400);
-  if (excerpt) lines.push(`<blockquote>${escapeHtml(excerpt)}</blockquote>`);
-  lines.push(link(issueUrl(bot.config.uiBaseUrl, issue.identifier), 'Open in Paperclip'));
-  await bot.send(lines.join('\n'), { keyboard: [[taskButton(issue.id)]], issue: { id: issue.id, identifier: issue.identifier } });
+  await bot.sendAbout(issue, ({ own }) => {
+    const lines = [headline('Comment', issue, { own }), `From ${escapeHtml(truncate(author, 80))}`];
+    if (excerpt) lines.push(`<blockquote>${escapeHtml(excerpt)}</blockquote>`);
+    lines.push(link(issueUrl(bot.config.uiBaseUrl, issue.identifier), 'Open in Paperclip'));
+    return { text: lines.join('\n'), keyboard: [[taskButton(issue.id)]] };
+  });
 }
 
 async function sendFollowBurst(bot, issue, count) {
-  const head = `💬 <b>${count} new comments</b> · <b>${escapeHtml(issue.identifier)}</b> ${escapeHtml(truncate(issue.title, 100))}`;
-  const open = link(issueUrl(bot.config.uiBaseUrl, issue.identifier), 'Open in Paperclip');
-  await bot.send(`${head}\n${open}`, { keyboard: [[taskButton(issue.id)]], issue: { id: issue.id, identifier: issue.identifier } });
+  await bot.sendAbout(issue, ({ own }) => {
+    const lines = [headline('Comment', issue, { own }), `${count} new comments`, link(issueUrl(bot.config.uiBaseUrl, issue.identifier), 'Open in Paperclip')];
+    return { text: lines.join('\n'), keyboard: [[taskButton(issue.id)]] };
+  });
 }
 
 // Reads the comments after the saved cursor, sends the ones that are not the owner's, and moves the cursor.

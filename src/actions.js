@@ -14,6 +14,7 @@ import {
 } from './cards.js';
 import { escapeHtml, truncate } from './format.js';
 import { PaperclipError } from './paperclip.js';
+import { threadOf, where } from './thread.js';
 
 const MAX_REASON_LENGTH = 4000;
 
@@ -44,8 +45,11 @@ export async function closeCard(bot, card, line) {
 
 export async function sendCard(bot, interaction, issue) {
   const card = buildCard({ interaction, issue, key: bot.state.nextCardKey() });
-  const { text, keyboard } = renderCard(card, bot.config.uiBaseUrl);
-  card.messageId = await bot.send(text, { keyboard, issue });
+  const sent = await bot.sendAbout(issue, ({ own }) => {
+    card.own = own;
+    return renderCard(card, bot.config.uiBaseUrl);
+  });
+  card.messageId = sent.messageId;
   bot.state.cards.set(card.key, card);
   bot.state.save();
   return card;
@@ -97,8 +101,9 @@ async function settle(bot, cq, card, call, line, undo) {
 async function askForReason(bot, cq, card) {
   if (card.reasonPromptMessageId) return bot.answer(cq.id, 'Reply to the reason prompt first');
   const label = card.confirm.reasonLabel ?? 'Why are you declining?';
-  const promptId = await bot.send(`↩ ${escapeHtml(truncate(label, 160))}\nReply to this message with your reason.`, {
+  const promptId = await bot.send(`${escapeHtml(truncate(label, 160))}\nReply to this message with your reason.`, {
     replyTo: card.messageId,
+    thread: threadOf(bot, cq.message),
     forceReply: true,
   });
   card.reasonPromptMessageId = promptId;
@@ -120,15 +125,15 @@ export async function handleCallback(bot, cq) {
   const accept = (body) => () => bot.pc.accept(card.issueId, card.interactionId, body);
   const reject = (body) => () => bot.pc.reject(card.issueId, card.interactionId, body);
 
-  if (op === 'a' && card.mode === 'confirm') return settle(bot, cq, card, accept({}), '✅ Confirmed');
+  if (op === 'a' && card.mode === 'confirm') return settle(bot, cq, card, accept({}), 'Confirmed');
   if (op === 'a' && card.mode === 'checkbox') {
     const result = checkboxAcceptBody(card);
     if (result.alert) return bot.answer(cq.id, result.alert, true);
-    return settle(bot, cq, card, accept(result.body), '✅ Confirmed');
+    return settle(bot, cq, card, accept(result.body), 'Confirmed');
   }
   if (op === 'd' && (card.mode === 'confirm' || card.mode === 'checkbox')) {
     if (card.confirm.requiresReason) return askForReason(bot, cq, card);
-    return settle(bot, cq, card, reject({}), '❌ Declined');
+    return settle(bot, cq, card, reject({}), 'Declined');
   }
   if (op === 't' && card.mode === 'checkbox') {
     const result = toggleCheckbox(card, args[0]);
@@ -151,12 +156,12 @@ export async function handleCallback(bot, cq) {
     const undo = () => {
       card.answers[qIndex].sel = [];
     };
-    return settle(bot, cq, card, () => bot.pc.respond(card.issueId, card.interactionId, body.body), '✅ Answered', undo);
+    return settle(bot, cq, card, () => bot.pc.respond(card.issueId, card.interactionId, body.body), 'Answered', undo);
   }
   if (op === 's' && card.mode === 'form') {
     const body = formRespondBody(card);
     if (body.alert) return bot.answer(cq.id, body.alert, true);
-    return settle(bot, cq, card, () => bot.pc.respond(card.issueId, card.interactionId, body.body), '✅ Answered');
+    return settle(bot, cq, card, () => bot.pc.respond(card.issueId, card.interactionId, body.body), 'Answered');
   }
   return bot.answer(cq.id, 'Unknown action');
 }
@@ -174,31 +179,31 @@ export function hasOpenTextQuestion(card) {
 }
 
 // Tells the owner about a failed write that was not triggered by a button tap.
-export async function reportFailure(bot, err, replyTo) {
+export async function reportFailure(bot, err, msg) {
   const failure = classify(err);
   if (failure.kind === 'auth') await bot.paperclipFailed(err);
-  else await bot.send(escapeHtml(failure.text), { replyTo });
+  else await bot.send(escapeHtml(failure.text), where(bot, msg));
   return failure;
 }
 
 export async function handleReasonReply(bot, card, msg) {
   if (card.status !== 'pending') {
-    await bot.send('This card was already answered or closed.', { replyTo: msg.message_id });
+    await bot.send('This card was already answered or closed.', where(bot, msg));
     return;
   }
   const reason = msg.text.trim();
   if (reason.length > MAX_REASON_LENGTH) {
-    await bot.send(`The reason is too long (max ${MAX_REASON_LENGTH} characters).`, { replyTo: msg.message_id });
+    await bot.send(`The reason is too long (max ${MAX_REASON_LENGTH} characters).`, where(bot, msg));
     return;
   }
   try {
     await bot.pc.reject(card.issueId, card.interactionId, { reason });
   } catch (err) {
-    const failure = await reportFailure(bot, err, msg.message_id);
+    const failure = await reportFailure(bot, err, msg);
     if (failure.kind === 'closed') await syncClosed(bot, card);
     return;
   }
-  await closeCard(bot, card, `❌ Declined: ${truncate(reason, 200)}`);
+  await closeCard(bot, card, `Declined: ${truncate(reason, 200)}`);
 }
 
 export async function handleTextAnswer(bot, card, msg) {
@@ -213,9 +218,9 @@ export async function handleTextAnswer(bot, card, msg) {
     await bot.pc.respond(card.issueId, card.interactionId, result.body);
   } catch (err) {
     card.answers[index].text = null;
-    const failure = await reportFailure(bot, err, msg.message_id);
+    const failure = await reportFailure(bot, err, msg);
     if (failure.kind === 'closed') await syncClosed(bot, card);
     return;
   }
-  await closeCard(bot, card, '✅ Answered');
+  await closeCard(bot, card, 'Answered');
 }

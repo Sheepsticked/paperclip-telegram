@@ -13,7 +13,7 @@ async function setup(t, options) {
 }
 
 const rowsOf = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => b.text));
-const followMessages = (w) => w.tg.sent().filter((m) => m.text.startsWith('💬'));
+const followMessages = (w) => w.tg.sent().filter((m) => m.text.startsWith('<b>Comment</b>'));
 
 async function followed(w, bot, fields = {}) {
   const issue = w.pc.addIssue({ title: 'Followed work', status: 'in_progress', assigneeAgentId: 'agent-1', ...fields });
@@ -30,10 +30,10 @@ test('a new agent comment on a followed task is sent with an excerpt and a task 
   const [message] = followMessages(w);
   assert.equal(
     message.text,
-    `💬 <b>Dev</b> · <b>TST-1</b> Followed work\n<blockquote>Found the &lt;root&gt; cause &amp; fixed it.</blockquote>\n<a href="${UI_BASE_URL}/TST/issues/TST-1">Open in Paperclip</a>`,
+    `<b>Comment</b> · TST-1 Followed work\nFrom Dev\n<blockquote>Found the &lt;root&gt; cause &amp; fixed it.</blockquote>\n<a href="${UI_BASE_URL}/TST/issues/TST-1">Open in Paperclip</a>`,
   );
   assert.equal(validateTelegramHtml(message.text), null);
-  assert.deepEqual(rowsOf(w, message.message_id), [['📋 Task']]);
+  assert.deepEqual(rowsOf(w, message.message_id), [['Open task']]);
   assert.equal(w.tg.buttons(message.message_id)[0].callback_data, `T:v:${issue.id}`);
 
   await bot.handleUpdate(w.tg.message('Thanks!', { replyTo: message.message_id }));
@@ -74,11 +74,11 @@ test('agents that post as the local board user, system notes and deleted comment
   w.pc.addComment(issue.id, { body: 'Taken back', deletedAt: new Date().toISOString() });
   await bot.pollOnce();
 
-  const heads = followMessages(w).map((m) => m.text.split('\n')[0]);
+  const heads = followMessages(w).map((m) => m.text.split('\n').slice(0, 2));
   assert.deepEqual(heads, [
-    '💬 <b>Dev</b> · <b>TST-1</b> Followed work',
-    '💬 <b>An agent</b> · <b>TST-1</b> Followed work',
-    '💬 <b>System</b> · <b>TST-1</b> Followed work',
+    ['<b>Comment</b> · TST-1 Followed work', 'From Dev'],
+    ['<b>Comment</b> · TST-1 Followed work', 'From An agent'],
+    ['<b>Comment</b> · TST-1 Followed work', 'From System'],
   ]);
   assert.ok(!w.tg.sent().some((m) => m.text.includes('Taken back')));
 });
@@ -112,8 +112,8 @@ test('up to five new comments are sent one by one, more are summarised', async (
   await bot.pollOnce();
   const burst = followMessages(w).at(-1);
   assert.equal(followMessages(w).length, 6);
-  assert.match(burst.text, /^💬 <b>6 new comments<\/b> · <b>TST-1<\/b> Followed work\n<a href="[^"]+">Open in Paperclip<\/a>$/);
-  assert.deepEqual(rowsOf(w, burst.message_id), [['📋 Task']]);
+  assert.match(burst.text, /^<b>Comment<\/b> · TST-1 Followed work\n6 new comments\n<a href="[^"]+">Open in Paperclip<\/a>$/);
+  assert.deepEqual(rowsOf(w, burst.message_id), [['Open task']]);
   assert.equal(bot.state.following.get(issue.id).lastSeenCommentId, w.pc.comments.at(-1).id);
 });
 
@@ -124,7 +124,7 @@ test('a long comment backlog is read in pages and summarised', async (t) => {
   w.pc.requests.length = 0;
   await bot.pollOnce();
 
-  assert.match(followMessages(w).at(-1).text, /<b>120 new comments<\/b>/);
+  assert.match(followMessages(w).at(-1).text, /^120 new comments$/m);
   const reads = w.pc.requests.filter((r) => r.method === 'GET' && r.path.endsWith('/comments'));
   assert.equal(reads.length, 3);
   assert.match(reads[0].query, /order=asc/);
@@ -169,7 +169,7 @@ test('a done message that quotes the last comment is the only message and ends t
 
   const sent = w.tg.sent().filter((m) => m.text.includes('All finished'));
   assert.equal(sent.length, 1);
-  assert.match(sent[0].text, /^✅ <b>Done<\/b>/);
+  assert.match(sent[0].text, /^<b>Done<\/b> · TST-1/);
   assert.equal(bot.state.following.size, 0, 'a finished task is no longer followed');
 });
 
@@ -233,7 +233,7 @@ test('the follow list holds fifty tasks and drops the oldest', async (t) => {
   assert.equal(bot.state.following.size, 50);
   assert.ok(!bot.state.isFollowing(first.id));
   assert.ok(bot.state.isFollowing(extra.id));
-  assert.equal(w.tg.callbackAnswers.at(-1).text, '🔔 Following (dropped TST-1)');
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Following (dropped TST-1)');
 });
 
 test('followed comments can be turned off, and nothing is replayed when they come back', async (t) => {

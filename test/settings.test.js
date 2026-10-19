@@ -27,14 +27,14 @@ test('/settings shows every toggle, the mute buttons and the always-sent note', 
   await bot.handleUpdate(update);
   const view = w.tg.lastMessage();
   assert.equal(view.replyTo, update.message.message_id);
-  assert.equal(view.text, '<b>Settings</b>\n🔔 Notifications are on\nCards that need an answer are always sent.');
+  assert.equal(view.text, '<b>Settings</b>\nNotifications are on\nCards that need an answer are always sent.');
   assert.deepEqual(rowsOf(w, view.message_id), [
-    ['✅ Done messages'],
-    ['✅ In-review messages'],
-    ['✅ Failed-run alerts'],
-    ['✅ Followed comments'],
-    ['✅ Auto-follow tasks I create'],
-    ['🔕 Mute 1 h', '🔕 Mute 8 h', '🔔 Unmute'],
+    ['☑ Done messages'],
+    ['☑ In-review messages'],
+    ['☑ Failed-run alerts'],
+    ['☑ Followed comments'],
+    ['☑ Follow new tasks'],
+    ['Mute 1 h', 'Mute 8 h', 'Unmute'],
   ]);
   assert.equal(validateTelegramHtml(view.text), null);
 });
@@ -45,13 +45,13 @@ test('a toggle flips in place, is saved, and the answer names the new value', as
   const sent = w.tg.sent().length;
 
   await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Done messages'));
-  assert.equal(rowsOf(w, view.message_id)[0][0], '⬜ Done messages');
+  assert.equal(rowsOf(w, view.message_id)[0][0], '☐ Done messages');
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Done messages: off');
   assert.equal(w.tg.sent().length, sent);
   assert.equal(JSON.parse(fs.readFileSync(w.statePath, 'utf8')).settings.done, false);
 
   await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Done messages'));
-  assert.equal(rowsOf(w, view.message_id)[0][0], '✅ Done messages');
+  assert.equal(rowsOf(w, view.message_id)[0][0], '☑ Done messages');
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Done messages: on');
 
   const restarted = w.makeBot();
@@ -108,7 +108,7 @@ test('Mute 1 h hides messages, counts them and shows when it ends', async (t) =>
 
   const until = new Date(bot.state.muteUntil).getTime();
   assert.ok(Math.abs(until - (Date.now() + HOUR)) < 5000);
-  assert.match(w.tg.messages.get(view.message_id).text, /^🔕 Muted until \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$/m);
+  assert.match(w.tg.messages.get(view.message_id).text, /^Muted until \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$/m);
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Muted for 1 h');
 
   const done = w.pc.addIssue({ title: 'Done while muted', status: 'in_progress' });
@@ -191,7 +191,7 @@ test('unknown settings buttons are answered and change nothing', async (t) => {
 test('auto-follow can be switched off from the settings', async (t) => {
   const { w, bot } = await setup(t);
   const view = await openSettings(w, bot);
-  await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Auto-follow'));
+  await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Follow new tasks'));
   await bot.handleUpdate(w.tg.message('/new Not followed'));
   assert.equal(bot.state.following.size, 0);
 });

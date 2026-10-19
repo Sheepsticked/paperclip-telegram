@@ -108,6 +108,42 @@ export class TelegramClient {
     return this.call('answerCallbackQuery', params);
   }
 
+  getMe() {
+    return this.call('getMe');
+  }
+
+  getChat(params) {
+    return this.call('getChat', params);
+  }
+
+  getChatMember(params) {
+    return this.call('getChatMember', params);
+  }
+
+  createForumTopic(params) {
+    return this.call('createForumTopic', params);
+  }
+
+  editForumTopic(params) {
+    return this.call('editForumTopic', params);
+  }
+
+  closeForumTopic(params) {
+    return this.call('closeForumTopic', params);
+  }
+
+  reopenForumTopic(params) {
+    return this.call('reopenForumTopic', params);
+  }
+
+  pinChatMessage(params) {
+    return this.call('pinChatMessage', params);
+  }
+
+  setMessageReaction(params) {
+    return this.call('setMessageReaction', params);
+  }
+
   setMyCommands(commands) {
     return this.call('setMyCommands', { commands });
   }

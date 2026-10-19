@@ -1,4 +1,4 @@
-import { button, cardUrl, escapeHtml, fitMessage, link, taskButton, truncate } from './format.js';
+import { button, cardUrl, escapeHtml, fitMessage, headline, link, taskButton, truncate } from './format.js';
 
 export const MAX_CHECKBOX_OPTIONS = 30;
 export const MAX_FORM_QUESTIONS = 20;
@@ -13,12 +13,14 @@ const LEVELS = [
   { title: 50, prompt: 0, details: 0, preview: 0, question: 0, answer: 0 },
 ];
 
-const ICONS = {
-  request_confirmation: '🔔',
-  request_checkbox_confirmation: '☑️',
-  ask_user_questions: '❓',
-  request_item_verdicts: '🧾',
-  suggest_tasks: '📝',
+// The first word of line 1 for each kind of card.
+const CARD_KINDS = {
+  request_confirmation: 'Approval',
+  request_checkbox_confirmation: 'Decision',
+  ask_user_questions: 'Question',
+  request_item_verdicts: 'Review',
+  suggest_tasks: 'Decision',
+  connection_intent: 'Approval',
 };
 
 const KIND_LABELS = {
@@ -70,7 +72,7 @@ function describeOther(interaction) {
   let list = [];
   if (interaction.kind === 'request_item_verdicts') list = (payload.items ?? []).map((item) => item.label);
   if (interaction.kind === 'suggest_tasks') list = (payload.tasks ?? []).map((task) => task.title);
-  const shown = list.slice(0, 8).map((entry) => `• ${truncate(String(entry ?? ''), 100)}`);
+  const shown = list.slice(0, 8).map((entry) => `- ${truncate(String(entry ?? ''), 100)}`);
   const more = list.length > 8 ? [`+${list.length - 8} more`] : [];
   return { label, details: [...shown, ...more].join('\n') || null };
 }
@@ -87,6 +89,7 @@ export function buildCard({ interaction, issue, key }) {
     mode: 'text',
     status: 'pending',
     messageId: null,
+    own: false,
     resolvedAt: null,
     resolution: null,
     policy: interaction.effectiveResolverPolicy ?? null,
@@ -165,8 +168,8 @@ function questionLabel(q) {
 
 function composeText(card, uiBaseUrl, level) {
   const lines = [];
-  const icon = ICONS[card.kind] ?? '📌';
-  lines.push(`${icon} <b>${escapeHtml(card.identifier)}</b> ${escapeHtml(truncate(card.issueTitle, level.title))}`);
+  const issue = { identifier: card.identifier, title: card.issueTitle };
+  lines.push(headline(CARD_KINDS[card.kind] ?? 'Decision', issue, { own: card.own, titleMax: level.title }));
   if (level.prompt > 0) {
     if (card.cardTitle && card.cardTitle !== card.prompt) lines.push(`<b>${escapeHtml(truncate(card.cardTitle, 200))}</b>`);
     if (card.prompt) lines.push(escapeHtml(truncate(card.prompt, level.prompt)));
@@ -187,9 +190,9 @@ function composeText(card, uiBaseUrl, level) {
         else if (q.mode !== 'text' && answer.sel.length > 0) {
           shown = answer.sel.map((i) => truncate(q.options[i].label, 60)).join(', ');
         }
-        lines.push(`   ▸ ${escapeHtml(shown)}`);
+        lines.push(`   Answer: ${escapeHtml(shown)}`);
       });
-      if (card.status === 'pending' && openTextQuestion(card) >= 0) lines.push('', '↩ Reply to this message to answer the text question.');
+      if (card.status === 'pending' && openTextQuestion(card) >= 0) lines.push('', 'Reply to this message to answer the text question.');
     }
     if (card.reasonPromptMessageId && card.status === 'pending') lines.push('', 'Waiting for the decline reason (reply to the prompt below).');
   }
@@ -213,7 +216,7 @@ function answerRows(card) {
     card.questions.forEach((q, qi) => {
       q.options.forEach((option, oi) => {
         const on = card.answers[qi].sel.includes(oi);
-        const mark = q.mode === 'multi' ? (on ? '☑' : '☐') : on ? '◉' : '○';
+        const mark = on ? '☑' : '☐';
         const prefix = card.questions.length > 1 ? `${qi + 1}. ` : '';
         rows.push([button(`${prefix}${mark} ${option.label}`, `${k}:o:${qi}:${oi}`)]);
       });
@@ -314,8 +317,8 @@ export function resolveCard(card, line, nowIso) {
 
 // The closing line for a card whose interaction was settled elsewhere.
 export function lineForInteraction(interaction) {
-  if (interaction.status === 'accepted') return '✅ Confirmed in Paperclip';
-  if (interaction.status === 'rejected') return '❌ Declined in Paperclip';
-  if (interaction.status === 'answered') return '✅ Answered in Paperclip';
+  if (interaction.status === 'accepted') return 'Confirmed in Paperclip';
+  if (interaction.status === 'rejected') return 'Declined in Paperclip';
+  if (interaction.status === 'answered') return 'Answered in Paperclip';
   return 'Closed in Paperclip';
 }

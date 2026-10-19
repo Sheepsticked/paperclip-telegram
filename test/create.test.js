@@ -81,10 +81,10 @@ test('/new answers with the task view and follows the new task', async (t) => {
   await bot.handleUpdate(update);
 
   const view = w.tg.lastMessage();
-  assert.match(view.text, /^✅ Created <b>TST-1<\/b> Plan the launch$/m);
+  assert.match(view.text, /^<b>Created<\/b> · TST-1 Plan the launch$/m);
   assert.match(view.text, /Assignee: Lead/);
   assert.equal(view.replyTo, update.message.message_id);
-  assert.deepEqual(rowsOf(w, view.message_id).at(-1), ['🔕 Unfollow']);
+  assert.deepEqual(rowsOf(w, view.message_id).at(-1), ['Unfollow']);
   const issueId = [...w.pc.issues.keys()][0];
   assert.ok(bot.state.isFollowing(issueId));
 });
@@ -94,7 +94,7 @@ test('a new task is not followed when auto-follow is off', async (t) => {
   bot.state.settings.autoFollowCreated = false;
   await bot.handleUpdate(w.tg.message('/new Quiet task'));
   assert.equal(bot.state.following.size, 0);
-  assert.deepEqual(rowsOf(w, w.tg.lastMessage().message_id).at(-1), ['🔔 Follow']);
+  assert.deepEqual(rowsOf(w, w.tg.lastMessage().message_id).at(-1), ['Follow']);
 });
 
 test('a task that already exists is shown but not followed again', async (t) => {
@@ -104,7 +104,7 @@ test('a task that already exists is shown but not followed again', async (t) => 
   const issueId = [...w.pc.issues.keys()][0];
   bot.state.unfollow(issueId);
   await bot.handleUpdate(update);
-  assert.match(w.tg.lastMessage().text, /^✅ Already exists <b>TST-1<\/b>/m);
+  assert.match(w.tg.lastMessage().text, /^<b>Task<\/b> · TST-1 Only once\nAlready exists\n/);
   assert.equal(bot.state.following.size, 0);
 });
 
@@ -113,8 +113,8 @@ test('/new still confirms when the new task cannot be read back', async (t) => {
   w.pc.failRequests('GET', /\/api\/issues\/[^/]+$/, 500);
   await bot.handleUpdate(w.tg.message('/new Created anyway'));
   const reply = w.tg.lastMessage();
-  assert.match(reply.text, /^✅ Created <b>TST-1<\/b>\n<a href="[^"]+">Open in Paperclip<\/a>$/);
-  assert.deepEqual(rowsOf(w, reply.message_id), [['📋 Task']]);
+  assert.match(reply.text, /^<b>Created<\/b> · TST-1 Created anyway\n<a href="[^"]+">Open in Paperclip<\/a>$/);
+  assert.deepEqual(rowsOf(w, reply.message_id), [['Open task']]);
   assert.equal(creates(w).length, 1);
 });
 
@@ -127,7 +127,7 @@ test('plain text offers to create a task and creates nothing yet', async (t) => 
   const offer = w.tg.lastMessage();
   assert.equal(offer.text, 'Create a task from this?');
   assert.equal(offer.replyTo, update.message.message_id);
-  assert.deepEqual(rowsOf(w, offer.message_id), [['✅ For Chief', '👤 Other agent…', '✖']]);
+  assert.deepEqual(rowsOf(w, offer.message_id), [['For Chief', 'Other agent', 'Cancel']]);
   assert.equal(creates(w).length, 0);
   assert.equal(bot.state.offers.size, 1);
 });
@@ -148,9 +148,9 @@ test('For Lead creates the task from the original message and replies with the t
     },
   ]);
   const view = w.tg.sent().at(-1);
-  assert.match(view.text, /^✅ Created <b>TST-1<\/b> Fix the login page$/m);
+  assert.match(view.text, /^<b>Created<\/b> · TST-1 Fix the login page$/m);
   assert.equal(view.replyTo, update.message.message_id);
-  assert.equal(w.tg.messages.get(offer.message_id).text, '✅ Created for Lead');
+  assert.equal(w.tg.messages.get(offer.message_id).text, 'Created for Lead');
   assert.deepEqual(rowsOf(w, offer.message_id), []);
   assert.equal(bot.state.offers.size, 0);
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Created');
@@ -170,21 +170,21 @@ test('Other agent shows a picker, Back returns, and the chosen agent gets the ta
   await bot.handleUpdate(w.tg.tapButton(offer.message_id, 'Other agent'));
   assert.deepEqual(rowsOf(w, offer.message_id), [['Dev'], ['Lead'], ['◀ Back']]);
   await bot.handleUpdate(w.tg.tapButton(offer.message_id, 'Back'));
-  assert.deepEqual(rowsOf(w, offer.message_id), [['✅ For Lead', '👤 Other agent…', '✖']]);
+  assert.deepEqual(rowsOf(w, offer.message_id), [['For Lead', 'Other agent', 'Cancel']]);
   assert.equal(creates(w).length, 0);
 
   await bot.handleUpdate(w.tg.tapButton(offer.message_id, 'Other agent'));
   await bot.handleUpdate(w.tg.tapButton(offer.message_id, 'Dev'));
   assert.equal(creates(w)[0].body.assigneeAgentId, 'agent-1');
-  assert.equal(w.tg.messages.get(offer.message_id).text, '✅ Created for Dev');
+  assert.equal(w.tg.messages.get(offer.message_id).text, 'Created for Dev');
 });
 
-test('the dismiss button drops the offer', async (t) => {
+test('the cancel button drops the offer', async (t) => {
   const { w, bot } = await setup(t);
   await bot.handleUpdate(w.tg.message('Never mind this'));
   const offer = w.tg.lastMessage();
-  await bot.handleUpdate(w.tg.tapButton(offer.message_id, '✖'));
-  assert.equal(w.tg.messages.get(offer.message_id).text, 'Dismissed.');
+  await bot.handleUpdate(w.tg.tapButton(offer.message_id, 'Cancel'));
+  assert.equal(w.tg.messages.get(offer.message_id).text, 'Cancelled.');
   assert.equal(bot.state.offers.size, 0);
   assert.equal(creates(w).length, 0);
 });

@@ -31,10 +31,10 @@ test('/tasks lists open tasks, newest update first, ten per page', async (t) => 
   assert.match(list.text, /^<b>Open tasks<\/b> · All open · page 1$/);
   const rows = rowsOf(w, list.message_id);
   assert.equal(rows.length, 12);
-  assert.deepEqual(rows[0], ['⏳ TST-25 · Task number 25']);
-  assert.deepEqual(rows[9], ['⏳ TST-16 · Task number 16']);
+  assert.deepEqual(rows[0], ['TST-25 · Task number 25']);
+  assert.deepEqual(rows[9], ['TST-16 · Task number 16']);
   assert.deepEqual(rows[10], ['▶']);
-  assert.deepEqual(rows[11], ['• All open', 'Running', 'Review', 'Blocked']);
+  assert.deepEqual(rows[11], ['☑ All open', '☐ Running', '☐ Review', '☐ Blocked']);
   assert.deepEqual(w.tg.buttons(list.message_id)[0].callback_data, `T:v:${tasks[24].id}`);
   assert.equal(validateTelegramHtml(list.text), null);
 
@@ -65,13 +65,13 @@ test('paging and filtering edit the list message in place', async (t) => {
 
   await bot.handleUpdate(w.tg.tapButton(list.message_id, 'Running'));
   assert.match(w.tg.messages.get(list.message_id).text, /Open tasks<\/b> · Running · page 1$/);
-  assert.deepEqual(rowsOf(w, list.message_id), [['🔄 TST-26 · Busy one'], ['All open', '• Running', 'Review', 'Blocked']]);
+  assert.deepEqual(rowsOf(w, list.message_id), [['TST-26 · Busy one'], ['☐ All open', '☑ Running', '☐ Review', '☐ Blocked']]);
   assert.match(issueListRequests(w).at(-1).query, /status=in_progress(&|$)/);
 
   await bot.handleUpdate(w.tg.tapButton(list.message_id, 'Review'));
-  assert.deepEqual(rowsOf(w, list.message_id)[0], ['👀 TST-27 · Waiting one']);
+  assert.deepEqual(rowsOf(w, list.message_id)[0], ['TST-27 · Waiting one']);
   await bot.handleUpdate(w.tg.tapButton(list.message_id, 'Blocked'));
-  assert.deepEqual(rowsOf(w, list.message_id)[0], ['🚧 TST-28 · Stuck one']);
+  assert.deepEqual(rowsOf(w, list.message_id)[0], ['TST-28 · Stuck one']);
   assert.equal(w.tg.sent().length, sent, 'no new message was sent');
 });
 
@@ -80,7 +80,7 @@ test('an empty list says so and keeps the filter row', async (t) => {
   await bot.handleUpdate(w.tg.message('/tasks'));
   const list = w.tg.lastMessage();
   assert.match(list.text, /Nothing here\.$/);
-  assert.deepEqual(rowsOf(w, list.message_id), [['• All open', 'Running', 'Review', 'Blocked']]);
+  assert.deepEqual(rowsOf(w, list.message_id), [['☑ All open', '☐ Running', '☐ Review', '☐ Blocked']]);
 });
 
 test('list buttons open the task view', async (t) => {
@@ -91,7 +91,7 @@ test('list buttons open the task view', async (t) => {
   await bot.handleUpdate(w.tg.tapButton(list.message_id, 'Open me'));
   const view = w.tg.lastMessage();
   assert.notEqual(view.message_id, list.message_id);
-  assert.match(view.text, /<b>TST-1<\/b> Open me/);
+  assert.match(view.text, /^<b>Task<\/b> · TST-1 Open me$/m);
 });
 
 test('long titles are cut to fit a button and the callback data stays small', async (t) => {
@@ -158,7 +158,7 @@ test('/status buttons open the task', async (t) => {
   await bot.handleUpdate(w.tg.message('/status'));
   const running = w.tg.sent()[0];
   await bot.handleUpdate(w.tg.tapButton(running.message_id, 'Running work'));
-  assert.match(w.tg.lastMessage().text, /<b>TST-1<\/b> Running work/);
+  assert.match(w.tg.lastMessage().text, /^<b>Task<\/b> · TST-1 Running work$/m);
 });
 
 test('/following lists followed tasks as buttons', async (t) => {
@@ -175,7 +175,7 @@ test('/following lists followed tasks as buttons', async (t) => {
   await bot.handleUpdate(w.tg.message('/following'));
   const list = w.tg.lastMessage();
   assert.equal(list.text, '<b>Following</b> (2)');
-  assert.deepEqual(rowsOf(w, list.message_id), [['⏳ TST-2 · Second followed'], ['🔄 TST-1 · First followed']]);
+  assert.deepEqual(rowsOf(w, list.message_id), [['TST-2 · Second followed'], ['TST-1 · First followed']]);
 });
 
 test('/agents lists agents with what they work on', async (t) => {
@@ -187,11 +187,11 @@ test('/agents lists agents with what they work on', async (t) => {
   await bot.handleUpdate(w.tg.message('/agents'));
   const reply = w.tg.lastMessage();
   assert.match(reply.text, /^<b>Agents<\/b>$/m);
-  assert.match(reply.text, /^• <b>Dev<\/b> — idle, 1 in progress$/m);
-  assert.match(reply.text, /^• <b>Idle &lt;Helper&gt;<\/b> — paused$/m);
-  assert.match(reply.text, /^• <b>Lead<\/b> — idle$/m);
+  assert.match(reply.text, /^- <b>Dev<\/b> — idle, 1 in progress$/m);
+  assert.match(reply.text, /^- <b>Idle &lt;Helper&gt;<\/b> — paused$/m);
+  assert.match(reply.text, /^- <b>Lead<\/b> — idle$/m);
   assert.equal(validateTelegramHtml(reply.text), null);
-  assert.deepEqual(rowsOf(w, reply.message_id), [['Dev: 🔄 TST-1 · Build the API']]);
+  assert.deepEqual(rowsOf(w, reply.message_id), [['Dev: TST-1 · Build the API']]);
   // The agents route refuses query parameters, so the bot must not send any.
   const agentRequests = w.pc.requests.filter((r) => r.path.endsWith('/agents'));
   assert.ok(agentRequests.length > 0);

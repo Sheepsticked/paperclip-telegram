@@ -50,8 +50,11 @@ test('updates from another user or another chat are ignored without touching Pap
   assert.equal(w.pc.requests.length, requests, 'no Paperclip call was made');
   assert.equal(w.tg.calls.length, telegramCalls, 'nothing was sent back, edited or answered');
   assert.equal(w.pc.interactions.get(interaction.id).status, 'pending');
-  const ignored = w.logs.out.concat(w.logs.err).filter((line) => line.includes('ignored an update from an unauthorized sender'));
-  assert.equal(ignored.length, strangers.length);
+  const lines = w.logs.out.concat(w.logs.err);
+  const wrongSender = lines.filter((line) => line.includes('ignored an update from an unauthorized sender'));
+  const wrongChat = lines.filter((line) => line.includes(`ignored an update from chat ${OTHER_CHAT} (`));
+  assert.equal(wrongSender.length, 6, 'each update from another user or without a chat is logged');
+  assert.equal(wrongChat.length, 1, 'another chat is logged once, with its id and type');
   assert.ok(!w.allLogText().includes('secret-payload'));
   assert.ok(!w.allLogText().includes('secret-comment'));
 

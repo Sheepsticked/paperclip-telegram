@@ -1,6 +1,8 @@
 import { followIssue } from './follow.js';
-import { button, escapeHtml, firstLine, issueUrl, link, taskButton, truncate } from './format.js';
+import { button, escapeHtml, firstLine, headline, issueUrl, link, taskButton, truncate } from './format.js';
 import { ID_PREFIX, assignableAgents, byPrefix, reportActionFailure, sendTaskView } from './tasks.js';
+import { threadOf, where } from './thread.js';
+import { linkTopic, topicTarget } from './topics.js';
 
 const NEW_TITLE_LIMIT = 100;
 const NAME_LIST_LIMIT = 30;
@@ -55,8 +57,18 @@ export async function resolveTargets(bot, { agent, project }) {
   return { targets };
 }
 
-// Creates the task, follows it when asked to, and replies with its task view.
-export async function createTask(bot, { updateId, text, agent = null, project = null, replyTo }) {
+// Gives a new task its topic: the unknown topic it was asked for in, else a topic of its own.
+// Returns true when the topic is the place the owner asked in (the task view is already there).
+async function openTopic(bot, issue, thread) {
+  await bot.topicsReady();
+  if (!bot.topics.on) return { here: false, separate: false };
+  if (thread !== null && !bot.state.rootForThread(thread) && (await linkTopic(bot, thread, issue))) return { here: true, separate: false };
+  const target = await topicTarget(bot, issue, { kind: 'Created' });
+  return { here: false, separate: target.thread !== null };
+}
+
+// Creates the task, follows it when asked to, gives it a topic and replies with its task view.
+export async function createTask(bot, { updateId, text, agent = null, project = null, replyTo, thread = null }) {
   const body = {
     title: truncate(firstLine(text), NEW_TITLE_LIMIT),
     description: text,
@@ -74,21 +86,31 @@ export async function createTask(bot, { updateId, text, agent = null, project = 
       bot.log.warn('could not follow the new task', { error: err.message });
     }
   }
-  const headline = issue.deduplicated ? '✅ Already exists' : '✅ Created';
+  const placed = issue.deduplicated ? { here: false, separate: false } : await openTopic(bot, issue, thread);
+  if (placed.here) return issue;
+  // A short confirmation is enough when the full view is in the task's own topic; it is also the fallback.
+  const confirm = () => {
+    const url = issueUrl(bot.config.uiBaseUrl, issue.identifier);
+    const html = `${headline(issue.deduplicated ? 'Task' : 'Created', issue)}\n${link(url, 'Open in Paperclip')}`;
+    return bot.send(html, { replyTo, thread, keyboard: [[taskButton(issue.id)]], issue: { id: issue.id, identifier: issue.identifier } });
+  };
+  if (placed.separate) {
+    await confirm();
+    return issue;
+  }
   try {
-    await sendTaskView(bot, issue.id, { headline, replyTo });
+    const view = issue.deduplicated ? { kind: 'Task', note: 'Already exists' } : { kind: 'Created' };
+    await sendTaskView(bot, issue.id, { ...view, replyTo, thread });
   } catch (err) {
     // The task exists, so the confirmation still goes out in a short form.
     bot.log.warn('could not read the new task', { error: err.message });
-    const url = issueUrl(bot.config.uiBaseUrl, issue.identifier);
-    const html = `${headline} <b>${escapeHtml(issue.identifier)}</b>\n${link(url, 'Open in Paperclip')}`;
-    await bot.send(html, { replyTo, keyboard: [[taskButton(issue.id)]], issue: { id: issue.id, identifier: issue.identifier } });
+    await confirm();
   }
   return issue;
 }
 
 function offerKeyboard(key, leadName) {
-  return [[button(`✅ For ${leadName}`, `O:y:${key}`), button('👤 Other agent…', `O:o:${key}`), button('✖', `O:x:${key}`)]];
+  return [[button(`For ${leadName}`, `O:y:${key}`), button('Other agent', `O:o:${key}`), button('Cancel', `O:x:${key}`)]];
 }
 
 async function leadName(bot) {
@@ -98,16 +120,16 @@ async function leadName(bot) {
 // A plain text message: ask before creating a task from it.
 export async function offerTask(bot, update) {
   const msg = update.message;
-  const key = bot.state.addOffer(msg.text.trim(), msg.message_id, update.update_id, bot.now());
+  const key = bot.state.addOffer(msg.text.trim(), msg.message_id, update.update_id, bot.now(), threadOf(bot, msg));
   bot.state.save();
-  await bot.send('Create a task from this?', { replyTo: msg.message_id, keyboard: offerKeyboard(key, await leadName(bot)) });
+  await bot.send('Create a task from this?', { ...where(bot, msg), keyboard: offerKeyboard(key, await leadName(bot)) });
 }
 
 async function createFromOffer(bot, cq, key, offer, agent) {
-  await createTask(bot, { updateId: offer.updateId, text: offer.text, agent, replyTo: offer.messageId });
+  await createTask(bot, { updateId: offer.updateId, text: offer.text, agent, replyTo: offer.messageId, thread: offer.thread ?? null });
   bot.state.offers.delete(key);
   bot.state.save();
-  await bot.edit(cq.message.message_id, `✅ Created for ${escapeHtml(agent ? agent.name : await leadName(bot))}`, []);
+  await bot.edit(cq.message.message_id, `Created for ${escapeHtml(agent ? agent.name : await leadName(bot))}`, []);
   return bot.answer(cq.id, 'Created');
 }
 
@@ -124,7 +146,7 @@ export async function handleOfferCallback(bot, cq) {
     if (op === 'x') {
       bot.state.offers.delete(key);
       bot.state.save();
-      await bot.edit(messageId, 'Dismissed.', []);
+      await bot.edit(messageId, 'Cancelled.', []);
       return await bot.answer(cq.id);
     }
     if (op === 'b') {

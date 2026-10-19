@@ -286,6 +286,46 @@ test('State ignores malformed settings and counts from a hand-edited file', (t) 
   assert.deepEqual(state.mutedCounts, { done: 0, inReview: 0, runFailed: 4, comments: 0 });
 });
 
+test('parseConfig defaults topics to auto and accepts only auto or off', () => {
+  assert.equal(parseConfig(baseConfig).config.topics, 'auto');
+  assert.equal(parseConfig({ ...baseConfig, topics: 'off' }).config.topics, 'off');
+  const bad = parseConfig({ ...baseConfig, topics: 'on' });
+  assert.equal(bad.config, null);
+  assert.match(bad.problems.join('\n'), /topics must be "auto" or "off"/);
+});
+
+test('State keeps topics and the issue to root cache across a save, capped at 2000 roots', (t) => {
+  const file = path.join(tempDir(t), 'state.json');
+  const state = new State(file);
+  state.topics.set('root-1', { thread: 77, identifier: 'TST-1', title: 'A task', closed: 'done' });
+  for (let i = 0; i < 2100; i += 1) state.noteRoot(`issue-${i}`, 'root-1');
+  assert.equal(state.roots.size, 2000);
+  assert.ok(!state.roots.has('issue-0'));
+  state.addOffer('text', 5, 6, 0, 42);
+  state.save();
+
+  const loaded = State.load(file);
+  assert.deepEqual(loaded.topics.get('root-1'), { thread: 77, identifier: 'TST-1', title: 'A task', closed: 'done' });
+  assert.equal(loaded.roots.size, 2000);
+  assert.equal(loaded.rootForThread(77), 'root-1');
+  assert.equal(loaded.rootForThread(78), null);
+  assert.equal([...loaded.offers.values()][0].thread, 42);
+  assert.equal(JSON.parse(JSON.stringify(loaded)).version, 2);
+});
+
+test('State drops malformed topic entries from a hand-edited file', (t) => {
+  const file = path.join(tempDir(t), 'state.json');
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ topics: { good: { thread: 3, identifier: 'TST-1', title: 'T', closed: 'oops' }, bad: { thread: 'x' }, worse: null }, roots: { a: 'good', b: 5 } }),
+  );
+  const state = State.load(file);
+  assert.deepEqual([...state.topics.keys()], ['good']);
+  assert.equal(state.topics.get('good').closed, null);
+  assert.deepEqual([...state.roots], [['a', 'good']]);
+  assert.equal(State.load(path.join(tempDir(t), 'none.json')).topics.size, 0);
+});
+
 test('parseTaskRef accepts identifiers in any case and bare numbers with a default prefix', () => {
   assert.equal(parseTaskRef('TST-12'), 'TST-12');
   assert.equal(parseTaskRef(' tst-012 '), 'TST-12');

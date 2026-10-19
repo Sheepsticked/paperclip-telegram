@@ -5,6 +5,8 @@ import { pollPaperclip } from './notifications.js';
 import { PaperclipClient, PaperclipError } from './paperclip.js';
 import { SerialQueue } from './queue.js';
 import { TelegramClient, TelegramError, defaultSleep } from './telegram.js';
+import { dropTopic, topicTarget } from './topics.js';
+import { COMMENT_REACTION, threadGone } from './thread.js';
 
 export const LONG_POLL_SECONDS = 50;
 const AGENT_CACHE_MS = 10 * 60 * 1000;
@@ -55,10 +57,14 @@ export class Bot {
     this.projectsLoadedAt = 0;
     this.armed = new Map();
     this.profileRegistered = false;
+    this.topics = { on: false, canPin: false };
+    this.topicWarnedAt = null;
+    this.ignoredChats = new Set();
+    this.topicCheck = null;
   }
 
-  // Every outgoing message goes to the one configured chat.
-  async send(html, { keyboard, replyTo, forceReply, issue } = {}) {
+  // Every outgoing message goes to the one configured chat; `thread` picks a topic (none means the main chat).
+  async send(html, { keyboard, replyTo, forceReply, issue, thread } = {}) {
     if (html.length > MESSAGE_LIMIT) throw new Error('refusing to send a message over the Telegram limit');
     const params = {
       chat_id: this.config.telegramChatId,
@@ -66,12 +72,53 @@ export class Bot {
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
     };
+    if (thread != null && this.topics.on) params.message_thread_id = thread;
     if (keyboard?.length) params.reply_markup = { inline_keyboard: keyboard };
     if (forceReply) params.reply_markup = { force_reply: true, input_field_placeholder: typeof forceReply === 'string' ? forceReply : 'Reason' };
     if (replyTo) params.reply_parameters = { message_id: replyTo, allow_sending_without_reply: true };
     const sent = await this.tg.sendMessage(params);
     if (issue) this.state.mapMessage(sent.message_id, issue.id, issue.identifier);
     return sent.message_id;
+  }
+
+  // Sends a message about a task into its top-level task's topic; a deleted topic is made again once.
+  // `build({ own })` returns { text, keyboard }; own is true when the message lands in the task's own topic.
+  async sendAbout(issue, build, { replyTo, kind } = {}) {
+    let target = await topicTarget(this, issue, { kind });
+    try {
+      return await this.#sendInTopic(target, issue, build, replyTo);
+    } catch (err) {
+      if (target.thread === null || !threadGone(err)) throw err;
+      dropTopic(this, target.rootId);
+      target = await topicTarget(this, issue, { kind });
+      return this.#sendInTopic(target, issue, build, replyTo);
+    }
+  }
+
+  async #sendInTopic(target, issue, build, replyTo) {
+    const { text, keyboard } = build({ own: target.own });
+    const messageId = await this.send(text, {
+      keyboard,
+      replyTo,
+      thread: target.thread,
+      issue: { id: issue.id, identifier: issue.identifier },
+    });
+    return { messageId, thread: target.thread, own: target.own };
+  }
+
+  // Marks a message with the "comment posted" reaction; false when Telegram refuses.
+  async react(messageId) {
+    try {
+      await this.tg.setMessageReaction({
+        chat_id: this.config.telegramChatId,
+        message_id: messageId,
+        reaction: [{ type: 'emoji', emoji: COMMENT_REACTION }],
+      });
+      return true;
+    } catch (err) {
+      this.log.warn('could not react to a message', { error: err.message });
+      return false;
+    }
   }
 
   async edit(messageId, html, keyboard = []) {
@@ -206,12 +253,21 @@ export class Bot {
     const message = update.message;
     const callback = update.callback_query;
     const senderId = message?.from?.id ?? callback?.from?.id;
-    const chatId = message ? message.chat?.id : callback?.message?.chat?.id;
-    if (senderId !== this.config.telegramUserId || chatId !== this.config.telegramChatId) {
+    const chat = message ? message.chat : callback?.message?.chat;
+    if (chat?.id !== undefined && chat.id !== this.config.telegramChatId) {
+      // Only the chat id and type are logged, once per chat, so the owner can find the id of a new group.
+      if (!this.ignoredChats.has(chat.id)) {
+        this.ignoredChats.add(chat.id);
+        this.log.info(`ignored an update from chat ${chat.id} (${chat.type ?? 'unknown'})`);
+      }
+      return;
+    }
+    if (senderId !== this.config.telegramUserId || chat?.id !== this.config.telegramChatId) {
       this.log.info('ignored an update from an unauthorized sender');
       return;
     }
     try {
+      await this.topicsReady();
       if (callback) await routeCallback(this, callback);
       else await handleMessage(this, update);
     } catch (err) {
@@ -222,6 +278,43 @@ export class Bot {
 
   pollOnce() {
     return pollPaperclip(this);
+  }
+
+  // Resolves once the topic check ran; a failed check is tried again by the next caller.
+  topicsReady() {
+    if (!this.topicCheck) {
+      this.topicCheck = this.#detectTopics().catch((err) => {
+        this.topicCheck = null;
+        throw err;
+      });
+    }
+    return this.topicCheck;
+  }
+
+  // Topics need a forum group where the bot is an admin who may manage topics; checked once at start.
+  async #detectTopics() {
+    const off = (reason) => this.log.info(`topics off: ${reason}`);
+    if (this.config.topics === 'off') return off('off in the config');
+    const chat_id = this.config.telegramChatId;
+    let chat;
+    let member;
+    try {
+      chat = await this.tg.getChat({ chat_id });
+      if (chat.type !== 'supergroup' || chat.is_forum !== true) return off('not a forum');
+      const me = await this.tg.getMe();
+      member = await this.tg.getChatMember({ chat_id, user_id: me.id });
+    } catch (err) {
+      const settled = err instanceof TelegramError && !err.network && err.code >= 400 && err.code < 500 && err.code !== 429;
+      if (!settled) throw err;
+      return off('the chat cannot be read');
+    }
+    const creator = member.status === 'creator';
+    if (!creator && member.status !== 'administrator') return off('the bot is not an admin');
+    if (!creator && member.can_manage_topics !== true) return off('the bot lacks the Manage topics right');
+    this.topics = { on: true, canPin: creator || member.can_pin_messages === true };
+    this.log.info('topics on');
+    if (!this.topics.canPin) this.log.warn('the bot lacks the Pin messages right, so task views are not pinned');
+    return undefined;
   }
 
   async run() {
@@ -264,6 +357,7 @@ export class Bot {
     let failures = 0;
     while (!this.stopped) {
       try {
+        await this.topicsReady();
         if (!this.commandsRegistered) await this.#registerCommands();
         if (!this.profileRegistered) await this.#registerProfile();
         const updates = await this.tg.getUpdates(

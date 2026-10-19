@@ -47,6 +47,7 @@ export async function startWorld({ config: overrides = {}, telegram = {}, paperc
     leadAgentId: LEAD_AGENT_ID,
     newTaskProjectId: null,
     telegramUserId: tg.userId,
+    telegramChatId: tg.chatId,
     telegramTokenFile,
     paperclipTokenFile,
     telegramApiUrl: tg.url,
@@ -101,11 +102,17 @@ export async function startWorld({ config: overrides = {}, telegram = {}, paperc
       await bot.pollOnce();
       return bot;
     },
+    // Closes everything, then fails when the bot wrote an emoji anywhere in the test.
     async close() {
       for (const bot of bots) bot.stop();
       await tg.close();
       await pc.close();
       fs.rmSync(dir, { recursive: true, force: true });
+      const found = tg.emojiFindings();
+      if (found.length > 0) {
+        const lines = found.map((entry) => `${entry.kind}: ${entry.emoji.join(' ')} in "${entry.text.slice(0, 80)}"`);
+        throw new Error(`the bot wrote emoji:\n${lines.join('\n')}`);
+      }
     },
   };
   return world;

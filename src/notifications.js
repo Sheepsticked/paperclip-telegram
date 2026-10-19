@@ -1,9 +1,10 @@
 import { refreshCard, sendCard } from './actions.js';
 import { pollFollowing } from './follow.js';
-import { escapeHtml, firstLine, issueUrl, link, prefixOf, runUrl, taskButton, truncate, truncateLines } from './format.js';
+import { escapeHtml, firstLine, headline, issueUrl, link, prefixOf, runUrl, taskButton, truncate, truncateLines } from './format.js';
 import { guarded, isUnauthorized } from './guard.js';
 import { PaperclipError } from './paperclip.js';
 import { allow, announceMuteEnd } from './settings.js';
+import { syncTopics } from './topics.js';
 
 const INITIAL_CARD_LIMIT = 10;
 const CHANGE_SUMMARY_THRESHOLD = 10;
@@ -80,15 +81,15 @@ async function sendRunAlert(bot, item) {
   const issue = item.relatedIssue;
   const agent = meta.agentName ?? (await bot.agentName(meta.agentId)) ?? 'An agent';
   const reason = truncate(firstLine(meta.error ?? meta.retryExhaustedReason ?? item.detail?.failureReasonExcerpt ?? ''), 200);
-  const lines = [`⚠️ <b>Run failed</b> · ${escapeHtml(truncate(agent, 80))}`];
-  if (issue) lines.push(`<b>${escapeHtml(issue.identifier)}</b> ${escapeHtml(truncate(issue.title, 100))}`);
   const detail = [meta.errorCode, reason].filter(Boolean).join(' — ');
-  if (detail) lines.push(escapeHtml(detail));
-  lines.push('', link(runUrl(bot.config.uiBaseUrl, runPrefix(item), meta.agentId, item.subject.id), 'Open run'));
-  await bot.send(lines.join('\n'), {
-    keyboard: issue ? [[taskButton(issue.id)]] : undefined,
-    issue: issue ? { id: issue.id, identifier: issue.identifier } : undefined,
-  });
+  const url = runUrl(bot.config.uiBaseUrl, runPrefix(item), meta.agentId, item.subject.id);
+  const compose = (head, body) => [head, ...body.filter(Boolean).map(escapeHtml), link(url, 'Open in Paperclip')].join('\n');
+  if (!issue) {
+    await bot.send(compose(`<b>Run failed</b> · ${escapeHtml(truncate(agent, 80))}`, [detail]));
+    return;
+  }
+  const who = [truncate(agent, 80), detail].filter(Boolean).join(': ');
+  await bot.sendAbout(issue, ({ own }) => ({ text: compose(headline('Run failed', issue, { own }), [who]), keyboard: [[taskButton(issue.id)]] }));
 }
 
 async function alertFailedRuns(bot, failedRuns) {
@@ -137,11 +138,13 @@ async function lastAgentComment(bot, issueId) {
 async function sendStatusUpdate(bot, issue) {
   const done = issue.status === 'done';
   const comment = await lastAgentComment(bot, issue.id);
-  const lines = [`${done ? '✅ <b>Done</b>' : '👀 <b>In review</b>'} · <b>${escapeHtml(issue.identifier)}</b> ${escapeHtml(truncate(issue.title, 100))}`];
   const excerpt = comment ? truncateLines(comment.body, 5, 400) : '';
-  if (excerpt) lines.push(`<blockquote>${escapeHtml(excerpt)}</blockquote>`);
-  lines.push(link(issueUrl(bot.config.uiBaseUrl, issue.identifier), 'Open in Paperclip'));
-  await bot.send(lines.join('\n'), { keyboard: [[taskButton(issue.id)]], issue: { id: issue.id, identifier: issue.identifier } });
+  await bot.sendAbout(issue, ({ own }) => {
+    const lines = [headline(done ? 'Done' : 'In review', issue, { own })];
+    if (excerpt) lines.push(`<blockquote>${escapeHtml(excerpt)}</blockquote>`);
+    lines.push(link(issueUrl(bot.config.uiBaseUrl, issue.identifier), 'Open in Paperclip'));
+    return { text: lines.join('\n'), keyboard: [[taskButton(issue.id)]] };
+  });
   return excerpt ? comment.id : null;
 }
 
@@ -181,6 +184,7 @@ async function reportStatusChanges(bot, sentIssueIds) {
       state.save();
     }
   }
+  await syncTopics(bot, updated);
   await pollFollowing(bot, updated, quoted);
 }
 

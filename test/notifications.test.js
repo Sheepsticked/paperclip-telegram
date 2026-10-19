@@ -26,7 +26,7 @@ test('done message quotes the trimmed last agent comment and links to the task',
 
   const message = w.tg.findMessage('Done');
   assert.ok(message, 'a done message was sent');
-  assert.match(message.text, /^✅ <b>Done<\/b> · <b>TST-1<\/b> Write the docs\n/);
+  assert.match(message.text, /^<b>Done<\/b> · TST-1 Write the docs\n/);
   assert.match(message.text, /<blockquote>line 1 &lt;b&gt;&amp;&lt;\/b&gt;\nline 2\nline 3\nline 4\nline 5…<\/blockquote>/);
   assert.ok(!message.text.includes('line 6'));
   assert.ok(!message.text.includes('thanks'));
@@ -68,7 +68,7 @@ test('in_review message is sent when no card is involved', async (t) => {
   await bot.pollOnce();
   const message = w.tg.findMessage('In review');
   assert.ok(message);
-  assert.match(message.text, /^👀 <b>In review<\/b> · <b>TST-1<\/b> Needs a look/);
+  assert.match(message.text, /^<b>In review<\/b> · TST-1 Needs a look\n/);
   assert.match(message.text, /Ready for review\./);
 });
 
@@ -158,9 +158,9 @@ test('failed run is alerted once and routine error codes are skipped', async (t)
   await bot.pollOnce();
   const alerts = sentTexts(w).filter((text) => text.includes('Run failed'));
   assert.equal(alerts.length, 1);
-  assert.match(alerts[0], /^⚠️ <b>Run failed<\/b> · Dev\n<b>TST-1<\/b> Flaky job\nadapter_failed — The adapter exited\n/);
+  assert.match(alerts[0], /^<b>Run failed<\/b> · TST-1 Flaky job\nDev: adapter_failed — The adapter exited\n/);
   assert.ok(!alerts[0].includes('second line'));
-  assert.ok(alerts[0].includes(`<a href="${UI_BASE_URL}/TST/agents/agent-1/runs/${failed.id}">Open run</a>`));
+  assert.ok(alerts[0].includes(`<a href="${UI_BASE_URL}/TST/agents/agent-1/runs/${failed.id}">Open in Paperclip</a>`));
   assert.equal(w.tg.callsTo('sendMessage').length, 1);
 });
 

@@ -8,6 +8,7 @@ const RESOLVED_CARD_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_FOLLOWING = 50;
 const MAX_OFFERS = 20;
 const OFFER_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_ROOTS = 2000;
 
 export const DEFAULT_SETTINGS = {
   done: true,
@@ -27,6 +28,22 @@ function loadSettings(saved) {
 
 function loadMutedCounts(saved) {
   return Object.fromEntries(MUTED_KINDS.map((kind) => [kind, Number.isInteger(saved?.[kind]) && saved[kind] > 0 ? saved[kind] : 0]));
+}
+
+// Keeps only well-formed topic entries, so a hand-edited file cannot break the lookups.
+function loadTopics(saved) {
+  const topics = new Map();
+  for (const [rootId, topic] of Object.entries(saved && typeof saved === 'object' ? saved : {})) {
+    if (!Number.isInteger(topic?.thread)) continue;
+    const closed = topic.closed === 'done' || topic.closed === 'cancelled' ? topic.closed : null;
+    topics.set(rootId, { thread: topic.thread, identifier: String(topic.identifier ?? ''), title: String(topic.title ?? ''), closed });
+  }
+  return topics;
+}
+
+function loadRoots(saved) {
+  const entries = Object.entries(saved && typeof saved === 'object' ? saved : {}).filter(([, rootId]) => typeof rootId === 'string');
+  return new Map(entries.slice(-MAX_ROOTS));
 }
 
 // Persistent bot state, saved atomically (temp file, then rename) with mode 600.
@@ -52,6 +69,8 @@ export class State {
     this.offers = new Map(Object.entries(data.offers ?? {}));
     this.offerCounter = data.offerCounter ?? 0;
     this.prefixCounts = data.prefixCounts ?? {};
+    this.topics = loadTopics(data.topics);
+    this.roots = loadRoots(data.roots);
   }
 
   // A missing file starts fresh; an unreadable one is set aside and the bot starts fresh too.
@@ -159,10 +178,10 @@ export class State {
     return this.following.delete(issueId);
   }
 
-  addOffer(text, messageId, updateId, nowMs) {
+  addOffer(text, messageId, updateId, nowMs, thread = null) {
     this.offerCounter += 1;
     const key = this.offerCounter.toString(36);
-    this.offers.set(key, { text, messageId, updateId, at: nowMs });
+    this.offers.set(key, { text, messageId, updateId, at: nowMs, thread });
     while (this.offers.size > MAX_OFFERS) this.offers.delete(this.offers.keys().next().value);
     return key;
   }
@@ -174,6 +193,18 @@ export class State {
 
   pruneOffers(nowMs) {
     for (const [key, offer] of this.offers) if (nowMs - offer.at > OFFER_TTL_MS) this.offers.delete(key);
+  }
+
+  // Remembers which top-level task an issue belongs to; the oldest entries go first.
+  noteRoot(issueId, rootId) {
+    this.roots.delete(issueId);
+    this.roots.set(issueId, rootId);
+    while (this.roots.size > MAX_ROOTS) this.roots.delete(this.roots.keys().next().value);
+  }
+
+  rootForThread(thread) {
+    for (const [rootId, topic] of this.topics) if (topic.thread === thread) return rootId;
+    return null;
   }
 
   // Counts the company prefix of an identifier so /task <number> can guess it.
@@ -212,6 +243,8 @@ export class State {
       offers: Object.fromEntries(this.offers),
       offerCounter: this.offerCounter,
       prefixCounts: this.prefixCounts,
+      topics: Object.fromEntries(this.topics),
+      roots: Object.fromEntries(this.roots),
     };
   }
 

@@ -1,5 +1,6 @@
 import { PaperclipError } from './paperclip.js';
-import { button, escapeHtml, statusIcon, truncate } from './format.js';
+import { button, escapeHtml, truncate } from './format.js';
+import { where } from './thread.js';
 
 const PAGE_SIZE = 10;
 const FIND_LIMIT = 10;
@@ -13,9 +14,9 @@ const FILTERS = {
   b: { label: 'Blocked', status: 'blocked' },
 };
 
-// One button per task: status icon, identifier and as much of the title as fits.
+// One button per task: identifier and as much of the title as fits.
 export function taskRow(issue, { prefix = '' } = {}) {
-  return [button(`${prefix}${statusIcon(issue.status)} ${issue.identifier} · ${issue.title}`, `T:v:${issue.id}`)];
+  return [button(`${prefix}${issue.identifier} · ${issue.title}`, `T:v:${issue.id}`)];
 }
 
 function openTasksView(issues, filter, page, hasNext) {
@@ -25,7 +26,7 @@ function openTasksView(issues, filter, page, hasNext) {
   if (page > 0) nav.push(button('◀', `L:t:${filter}:${page - 1}`));
   if (hasNext) nav.push(button('▶', `L:t:${filter}:${page + 1}`));
   if (nav.length > 0) rows.push(nav);
-  rows.push(Object.entries(FILTERS).map(([key, entry]) => button(`${key === filter ? '• ' : ''}${entry.label}`, `L:t:${key}:0`)));
+  rows.push(Object.entries(FILTERS).map(([key, entry]) => button(`${key === filter ? '☑' : '☐'} ${entry.label}`, `L:t:${key}:0`)));
   const head = `<b>Open tasks</b> · ${escapeHtml(label)} · page ${page + 1}`;
   return { text: issues.length > 0 ? head : `${head}\nNothing here.`, keyboard: rows };
 }
@@ -43,7 +44,7 @@ async function loadOpenTasks(bot, filter, page) {
 
 export async function commandTasks(bot, msg) {
   const { text, keyboard } = await loadOpenTasks(bot, 'a', 0);
-  await bot.send(text, { keyboard, replyTo: msg.message_id });
+  await bot.send(text, { keyboard, ...where(bot, msg) });
 }
 
 export async function handleListCallback(bot, cq) {
@@ -61,11 +62,11 @@ export async function handleListCallback(bot, cq) {
 }
 
 export async function commandFind(bot, msg, query) {
-  if (!query) return bot.send('Usage: /find &lt;text&gt;', { replyTo: msg.message_id });
+  if (!query) return bot.send('Usage: /find &lt;text&gt;', where(bot, msg));
   const found = await bot.pc.listIssues(bot.config.companyId, { q: query, limit: FIND_LIMIT });
   const quoted = `“${escapeHtml(truncate(query, 60))}”`;
   const text = found.length > 0 ? `<b>Found ${found.length}</b> for ${quoted}` : `Nothing found for ${quoted}`;
-  return bot.send(text, { keyboard: found.map((issue) => taskRow(issue)), replyTo: msg.message_id });
+  return bot.send(text, { keyboard: found.map((issue) => taskRow(issue)), ...where(bot, msg) });
 }
 
 // Task buttons with a "+N more" note in the text when the list is cut.
@@ -74,7 +75,7 @@ async function sendSection(bot, msg, title, items, rowFor) {
   const lines = [`<b>${title}</b> (${items.length})`];
   if (items.length === 0) lines.push('Nothing here.');
   if (items.length > shown.length) lines.push(`+${items.length - shown.length} more`);
-  await bot.send(lines.join('\n'), { keyboard: shown.map(rowFor), replyTo: msg.message_id });
+  await bot.send(lines.join('\n'), { keyboard: shown.map(rowFor), ...where(bot, msg) });
 }
 
 export async function commandStatus(bot, msg) {
@@ -91,20 +92,20 @@ export async function commandStatus(bot, msg) {
   for (const issue of running.slice(0, STATUS_SECTION_LIMIT)) names.set(issue.id, (await bot.agentName(issue.assigneeAgentId)) ?? 'unassigned');
 
   const waiting = [
-    ...cards.map((item) => ({ ...item.relatedIssue, icon: '❓', title: item.subject.title ?? item.relatedIssue.title })),
-    ...review.filter((issue) => !cardIssueIds.has(issue.id)).map((issue) => ({ ...issue, icon: '👀' })),
+    ...cards.map((item) => ({ ...item.relatedIssue, title: item.subject.title ?? item.relatedIssue.title })),
+    ...review.filter((issue) => !cardIssueIds.has(issue.id)),
   ];
   await sendSection(bot, msg, 'Running', running, (issue) => [
-    button(`${statusIcon(issue.status)} ${issue.identifier} · ${truncate(issue.title, 40)} — ${names.get(issue.id)}`, `T:v:${issue.id}`),
+    button(`${issue.identifier} · ${truncate(issue.title, 40)} — ${names.get(issue.id)}`, `T:v:${issue.id}`),
   ]);
-  await sendSection(bot, msg, 'Waiting for you', waiting, (issue) => [button(`${issue.icon} ${issue.identifier} · ${issue.title}`, `T:v:${issue.id}`)]);
+  await sendSection(bot, msg, 'Waiting for you', waiting, (issue) => [button(`${issue.identifier} · ${issue.title}`, `T:v:${issue.id}`)]);
 }
 
 export async function commandFollowing(bot, msg) {
   const entries = [...bot.state.following].reverse();
-  const text = entries.length > 0 ? `<b>Following</b> (${entries.length})` : 'You are not following any task. Open a task and tap 🔔 Follow.';
+  const text = entries.length > 0 ? `<b>Following</b> (${entries.length})` : 'You are not following any task. Open a task and tap Follow.';
   const rows = entries.map(([id, entry]) => taskRow({ id, status: entry.status, identifier: entry.identifier, title: entry.title }));
-  await bot.send(text, { keyboard: rows, replyTo: msg.message_id });
+  await bot.send(text, { keyboard: rows, ...where(bot, msg) });
 }
 
 export async function commandAgents(bot, msg) {
@@ -116,10 +117,10 @@ export async function commandAgents(bot, msg) {
   const rows = [];
   for (const agent of [...agents].sort((a, b) => a.name.localeCompare(b.name))) {
     const tasks = working.filter((issue) => issue.assigneeAgentId === agent.id);
-    lines.push(`• <b>${escapeHtml(agent.name)}</b> — ${escapeHtml(agent.status)}${tasks.length > 0 ? `, ${tasks.length} in progress` : ''}`);
+    lines.push(`- <b>${escapeHtml(agent.name)}</b> — ${escapeHtml(agent.status)}${tasks.length > 0 ? `, ${tasks.length} in progress` : ''}`);
     for (const issue of tasks) rows.push(taskRow(issue, { prefix: `${agent.name}: ` }));
   }
   if (agents.length === 0) lines.push('No agents.');
   if (rows.length > AGENTS_BUTTON_LIMIT) lines.push(`+${rows.length - AGENTS_BUTTON_LIMIT} more tasks, see /status`);
-  await bot.send(lines.join('\n'), { keyboard: rows.slice(0, AGENTS_BUTTON_LIMIT), replyTo: msg.message_id });
+  await bot.send(lines.join('\n'), { keyboard: rows.slice(0, AGENTS_BUTTON_LIMIT), ...where(bot, msg) });
 }

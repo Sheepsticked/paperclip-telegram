@@ -436,13 +436,14 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
       failures.push({ method, pattern, status, times, message });
     },
     clearFailures: () => failures.splice(0),
-    addIssue({ title, description = null, status = 'todo', assigneeAgentId = null, assigneeUserId = null, projectId = null, createdAt, updatedAt } = {}) {
+    addIssue({ title, description = null, status = 'todo', assigneeAgentId = null, assigneeUserId = null, projectId = null, parentId = null, createdAt, updatedAt } = {}) {
       issueNumber += 1;
       const now = tick();
       const issue = {
         id: randomUUID(),
         companyId,
         projectId,
+        parentId,
         title,
         description,
         status,

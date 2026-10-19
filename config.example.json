@@ -6,6 +6,7 @@
   "newTaskProjectId": null,
   "telegramUserId": 123456789,
   "telegramChatId": 123456789,
+  "topics": "auto",
   "telegramTokenFile": "~/.config/paperclip-telegram/telegram-token",
   "paperclipTokenFile": "~/.config/paperclip-telegram/paperclip-token",
   "telegramApiUrl": "https://api.telegram.org",

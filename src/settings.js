@@ -1,4 +1,5 @@
 import { button } from './format.js';
+import { where } from './thread.js';
 
 const MUTE_HOURS = [1, 8];
 
@@ -7,7 +8,7 @@ const TOGGLES = [
   ['inReview', 'In-review messages'],
   ['runFailed', 'Failed-run alerts'],
   ['followedComments', 'Followed comments'],
-  ['autoFollowCreated', 'Auto-follow tasks I create'],
+  ['autoFollowCreated', 'Follow new tasks'],
 ];
 
 // Which counter a muted message adds to.
@@ -33,12 +34,12 @@ function untilText(iso) {
 export function renderSettings(bot) {
   const { state } = bot;
   const lines = ['<b>Settings</b>'];
-  lines.push(state.isMuted(bot.now()) ? `🔕 Muted until ${untilText(state.muteUntil)}` : '🔔 Notifications are on');
+  lines.push(state.isMuted(bot.now()) ? `Muted until ${untilText(state.muteUntil)}` : 'Notifications are on');
   lines.push('Cards that need an answer are always sent.');
-  const keyboard = TOGGLES.map(([key, label]) => [button(`${state.settings[key] ? '✅' : '⬜'} ${label}`, `S:t:${key}`)]);
+  const keyboard = TOGGLES.map(([key, label]) => [button(`${state.settings[key] ? '☑' : '☐'} ${label}`, `S:t:${key}`)]);
   keyboard.push([
-    ...MUTE_HOURS.map((hours) => button(`🔕 Mute ${hours} h`, `S:m:${hours}`)),
-    button('🔔 Unmute', 'S:u'),
+    ...MUTE_HOURS.map((hours) => button(`Mute ${hours} h`, `S:m:${hours}`)),
+    button('Unmute', 'S:u'),
   ]);
   return { text: lines.join('\n'), keyboard };
 }
@@ -63,7 +64,7 @@ export async function announceMuteEnd(bot) {
 
 export async function commandSettings(bot, msg) {
   const { text, keyboard } = renderSettings(bot);
-  await bot.send(text, { keyboard, replyTo: msg.message_id });
+  await bot.send(text, { keyboard, ...where(bot, msg) });
 }
 
 export async function handleSettingsCallback(bot, cq) {

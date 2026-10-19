@@ -1,7 +1,11 @@
 import http from 'node:http';
+import { findEmoji } from '../style.js';
 
 const ALLOWED_TAGS = new Set(['b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'a', 'code', 'pre', 'blockquote', 'tg-spoiler']);
 const ENTITY = /^&(amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);/;
+const ICON_COLORS = [7322096, 16766590, 13338331, 9367192, 16749490, 16478047];
+const REACTIONS = ['\u{1F44D}', '\u{1F44E}', '\u2764', '\u{1F525}', '\u{1F389}'];
+const FULL_RIGHTS = { can_manage_topics: true, can_pin_messages: true };
 
 // Mirrors Telegram's HTML parse mode: known tags only, balanced, with every & < > escaped.
 export function validateTelegramHtml(text) {
@@ -30,8 +34,22 @@ export function validateTelegramHtml(text) {
 }
 
 // A stand-in for the Telegram Bot API that records every call and checks what the real API checks.
-export async function startFakeTelegram({ token = 'fake-telegram-token', userId = 1001, chatId = 1001, holdMs = 80 } = {}) {
+// With `forum: true` the chat is a supergroup with topics and the bot an admin holding `botRights`.
+export async function startFakeTelegram({
+  token = 'fake-telegram-token',
+  userId = 1001,
+  chatId = 1001,
+  holdMs = 80,
+  forum = false,
+  botRights = FULL_RIGHTS,
+  botId = 4242,
+} = {}) {
+  const chat = { type: forum ? 'supergroup' : 'private', isForum: forum, botRights: forum ? botRights : null };
   const calls = [];
+  const topics = new Map();
+  const userMessages = new Map();
+  const reactions = [];
+  const written = [];
   const messages = new Map();
   const callbackAnswers = [];
   const updates = [];
@@ -62,9 +80,15 @@ export async function startFakeTelegram({ token = 'fake-telegram-token', userId 
     }
   }
 
+  const note = (kind, text) => {
+    if (typeof text === 'string' && text.length > 0) written.push({ kind, text });
+  };
+
   // Telegram refuses callback data of 0 or more than 64 bytes, and more than 100 buttons.
   function checkMarkup(res, markup) {
     const buttons = (markup?.inline_keyboard ?? []).flat();
+    for (const b of buttons) note('button', b.text);
+    note('placeholder', markup?.input_field_placeholder);
     if (buttons.length > 100) return error(res, 400, 'Bad Request: reply markup is too long'), false;
     for (const b of buttons) {
       const size = Buffer.byteLength(b.callback_data ?? '');
@@ -74,8 +98,21 @@ export async function startFakeTelegram({ token = 'fake-telegram-token', userId 
     return true;
   }
 
+  const isAdmin = () => chat.botRights !== null;
+  const mayManage = () => isAdmin() && chat.botRights.can_manage_topics === true;
+
+  // The topic a send or an edit refers to; false after answering with an error.
+  function checkThread(res, threadId) {
+    if (threadId === undefined || threadId === null) return true;
+    const topic = topics.get(threadId);
+    if (!topic || topic.deleted) return error(res, 400, 'Bad Request: message thread not found'), false;
+    if (topic.closed && !mayManage()) return error(res, 400, 'Bad Request: TOPIC_CLOSED'), false;
+    return true;
+  }
+
   function checkMessage(res, params) {
     if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found'), false;
+    note('text', params.text);
     if (typeof params.text !== 'string' || params.text.length === 0) return error(res, 400, 'Bad Request: message text is empty'), false;
     if (params.text.length > 4096) return error(res, 400, 'Bad Request: message is too long'), false;
     if (params.parse_mode === 'HTML') {
@@ -105,17 +142,21 @@ export async function startFakeTelegram({ token = 'fake-telegram-token', userId 
     },
     sendMessage(res, params) {
       if (!checkMessage(res, params)) return;
+      if (!checkThread(res, params.message_thread_id)) return;
+      const thread = params.message_thread_id ?? null;
       const message = {
         message_id: nextMessageId++,
-        chat: { id: chatId, type: 'private' },
+        chat: { id: chatId, type: chat.type },
         date: 0,
         text: params.text,
         markup: params.reply_markup ?? null,
         replyTo: params.reply_parameters?.message_id ?? null,
+        thread,
+        pinned: null,
         edits: 0,
       };
       messages.set(message.message_id, message);
-      respond(res, 200, { ok: true, result: { message_id: message.message_id, chat: message.chat, date: 0, text: message.text } });
+      respond(res, 200, { ok: true, result: { message_id: message.message_id, chat: message.chat, date: 0, text: message.text, ...(thread ? { message_thread_id: thread, is_topic_message: true } : {}) } });
     },
     editMessageText(res, params) {
       if (!checkMessage(res, params)) return;
@@ -144,6 +185,7 @@ export async function startFakeTelegram({ token = 'fake-telegram-token', userId 
       return respond(res, 200, { ok: true, result: { message_id: message.message_id, chat: message.chat, date: 0, text: message.text } });
     },
     answerCallbackQuery(res, params) {
+      note('answer', params.text);
       callbackAnswers.push({ id: params.callback_query_id, text: params.text ?? '', alert: params.show_alert === true });
       respond(res, 200, { ok: true, result: true });
     },
@@ -151,17 +193,94 @@ export async function startFakeTelegram({ token = 'fake-telegram-token', userId 
       const list = params.commands;
       const valid = Array.isArray(list) && list.length <= 100 && list.every((c) => /^[a-z0-9_]{1,32}$/.test(c.command) && c.description?.length >= 1 && c.description.length <= 256);
       if (!valid) return error(res, 400, 'Bad Request: invalid commands');
+      for (const c of list) note('command', c.description);
       commands = list;
       return respond(res, 200, { ok: true, result: true });
     },
     setMyShortDescription(res, params) {
       if ((params.short_description ?? '').length > 120) return error(res, 400, 'Bad Request: short description is too long');
+      note('short description', params.short_description);
       shortDescription = params.short_description ?? '';
       return respond(res, 200, { ok: true, result: true });
     },
     setMyDescription(res, params) {
       if ((params.description ?? '').length > 512) return error(res, 400, 'Bad Request: description is too long');
+      note('description', params.description);
       description = params.description ?? '';
+      return respond(res, 200, { ok: true, result: true });
+    },
+    getMe(res) {
+      respond(res, 200, { ok: true, result: { id: botId, is_bot: true, first_name: 'Fake bot', username: 'fake_bot' } });
+    },
+    getChat(res, params) {
+      if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found');
+      const result = { id: chatId, type: chat.type, ...(chat.isForum ? { is_forum: true } : {}) };
+      return respond(res, 200, { ok: true, result });
+    },
+    getChatMember(res, params) {
+      if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found');
+      if (params.user_id === userId) return respond(res, 200, { ok: true, result: { status: 'creator', user: { id: userId, is_bot: false } } });
+      if (params.user_id !== botId) return error(res, 400, 'Bad Request: user not found');
+      const user = { id: botId, is_bot: true };
+      const result = isAdmin()
+        ? { status: 'administrator', user, can_be_edited: false, ...chat.botRights }
+        : { status: 'member', user };
+      return respond(res, 200, { ok: true, result });
+    },
+    createForumTopic(res, params) {
+      if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found');
+      note('topic name', params.name);
+      if (!chat.isForum) return error(res, 400, 'Bad Request: the chat is not a forum');
+      if (!mayManage()) return error(res, 400, 'Bad Request: not enough rights to create a topic');
+      if (typeof params.name !== 'string' || params.name.length < 1 || params.name.length > 128) return error(res, 400, 'Bad Request: invalid topic name length');
+      if (params.icon_color !== undefined && !ICON_COLORS.includes(params.icon_color)) return error(res, 400, 'Bad Request: invalid topic icon color');
+      const id = nextMessageId++;
+      topics.set(id, { id, name: params.name, icon_color: params.icon_color ?? ICON_COLORS[0], closed: false, deleted: false, by: 'bot' });
+      return respond(res, 200, { ok: true, result: { message_thread_id: id, name: params.name, icon_color: params.icon_color ?? ICON_COLORS[0] } });
+    },
+    editForumTopic(res, params) {
+      if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found');
+      note('topic name', params.name);
+      const topic = topics.get(params.message_thread_id);
+      if (!topic || topic.deleted) return error(res, 400, 'Bad Request: TOPIC_ID_INVALID');
+      if (!mayManage() && topic.by !== 'bot') return error(res, 400, 'Bad Request: not enough rights to manage topics');
+      if (params.name !== undefined && (params.name.length < 1 || params.name.length > 128)) return error(res, 400, 'Bad Request: invalid topic name length');
+      if (params.name === undefined || params.name === topic.name) return error(res, 400, 'Bad Request: TOPIC_NOT_MODIFIED');
+      topic.name = params.name;
+      return respond(res, 200, { ok: true, result: true });
+    },
+    closeForumTopic(res, params) {
+      if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found');
+      const topic = topics.get(params.message_thread_id);
+      if (!topic || topic.deleted) return error(res, 400, 'Bad Request: TOPIC_ID_INVALID');
+      if (!mayManage() && topic.by !== 'bot') return error(res, 400, 'Bad Request: not enough rights to manage topics');
+      if (topic.closed) return error(res, 400, 'Bad Request: TOPIC_NOT_MODIFIED');
+      topic.closed = true;
+      return respond(res, 200, { ok: true, result: true });
+    },
+    reopenForumTopic(res, params) {
+      if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found');
+      const topic = topics.get(params.message_thread_id);
+      if (!topic || topic.deleted) return error(res, 400, 'Bad Request: TOPIC_ID_INVALID');
+      if (!mayManage() && topic.by !== 'bot') return error(res, 400, 'Bad Request: not enough rights to manage topics');
+      if (!topic.closed) return error(res, 400, 'Bad Request: TOPIC_NOT_MODIFIED');
+      topic.closed = false;
+      return respond(res, 200, { ok: true, result: true });
+    },
+    pinChatMessage(res, params) {
+      if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found');
+      if (!isAdmin() || chat.botRights.can_pin_messages !== true) return error(res, 400, 'Bad Request: not enough rights to pin a message');
+      const message = messages.get(params.message_id);
+      if (!message) return error(res, 400, 'Bad Request: message to pin not found');
+      message.pinned = { silent: params.disable_notification === true };
+      return respond(res, 200, { ok: true, result: true });
+    },
+    setMessageReaction(res, params) {
+      if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found');
+      if (!userMessages.has(params.message_id) && !messages.has(params.message_id)) return error(res, 400, 'Bad Request: message to react not found');
+      const list = params.reaction ?? [];
+      if (list.some((r) => r.type !== 'emoji' || !REACTIONS.includes(r.emoji))) return error(res, 400, 'Bad Request: REACTION_INVALID');
+      reactions.push({ messageId: params.message_id, emoji: list.map((r) => r.emoji) });
       return respond(res, 200, { ok: true, result: true });
     },
   };
@@ -212,7 +331,35 @@ export async function startFakeTelegram({ token = 'fake-telegram-token', userId 
     get description() {
       return description;
     },
+    botId,
+    topics,
+    reactions,
     callsTo: (method) => calls.filter((c) => c.method === method),
+    // Every visible string the bot sent (messages, buttons, answers, topic names, profile text) that holds an emoji.
+    emojiFindings: () => written.map((entry) => ({ ...entry, emoji: findEmoji(entry.text) })).filter((entry) => entry.emoji.length > 0),
+    written: () => [...written],
+    topicNamed: (part) => [...topics.values()].find((topic) => topic.name.includes(part)),
+    // Messages the bot sent into one topic, in order.
+    inTopic: (threadId) => [...messages.values()].filter((m) => m.thread === threadId),
+    setForum(value) {
+      chat.isForum = value;
+      chat.type = value ? 'supergroup' : 'private';
+    },
+    setBotRights(rights) {
+      chat.botRights = rights;
+    },
+    // The owner starts a topic in the group.
+    ownerTopic(name = 'Side topic') {
+      const id = nextMessageId++;
+      topics.set(id, { id, name, icon_color: ICON_COLORS[0], closed: false, deleted: false, by: 'owner' });
+      return id;
+    },
+    // The owner deletes a topic together with its messages.
+    deleteTopic(threadId) {
+      const topic = topics.get(threadId);
+      topic.deleted = true;
+      for (const [id, message] of messages) if (message.thread === threadId) messages.delete(id);
+    },
     // Bot messages in send order, with their current text after any edits.
     sent: () => [...messages.values()],
     lastMessage: () => [...messages.values()].at(-1),
@@ -223,24 +370,36 @@ export async function startFakeTelegram({ token = 'fake-telegram-token', userId 
     },
     clearFailures: () => failures.clear(),
     // Builds an update from the configured owner; pass `from` / `chat` to impersonate someone else.
-    message(text, { replyTo, from = userId, chat = chatId, extra = {} } = {}) {
-      return {
+    // With `thread` the message is written in that topic; like Telegram, it then replies to the topic's first message.
+    message(text, { replyTo, from = userId, chat: chatOf = chatId, thread, chatType, bot = false, extra = {} } = {}) {
+      const type = chatType ?? (chatOf === chatId ? chat.type : 'private');
+      const messageId = 5000 + nextUpdateId;
+      const inTopic = thread === undefined || thread === null ? {} : { message_thread_id: thread, is_topic_message: true };
+      const implicit = inTopic.message_thread_id && !replyTo ? { reply_to_message: { message_id: thread, forum_topic_created: { name: topics.get(thread)?.name ?? 'Topic', icon_color: ICON_COLORS[0] } } } : {};
+      const update = {
         update_id: nextUpdateId++,
         message: {
-          message_id: 5000 + nextUpdateId,
-          from: { id: from, is_bot: false },
-          chat: { id: chat, type: 'private' },
+          message_id: messageId,
+          from: { id: from, is_bot: bot },
+          chat: { id: chatOf, type },
           date: 0,
+          ...inTopic,
           ...(text === undefined ? {} : { text }),
+          ...implicit,
           ...(replyTo ? { reply_to_message: { message_id: replyTo } } : {}),
           ...extra,
         },
       };
+      userMessages.set(messageId, update.message);
+      return update;
     },
-    tap(messageId, data, { from = userId, chat = chatId } = {}) {
+    tap(messageId, data, { from = userId, chat: chatOf = chatId } = {}) {
+      const sent = messages.get(messageId);
+      const inTopic = sent?.thread ? { message_thread_id: sent.thread, is_topic_message: true } : {};
+      const type = chatOf === chatId ? chat.type : 'private';
       return {
         update_id: nextUpdateId++,
-        callback_query: { id: `cb-${nextUpdateId}`, from: { id: from, is_bot: false }, message: { message_id: messageId, chat: { id: chat, type: 'private' } }, data },
+        callback_query: { id: `cb-${nextUpdateId}`, from: { id: from, is_bot: false }, message: { message_id: messageId, chat: { id: chatOf, type }, ...inTopic }, data },
       };
     },
     tapButton(messageId, labelPart, options) {

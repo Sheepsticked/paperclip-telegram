@@ -96,6 +96,7 @@ export function parseConfig(raw) {
     c.pollSeconds === undefined || (typeof c.pollSeconds === 'number' && Number.isFinite(c.pollSeconds) && c.pollSeconds > 0),
     'pollSeconds must be a positive number when set',
   );
+  need(c.topics === undefined || c.topics === 'auto' || c.topics === 'off', 'topics must be "auto" or "off" when set');
   need(
     c.routineRunErrorCodes === undefined ||
       (Array.isArray(c.routineRunErrorCodes) && c.routineRunErrorCodes.every((code) => typeof code === 'string')),
@@ -119,6 +120,7 @@ export function parseConfig(raw) {
       paperclipTokenFile: expandHome(c.paperclipTokenFile),
       telegramApiUrl: trimSlash(c.telegramApiUrl ?? 'https://api.telegram.org'),
       pollSeconds: c.pollSeconds ?? 15,
+      topics: c.topics ?? 'auto',
       routineRunErrorCodes: c.routineRunErrorCodes ?? DEFAULT_ROUTINE_RUN_ERROR_CODES,
     },
   };
