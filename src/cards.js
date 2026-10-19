@@ -189,8 +189,8 @@ function composeText(card, uiBaseUrl, level, rich = false) {
     if (card.mode === 'form' && level.question > 0) {
       lines.push('');
       const numbered = card.questions.length > 1;
-      // A settled card whose outcome names the picked options shows them there only.
-      const picksInOutcome = Boolean(card.outcome?.detail);
+      // An answered card whose outcome names the picked options shows them there only.
+      const picksInOutcome = /^Answered/.test(card.outcome?.kind ?? '') && Boolean(card.outcome.detail);
       card.questions.forEach((q, index) => {
         lines.push(`${numbered ? `${index + 1}${rich ? '\\.' : '.'} ` : ''}${esc(truncate(q.prompt, level.question))}${q.required ? '' : ' (optional)'}`);
         const answer = card.answers[index];

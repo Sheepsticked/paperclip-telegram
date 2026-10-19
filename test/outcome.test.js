@@ -209,6 +209,18 @@ for (const rich of MODES) {
     assert.equal(posts(w, '/respond').length, 1);
   });
 
+  test(`${mode}: a form closed before it was sent keeps the options picked so far`, async (t) => {
+    const payload = questionsPayload([choiceQuestion('regions', 'Which regions?', ['EU', 'US'], { multi: true })]);
+    const { w, bot, clock, interaction, message } = await cardWorld(t, rich, { kind: 'ask_user_questions', payload });
+    await tap(w, bot, message, 'EU');
+    w.pc.resolveElsewhere(interaction.id, 'expired', { version: 1, outcome: 'superseded_by_comment' });
+    clock.at = SETTLED_AT;
+    await bot.pollOnce();
+    const after = textOf(w, message);
+    assert.ok(after.includes('Answer: EU'), after);
+    assert.ok(after.endsWith(`\n\n${block(rich, '<b>Closed</b> · replaced by a comment')}`), after);
+  });
+
   test(`${mode}: an answer that is only written has no detail`, async (t) => {
     const payload = questionsPayload([textQuestion('why', 'What is the reason?')]);
     const { w, bot, clock, message } = await cardWorld(t, rich, { kind: 'ask_user_questions', payload });
