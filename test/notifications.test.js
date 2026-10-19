@@ -426,3 +426,77 @@ test('a failing failed-run alert is retried on the next poll', async (t) => {
   assert.equal(w.tg.sent().length, 1);
   assert.match(w.tg.lastMessage().text, /Run failed/);
 });
+
+const REFUSED = { ok: false, error_code: 400, description: "Bad Request: can't parse entities" };
+const mentions = (part) => (params) => params.text.includes(part);
+
+test('a status message that is refused is tried on the next polls and given up after three tries', async (t) => {
+  const w = await world(t);
+  const bot = await w.primedBot();
+  const stuck = w.pc.addIssue({ title: 'Stuck update', status: 'in_progress' });
+  const fine = w.pc.addIssue({ title: 'Fine update', status: 'in_progress' });
+  await bot.pollOnce();
+  w.pc.setStatus(stuck.id, 'done');
+  w.pc.setStatus(fine.id, 'done');
+  w.tg.failNext('sendMessage', 400, REFUSED, Infinity, mentions('Stuck update'));
+  const attempts = () => w.tg.callsTo('sendMessage').filter((call) => call.params.text.includes('Stuck update')).length;
+
+  const before = bot.state.lastPollAt;
+  await bot.pollOnce();
+  assert.ok(w.tg.findMessage('Fine update'), 'the other task was still reported');
+  assert.ok(Date.parse(bot.state.lastPollAt) > Date.parse(before), 'the poll finished');
+  assert.equal(bot.state.statuses.get(stuck.id), 'in_progress', 'the failed change is not recorded');
+  assert.equal(attempts(), 1);
+
+  await bot.pollOnce();
+  assert.equal(attempts(), 2);
+  assert.equal(bot.state.statuses.get(stuck.id), 'in_progress');
+  assert.doesNotMatch(w.allLogText(), /gave up/);
+
+  await bot.pollOnce();
+  assert.equal(attempts(), 3);
+  assert.equal(bot.state.statuses.get(stuck.id), 'done', 'recorded after the third failed try');
+  assert.match(w.allLogText(), /warn gave up sending the done message of TST-1/);
+
+  await bot.pollOnce();
+  assert.equal(attempts(), 3, 'no fourth try');
+  assert.equal(w.tg.sent().filter((m) => m.text.includes('Fine update')).length, 1);
+});
+
+test('a status message that was refused is sent by a later poll after it left the update window', async (t) => {
+  const w = await world(t);
+  let clock = Date.now();
+  const bot = await w.primedBot({ now: () => clock });
+  const issue = w.pc.addIssue({ title: 'Late update', status: 'in_progress' });
+  await bot.pollOnce();
+  w.pc.setStatus(issue.id, 'done');
+  w.tg.failNext('sendMessage', 400, REFUSED, 1, mentions('Late update'));
+
+  clock += 3_600_000;
+  await bot.pollOnce();
+  assert.equal(w.tg.findMessage('Late update'), undefined);
+
+  clock += 3_600_000;
+  await bot.pollOnce();
+  assert.ok(w.tg.findMessage('Late update'), 'the retry reads the task again');
+  assert.equal(bot.state.statusRetries.size, 0);
+  assert.equal(bot.state.statuses.get(issue.id), 'done');
+});
+
+test('a Telegram outage while sending a status message keeps the change for the next poll', async (t) => {
+  const w = await world(t);
+  const bot = await w.primedBot();
+  const issue = w.pc.addIssue({ title: 'Eventually done', status: 'in_progress' });
+  await bot.pollOnce();
+  w.pc.setStatus(issue.id, 'done');
+
+  w.tg.failNext('sendMessage', 500, { ok: false, error_code: 500, description: 'Internal Server Error' }, Infinity);
+  const before = bot.state.lastPollAt;
+  await assert.rejects(bot.pollOnce(), /500/);
+  assert.equal(bot.state.lastPollAt, before, 'the window is read again');
+  assert.equal(bot.state.statusRetries.size, 0, 'an outage does not count as a failed try');
+
+  w.tg.clearFailures();
+  await bot.pollOnce();
+  assert.equal(w.tg.sent().filter((m) => m.text.includes('Eventually done')).length, 1);
+});

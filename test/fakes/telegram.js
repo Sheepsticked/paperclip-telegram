@@ -44,6 +44,7 @@ export async function startFakeTelegram({
   forum = false,
   botRights = FULL_RIGHTS,
   botId = 4242,
+  firstMessageId = 100,
 } = {}) {
   const chat = { type: forum ? 'supergroup' : 'private', isForum: forum, botRights: forum ? botRights : null };
   const calls = [];
@@ -60,7 +61,7 @@ export async function startFakeTelegram({
   const downloads = [];
   const downloadFailure = { status: null, drop: false };
   let nextFileNumber = 1;
-  let nextMessageId = 100;
+  let nextMessageId = firstMessageId;
   let nextUpdateId = 1;
   let commands = null;
   let shortDescription = null;
@@ -323,7 +324,7 @@ export async function startFakeTelegram({
       }
       calls.push({ method, params, at: Date.now() });
       const failure = failures.get(method);
-      if (failure) {
+      if (failure && (!failure.when || failure.when(params))) {
         if (failure.times !== Infinity) {
           failure.times -= 1;
           if (failure.times <= 0) failures.delete(method);
@@ -341,7 +342,9 @@ export async function startFakeTelegram({
     url: `http://127.0.0.1:${server.address().port}`,
     token,
     userId,
-    chatId,
+    get chatId() {
+      return chatId;
+    },
     calls,
     messages,
     callbackAnswers,
@@ -364,6 +367,16 @@ export async function startFakeTelegram({
     topicNamed: (part) => [...topics.values()].find((topic) => topic.name.includes(part)),
     // Messages the bot sent into one topic, in order.
     inTopic: (threadId) => [...messages.values()].filter((m) => m.thread === threadId),
+    // Moves the bot to another chat: the old chat's messages and topics are gone and message ids start again.
+    switchChat({ chatId: next, forum = false, botRights = FULL_RIGHTS } = {}) {
+      chatId = next;
+      chat.type = forum ? 'supergroup' : 'private';
+      chat.isForum = forum;
+      chat.botRights = forum ? botRights : null;
+      messages.clear();
+      topics.clear();
+      nextMessageId = 100;
+    },
     setForum(value) {
       chat.isForum = value;
       chat.type = value ? 'supergroup' : 'private';
@@ -388,8 +401,9 @@ export async function startFakeTelegram({
     lastMessage: () => [...messages.values()].at(-1),
     findMessage: (needle) => [...messages.values()].find((m) => m.text.includes(needle)),
     buttons: (messageId) => (messages.get(messageId)?.markup?.inline_keyboard ?? []).flat(),
-    failNext(method, status, body, times = 1) {
-      failures.set(method, { status, body, times });
+    // `when(params)` limits the failure to some calls of the method.
+    failNext(method, status, body, times = 1, when = null) {
+      failures.set(method, { status, body, times, when });
     },
     clearFailures: () => failures.clear(),
     // Builds an update from the configured owner; pass `from` / `chat` to impersonate someone else.

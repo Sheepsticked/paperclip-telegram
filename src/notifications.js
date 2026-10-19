@@ -1,8 +1,8 @@
 import { refreshCard, sendCard } from './actions.js';
 import { pollFollowing } from './follow.js';
 import { escapeHtml, firstLine, headline, issueUrl, link, prefixOf, runUrl, taskButton, truncate, truncateLines } from './format.js';
-import { guarded, isUnauthorized } from './guard.js';
-import { INBOX_KINDS, isFreshInbox, sendInboxItem, syncInbox } from './inbox.js';
+import { guarded, isTelegramOutage, isUnauthorized } from './guard.js';
+import { INBOX_KINDS, isFreshInbox, itemIssueId, sendInboxItem, syncInbox } from './inbox.js';
 import { PaperclipError } from './paperclip.js';
 import { allow, announceMuteEnd } from './settings.js';
 import { syncTopics } from './topics.js';
@@ -14,6 +14,7 @@ const SEED_PAGE = 500;
 const MAX_ISSUE_PAGES = 10;
 const LOOKBACK_MS = 5000;
 const NOTIFIED_STATUSES = new Set(['done', 'in_review']);
+const MAX_STATUS_TRIES = 3;
 
 const iso = (ms) => new Date(ms).toISOString();
 
@@ -86,6 +87,43 @@ async function sendEntries(bot, entries, cache, sentIssueIds) {
   return later;
 }
 
+// Which entries go first when only some of them are sent: questions and approvals, decisions, stalled reviews, the rest.
+function rank({ type, item }) {
+  if (type === 'card' || item.sourceKind === 'approval') return 0;
+  if (item.sourceKind === 'decision') return 1;
+  return item.sourceKind === 'review' && !isPlainReview(item) ? 2 : 3;
+}
+
+// Sends what is new. Entries that were never offered in this chat (everything on the first start, the inbox kinds after
+// an upgrade, cards and inbox items after a chat change) are held to INITIAL_LIMIT; the rest are skipped.
+async function sendFresh(bot, items, cache, sentIssueIds) {
+  const { state } = bot;
+  const firstStart = !state.initialSyncDone;
+  const limitCards = firstStart || state.cardResync;
+  const limitInbox = firstStart || !state.inboxSyncDone;
+  const limited = [];
+  const free = [];
+  for (const entry of freshEntries(bot, items)) {
+    if (!(entry.type === 'card' ? limitCards : limitInbox)) free.push(entry);
+    // A review of a task that is already in review is not news.
+    else if (entry.type === 'inbox' && isPlainReview(entry.item) && state.statuses.get(itemIssueId(entry.item)) === 'in_review') state.skipInbox(entry.item.dedupKey);
+    else limited.push(entry);
+  }
+  limited.sort((a, b) => rank(a) - rank(b));
+  const rest = limited.slice(INITIAL_LIMIT);
+  const reviews = await sendEntries(bot, [...limited.slice(0, INITIAL_LIMIT), ...free], cache, sentIssueIds);
+  for (const { type, item } of rest) {
+    if (type === 'card') state.skipCard(item.subject.id);
+    else state.skipInbox(item.dedupKey);
+  }
+  state.initialSyncDone = true;
+  state.inboxSyncDone = true;
+  state.cardResync = false;
+  state.save();
+  if (rest.length > 0) await guarded(bot, 'the first-start summary', () => bot.send(`+${rest.length} more, see /status`));
+  return reviews;
+}
+
 // Issues that already have a card, an approval message or an in-review message.
 function coveredIssueIds(bot, items, sentIssueIds, reviewedIssueIds) {
   const { state } = bot;
@@ -96,8 +134,12 @@ function coveredIssueIds(bot, items, sentIssueIds, reviewedIssueIds) {
 }
 
 async function sendReviews(bot, reviews, covered) {
+  const { state } = bot;
   for (const item of reviews) {
-    if (covered.has(item.subject?.id)) bot.state.skipInbox(item.dedupKey);
+    const id = item.subject?.id;
+    // An in-review message already went out for the task, in this poll or an earlier one.
+    const announced = state.reviewSent.has(id) && state.statuses.get(id) === 'in_review';
+    if (covered.has(id) || announced) state.skipInbox(item.dedupKey);
     else await guarded(bot, `review ${item.subject?.identifier ?? item.subject?.id}`, () => sendInboxItem(bot, item));
   }
   bot.state.save();
@@ -188,26 +230,81 @@ async function sendStatusUpdate(bot, issue) {
   return excerpt ? comment.id : null;
 }
 
+// Issues whose status message failed earlier may have left the update window, so they are read again.
+async function retriedIssues(bot, updated) {
+  const { state } = bot;
+  const inWindow = new Set(updated.map((issue) => issue.id));
+  const issues = [];
+  for (const issueId of [...state.statusRetries.keys()]) {
+    if (inWindow.has(issueId)) continue;
+    const issue = await guarded(bot, `the retry of ${issueId}`, async () => {
+      try {
+        return await bot.pc.getIssue(issueId);
+      } catch (err) {
+        if (err instanceof PaperclipError && err.status === 404) return null;
+        throw err;
+      }
+    });
+    if (issue) issues.push(issue);
+    else if (issue === null) state.statusRetries.delete(issueId);
+  }
+  return issues;
+}
+
+// Sends one done / in-review message. A failed one is tried again on the next poll and given up after MAX_STATUS_TRIES.
+async function deliverStatus(bot, issue, quoted, reviewed) {
+  const { state } = bot;
+  try {
+    const quote = await sendStatusUpdate(bot, issue);
+    if (quote) quoted.add(quote);
+    if (issue.status === 'in_review') {
+      reviewed.add(issue.id);
+      state.noteReviewSent(issue.id);
+    }
+  } catch (err) {
+    if (isUnauthorized(err) || isTelegramOutage(err)) throw err;
+    const tries = state.noteStatusFailure(issue.id, issue.status);
+    if (tries < MAX_STATUS_TRIES) {
+      bot.log.warn(`could not send the ${issue.status} message of ${issue.identifier}; trying again`, { error: err.message });
+      state.save();
+      return;
+    }
+    bot.log.warn(`gave up sending the ${issue.status} message of ${issue.identifier}`, { error: err.message });
+  }
+  state.statuses.set(issue.id, issue.status);
+  state.statusRetries.delete(issue.id);
+  state.save();
+}
+
 async function reportStatusChanges(bot, sentIssueIds) {
   const { state } = bot;
   const since = iso(Date.parse(state.lastPollAt) - LOOKBACK_MS);
   const baseline = Date.parse(state.baselineAt);
   const pendingIssueIds = new Set(state.pendingCards().map((card) => card.issueId));
   const changes = [];
-  const updated = await listUpdatedIssues(bot, since);
+  const windowIssues = await listUpdatedIssues(bot, since);
+  const updated = [...windowIssues, ...(await retriedIssues(bot, windowIssues))];
 
   for (const issue of updated) {
     const previous = state.statuses.get(issue.id);
     const changed = previous === undefined ? Date.parse(issue.createdAt) > baseline : previous !== issue.status;
     const covered = issue.status === 'in_review' && (sentIssueIds.has(issue.id) || pendingIssueIds.has(issue.id));
-    if (changed && NOTIFIED_STATUSES.has(issue.status) && !covered) changes.push(issue);
-    else state.statuses.set(issue.id, issue.status);
+    if (previous === 'in_review' && issue.status !== 'in_review') state.reviewSent.delete(issue.id);
+    if (changed && NOTIFIED_STATUSES.has(issue.status) && !covered) {
+      changes.push(issue);
+    } else {
+      state.statuses.set(issue.id, issue.status);
+      state.statusRetries.delete(issue.id);
+    }
   }
 
   // Turned-off and muted kinds are dropped here (muted ones are counted for the catch-up line).
   const outgoing = changes.filter((issue) => {
     const send = allow(bot, issue.status === 'done' ? 'done' : 'inReview');
-    if (!send) state.statuses.set(issue.id, issue.status);
+    if (!send) {
+      state.statuses.set(issue.id, issue.status);
+      state.statusRetries.delete(issue.id);
+    }
     return send;
   });
 
@@ -218,18 +315,16 @@ async function reportStatusChanges(bot, sentIssueIds) {
     await bot.send(`${done} done, ${outgoing.length - done} in review since the last check, see /status`);
     for (const issue of outgoing) {
       state.statuses.set(issue.id, issue.status);
-      if (issue.status === 'in_review') reviewed.add(issue.id);
+      state.statusRetries.delete(issue.id);
+      if (issue.status === 'in_review') {
+        reviewed.add(issue.id);
+        state.noteReviewSent(issue.id);
+      }
     }
   } else {
-    for (const issue of outgoing.reverse()) {
-      const quote = await sendStatusUpdate(bot, issue);
-      if (quote) quoted.add(quote);
-      if (issue.status === 'in_review') reviewed.add(issue.id);
-      state.statuses.set(issue.id, issue.status);
-      state.save();
-    }
+    for (const issue of outgoing.reverse()) await deliverStatus(bot, issue, quoted, reviewed);
   }
-  await syncTopics(bot, updated);
+  await guarded(bot, 'the topic sync', () => syncTopics(bot, updated));
   await pollFollowing(bot, updated, quoted);
   return reviewed;
 }
@@ -256,24 +351,10 @@ export async function pollPaperclip(bot) {
   const failedRuns = items.filter((item) => item.sourceKind === 'failed_run');
   const cache = new Map();
   const sentIssueIds = new Set();
-  let reviews;
-
-  if (!state.initialSyncDone) {
-    const fresh = freshEntries(bot, items);
-    reviews = await sendEntries(bot, fresh.slice(0, INITIAL_LIMIT), cache, sentIssueIds);
-    const rest = fresh.slice(INITIAL_LIMIT);
-    for (const { type, item } of rest) {
-      if (type === 'card') state.skipCard(item.subject.id);
-      else state.skipInbox(item.dedupKey);
-    }
-    for (const item of failedRuns) state.markRunAlerted(item.subject.id);
-    state.initialSyncDone = true;
-    state.save();
-    if (rest.length > 0) await guarded(bot, 'the first-start summary', () => bot.send(`+${rest.length} more, see /status`));
-  } else {
-    reviews = await sendEntries(bot, freshEntries(bot, items), cache, sentIssueIds);
-    await alertFailedRuns(bot, failedRuns);
-  }
+  const firstStart = !state.initialSyncDone;
+  if (firstStart) for (const item of failedRuns) state.markRunAlerted(item.subject.id);
+  const reviews = await sendFresh(bot, items, cache, sentIssueIds);
+  if (!firstStart) await alertFailedRuns(bot, failedRuns);
 
   await syncPendingCards(bot, feedCards, cache);
   await syncInbox(bot, items, complete);

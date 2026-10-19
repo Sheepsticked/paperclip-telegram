@@ -422,6 +422,112 @@ test('State keeps the file and the chosen agent of an offer', (t) => {
   assert.equal(offer.agentId, 'agent-1');
 });
 
+test('State drops unusable entries of the follow list, the offers and the counters when it loads', (t) => {
+  const file = path.join(tempDir(t), 'state.json');
+  const offer = { text: 'x', messageId: 5, updateId: 3, at: 10, thread: null, file: null, agentId: null };
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      following: {
+        a: null,
+        b: { title: 'no identifier' },
+        c: { identifier: 'TST-1', title: 'T', status: 'todo', lastSeenCommentId: 7, lastSeenAt: 3, retry: -2 },
+        d: 'text',
+        e: { identifier: 'TST-2', title: 'U', status: 'todo', lastSeenCommentId: 'k', lastSeenAt: '2030-01-01T00:00:00Z', retry: 2 },
+      },
+      offers: {
+        1: offer,
+        2: { ...offer, text: 5 },
+        3: { ...offer, messageId: 'x' },
+        4: { ...offer, file: { fileId: 3 } },
+        5: null,
+        6: { ...offer, at: 'late' },
+        7: { ...offer, thread: 'a' },
+      },
+      offerCounter: -1,
+      prefixCounts: { TST: 3, BAD: 'x', NEG: -2, ZERO: 0 },
+      reviewSent: ['a', 5, null],
+      statusRetries: { a: { status: 'done', tries: 2 }, b: { status: 3, tries: 1 }, c: { status: 'done', tries: 0 }, d: 'x' },
+    }),
+  );
+  const state = State.load(file);
+  assert.deepEqual([...state.following.keys()], ['c', 'e']);
+  assert.deepEqual(state.following.get('c'), { identifier: 'TST-1', title: 'T', status: 'todo', lastSeenCommentId: null, lastSeenAt: null, retry: 0 });
+  assert.deepEqual(state.following.get('e'), { identifier: 'TST-2', title: 'U', status: 'todo', lastSeenCommentId: 'k', lastSeenAt: '2030-01-01T00:00:00Z', retry: 2 });
+  assert.deepEqual([...state.offers.keys()], ['1']);
+  assert.equal(state.offerCounter, 0);
+  assert.deepEqual(state.prefixCounts, { TST: 3 });
+  assert.deepEqual([...state.reviewSent], ['a']);
+  assert.deepEqual([...state.statusRetries], [['a', { status: 'done', tries: 2 }]]);
+
+  fs.writeFileSync(file, JSON.stringify({ following: [1, 2], offers: 'x', prefixCounts: [3], reviewSent: 'x', statusRetries: 3, offerCounter: 'x' }));
+  const hand = State.load(file);
+  assert.equal(hand.following.size + hand.offers.size + hand.reviewSent.size + hand.statusRetries.size, 0);
+  assert.deepEqual(hand.prefixCounts, {});
+  assert.equal(hand.offerCounter, 0);
+});
+
+test('State remembers review messages and failed status messages with a cap and a try count', (t) => {
+  const state = new State(path.join(tempDir(t), 'state.json'));
+  for (let i = 0; i < 2005; i += 1) state.noteReviewSent(`issue-${i}`);
+  assert.equal(state.reviewSent.size, 2000);
+  assert.equal(state.reviewSent.has('issue-4'), false);
+  assert.equal(state.reviewSent.has('issue-2004'), true);
+
+  assert.equal(state.noteStatusFailure('a', 'done'), 1);
+  assert.equal(state.noteStatusFailure('a', 'done'), 2);
+  assert.equal(state.noteStatusFailure('a', 'in_review'), 1, 'a different status starts again');
+  for (let i = 0; i < 205; i += 1) state.noteStatusFailure(`issue-${i}`, 'done');
+  assert.equal(state.statusRetries.size, 200);
+});
+
+test('State takes the configured chat and drops what depends on the old chat when it changes', (t) => {
+  const file = path.join(tempDir(t), 'state.json');
+  const state = new State(file);
+  const record = { key: '1', kind: 'approval', dedupKey: 'approval:1', status: 'open', messageIds: [5], facts: [], options: [], resolvedAt: null };
+  state.offset = 42;
+  state.mapMessage(7, 'issue-1', 'TST-1');
+  state.cards.set('1', { key: '1', interactionId: 'i-1', status: 'pending', messageId: 8 });
+  state.inbox.set('1', record);
+  state.addOffer('text', 5, 6, 0, null);
+  state.topics.set('root-1', { thread: 9, identifier: 'TST-1', title: 'T', closed: null });
+  state.noteRoot('issue-1', 'root-1');
+  state.statuses.set('issue-1', 'done');
+  state.alertedRuns.push('run-1');
+  state.skipCard('i-9');
+  state.skipInbox('join:1');
+  state.noteReviewSent('issue-1');
+  state.follow('issue-1', { identifier: 'TST-1', title: 'T', status: 'todo', lastSeenCommentId: 'c', lastSeenAt: '2030-01-01T00:00:00Z', retry: 0 });
+  state.inboxSyncDone = true;
+
+  assert.equal(state.adoptChat(10), false, 'a state without a chat only takes it');
+  assert.equal(state.messages.size, 1);
+  assert.equal(state.adoptChat(10), false);
+  assert.equal(state.inboxSyncDone, true);
+  state.save();
+  assert.equal(State.load(file).chatId, 10);
+
+  assert.equal(state.adoptChat(-100), true);
+  assert.equal(state.chatId, -100);
+  for (const dropped of [state.messages, state.identifiers, state.cards, state.inbox, state.offers, state.topics]) assert.equal(dropped.size, 0);
+  assert.equal(state.inboxSyncDone, false);
+  assert.equal(state.cardResync, true);
+  assert.equal(state.offset, 42);
+  assert.equal(state.statuses.get('issue-1'), 'done');
+  assert.equal(state.roots.get('issue-1'), 'root-1');
+  assert.deepEqual(state.alertedRuns, ['run-1']);
+  assert.deepEqual(state.skippedCards, ['i-9']);
+  assert.deepEqual(state.skippedInbox, ['join:1']);
+  assert.ok(state.reviewSent.has('issue-1'));
+  assert.equal(state.following.get('issue-1').lastSeenCommentId, 'c');
+
+  state.save();
+  const loaded = State.load(file);
+  assert.equal(loaded.chatId, -100);
+  assert.equal(loaded.cardResync, true);
+  assert.equal(loaded.inboxSyncDone, false);
+});
+
 test('parseTaskRef accepts identifiers in any case and bare numbers with a default prefix', () => {
   assert.equal(parseTaskRef('TST-12'), 'TST-12');
   assert.equal(parseTaskRef(' tst-012 '), 'TST-12');

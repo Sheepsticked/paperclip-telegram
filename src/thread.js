@@ -63,7 +63,7 @@ export function replyTarget(msg) {
 
 // True when Telegram says the topic does not exist (any more).
 export function threadGone(err) {
-  return err instanceof TelegramError && /message thread not found|TOPIC_ID_INVALID/i.test(err.description ?? '');
+  return err instanceof TelegramError && /message thread not found|TOPIC_ID_INVALID|TOPIC_DELETED/i.test(err.description ?? '');
 }
 
 export function topicUnchanged(err) {

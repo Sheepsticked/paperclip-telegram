@@ -1,6 +1,6 @@
 import { followIssue } from './follow.js';
 import { truncate } from './format.js';
-import { guarded } from './guard.js';
+import { guarded, isUnauthorized } from './guard.js';
 import { PaperclipError } from './paperclip.js';
 import { loadTask, sendLoadedView } from './tasks.js';
 import { TelegramError } from './telegram.js';
@@ -147,6 +147,7 @@ async function createTopic(bot, rootId, kind) {
 }
 
 // Where a message about `issue` goes: its top-level task's topic (made on first use), or the main chat.
+// A failure to find or make the topic (anything but a rejected token) sends this message to the main chat.
 export async function topicTarget(bot, issue, { kind = 'Task' } = {}) {
   await bot.topicsReady();
   if (!bot.topics.on) return NO_TOPIC;
@@ -154,11 +155,21 @@ export async function topicTarget(bot, issue, { kind = 'Task' } = {}) {
   try {
     rootId = await rootOf(bot, issue);
   } catch (err) {
+    if (isUnauthorized(err)) throw err;
     if (err instanceof PaperclipError && err.status === 404) return NO_TOPIC;
-    throw err;
+    warnTopics(bot, 'could not find the topic of a task, using the main chat', { error: err.message });
+    return NO_TOPIC;
   }
   const topic = bot.state.topics.get(rootId);
-  const thread = topic ? topic.thread : await createTopic(bot, rootId, kind);
+  let thread = topic?.thread ?? null;
+  if (!topic) {
+    try {
+      thread = await createTopic(bot, rootId, kind);
+    } catch (err) {
+      if (isUnauthorized(err) || err.aborted) throw err;
+      warnTopics(bot, 'could not make the topic of a task, using the main chat', { error: err.message });
+    }
+  }
   return { thread, own: thread !== null && rootId === issue.id, rootId };
 }
 

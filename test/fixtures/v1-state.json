@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "offset": 0,
+  "cardCounter": 2,
+  "cards": {
+    "1": {
+      "key": "1",
+      "interactionId": "interaction-2",
+      "issueId": "issue-4",
+      "identifier": "TST-4",
+      "issueTitle": "Plan the next sprint",
+      "kind": "request_confirmation",
+      "mode": "confirm",
+      "status": "resolved",
+      "messageId": 100,
+      "resolvedAt": "1970-01-01T00:00:00.000Z",
+      "resolution": "✅ Confirmed in Paperclip",
+      "policy": "anyone",
+      "cardTitle": null,
+      "prompt": "Deploy the change?",
+      "details": null,
+      "toolAction": null,
+      "note": null,
+      "reasonPromptMessageId": null,
+      "confirm": {
+        "acceptLabel": "Deploy",
+        "rejectLabel": "Hold",
+        "requiresReason": false,
+        "reasonLabel": null
+      }
+    },
+    "2": {
+      "key": "2",
+      "interactionId": "interaction-1",
+      "issueId": "issue-1",
+      "identifier": "TST-1",
+      "issueTitle": "Prepare the release",
+      "kind": "ask_user_questions",
+      "mode": "form",
+      "status": "pending",
+      "messageId": 101,
+      "resolvedAt": null,
+      "resolution": null,
+      "policy": "anyone",
+      "cardTitle": null,
+      "prompt": null,
+      "details": null,
+      "toolAction": null,
+      "note": null,
+      "reasonPromptMessageId": null,
+      "questions": [
+        {
+          "id": "why",
+          "header": null,
+          "prompt": "What is the reason?",
+          "required": true,
+          "mode": "text",
+          "options": []
+        }
+      ],
+      "answers": [
+        {
+          "sel": [],
+          "text": null
+        }
+      ],
+      "submitLabel": "Submit"
+    }
+  },
+  "messages": [
+    [
+      100,
+      "issue-4"
+    ],
+    [
+      101,
+      "issue-1"
+    ],
+    [
+      102,
+      "issue-2"
+    ],
+    [
+      103,
+      "issue-3"
+    ],
+    [
+      104,
+      "issue-1"
+    ]
+  ],
+  "identifiers": {
+    "issue-4": "TST-4",
+    "issue-1": "TST-1",
+    "issue-2": "TST-2",
+    "issue-3": "TST-3"
+  },
+  "alertedRuns": [
+    "run-1"
+  ],
+  "skippedCards": [],
+  "statuses": {
+    "issue-4": "todo",
+    "issue-3": "done",
+    "issue-2": "in_review",
+    "issue-1": "in_progress"
+  },
+  "baselineAt": "1970-01-01T00:00:00.000Z",
+  "initialSyncDone": true,
+  "lastPollAt": "1970-01-01T00:00:00.000Z",
+  "lastAuthAlertAt": null
+}

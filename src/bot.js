@@ -63,6 +63,10 @@ export class Bot {
     this.topicWarnedAt = null;
     this.ignoredChats = new Set();
     this.topicCheck = null;
+    if (state.adoptChat(config.telegramChatId)) {
+      log.info('chat changed: dropped the message ids of the old chat; open cards and inbox items are sent again');
+      state.save();
+    }
   }
 
   // Every outgoing message goes to the one configured chat; `thread` picks a topic (none means the main chat).
@@ -83,17 +87,27 @@ export class Bot {
     return sent.message_id;
   }
 
-  // Sends a message about a task into its top-level task's topic; a deleted topic is made again once.
+  // Sends a message about a task into its top-level task's topic. A deleted topic is made again once;
+  // any other refusal of the topic send goes to the main chat once.
   // `build({ own })` returns { text, keyboard }; own is true when the message lands in the task's own topic.
   async sendAbout(issue, build, { replyTo, kind } = {}) {
     let target = await topicTarget(this, issue, { kind });
+    const refusedInTopic = (err) => target.thread !== null && err instanceof TelegramError && err.code === 400;
     try {
       return await this.#sendInTopic(target, issue, build, replyTo);
     } catch (err) {
-      if (target.thread === null || !threadGone(err)) throw err;
-      dropTopic(this, target.rootId);
-      target = await topicTarget(this, issue, { kind });
-      return this.#sendInTopic(target, issue, build, replyTo);
+      if (!refusedInTopic(err)) throw err;
+      if (threadGone(err)) {
+        dropTopic(this, target.rootId);
+        target = await topicTarget(this, issue, { kind });
+        try {
+          return await this.#sendInTopic(target, issue, build, replyTo);
+        } catch (again) {
+          if (!refusedInTopic(again)) throw again;
+        }
+      }
+      this.log.warn('a topic refused a message, sending it to the main chat', { error: err.message });
+      return this.#sendInTopic({ thread: null, own: false, rootId: target.rootId }, issue, build, replyTo);
     }
   }
 

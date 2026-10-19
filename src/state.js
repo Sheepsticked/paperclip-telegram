@@ -11,6 +11,8 @@ const MAX_FOLLOWING = 50;
 const MAX_OFFERS = 20;
 const OFFER_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_ROOTS = 2000;
+const MAX_REVIEW_SENT = 2000;
+const MAX_STATUS_RETRIES = 200;
 
 export const DEFAULT_SETTINGS = {
   done: true,
@@ -48,6 +50,71 @@ function loadRoots(saved) {
   return new Map(entries.slice(-MAX_ROOTS));
 }
 
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const stringOrNull = (value) => (typeof value === 'string' ? value : null);
+
+// Followed tasks from a saved file; an entry without an identifier is dropped.
+function loadFollowing(saved) {
+  const following = new Map();
+  for (const [issueId, entry] of Object.entries(isObject(saved) ? saved : {})) {
+    if (!isObject(entry) || typeof entry.identifier !== 'string') continue;
+    following.set(issueId, {
+      identifier: entry.identifier,
+      title: String(entry.title ?? ''),
+      status: String(entry.status ?? ''),
+      lastSeenCommentId: stringOrNull(entry.lastSeenCommentId),
+      lastSeenAt: stringOrNull(entry.lastSeenAt),
+      retry: Number.isInteger(entry.retry) && entry.retry > 0 ? entry.retry : 0,
+    });
+  }
+  return following;
+}
+
+// Pending "create a task" offers from a saved file; an entry that cannot be used is dropped.
+function loadOffers(saved) {
+  const offers = new Map();
+  for (const [key, offer] of Object.entries(isObject(saved) ? saved : {})) {
+    const usable =
+      isObject(offer) &&
+      typeof offer.text === 'string' &&
+      Number.isFinite(offer.at) &&
+      Number.isInteger(offer.messageId) &&
+      (offer.thread === null || offer.thread === undefined || Number.isInteger(offer.thread)) &&
+      (offer.file === null || offer.file === undefined || (isObject(offer.file) && typeof offer.file.fileId === 'string' && typeof offer.file.name === 'string'));
+    if (!usable) continue;
+    offers.set(key, {
+      text: offer.text,
+      messageId: offer.messageId,
+      updateId: Number.isInteger(offer.updateId) ? offer.updateId : 0,
+      at: offer.at,
+      thread: offer.thread ?? null,
+      file: offer.file ?? null,
+      agentId: stringOrNull(offer.agentId),
+    });
+  }
+  return offers;
+}
+
+function loadPrefixCounts(saved) {
+  const counts = {};
+  for (const [prefix, count] of Object.entries(isObject(saved) ? saved : {})) if (Number.isInteger(count) && count > 0) counts[prefix] = count;
+  return counts;
+}
+
+function loadReviewSent(saved) {
+  const ids = Array.isArray(saved) ? saved.filter((id) => typeof id === 'string') : [];
+  return new Set(ids.slice(-MAX_REVIEW_SENT));
+}
+
+// Failed status messages that are tried again: issue id to the status and the number of failed tries.
+function loadStatusRetries(saved) {
+  const retries = new Map();
+  for (const [issueId, entry] of Object.entries(isObject(saved) ? saved : {})) {
+    if (isObject(entry) && typeof entry.status === 'string' && Number.isInteger(entry.tries) && entry.tries > 0) retries.set(issueId, { status: entry.status, tries: entry.tries });
+  }
+  return retries;
+}
+
 // Inbox records from a saved file; an entry that is not usable is dropped.
 function loadInbox(saved) {
   const inbox = new Map();
@@ -68,6 +135,7 @@ function loadInbox(saved) {
 export class State {
   constructor(file, data = {}) {
     this.file = file;
+    this.chatId = Number.isFinite(data.chatId) ? data.chatId : null;
     this.offset = data.offset ?? 0;
     this.cardCounter = data.cardCounter ?? 0;
     this.cards = new Map(Object.entries(data.cards ?? {}));
@@ -81,15 +149,19 @@ export class State {
     this.statuses = new Map(Object.entries(data.statuses ?? {}));
     this.baselineAt = data.baselineAt ?? null;
     this.initialSyncDone = data.initialSyncDone ?? false;
+    this.inboxSyncDone = data.inboxSyncDone === true;
+    this.cardResync = data.cardResync === true;
     this.lastPollAt = data.lastPollAt ?? null;
     this.lastAuthAlertAt = data.lastAuthAlertAt ?? null;
     this.settings = loadSettings(data.settings);
     this.muteUntil = data.muteUntil ?? null;
     this.mutedCounts = loadMutedCounts(data.mutedCounts);
-    this.following = new Map(Object.entries(data.following ?? {}));
-    this.offers = new Map(Object.entries(data.offers ?? {}));
-    this.offerCounter = data.offerCounter ?? 0;
-    this.prefixCounts = data.prefixCounts ?? {};
+    this.following = loadFollowing(data.following);
+    this.offers = loadOffers(data.offers);
+    this.offerCounter = Number.isInteger(data.offerCounter) && data.offerCounter >= 0 ? data.offerCounter : 0;
+    this.prefixCounts = loadPrefixCounts(data.prefixCounts);
+    this.reviewSent = loadReviewSent(data.reviewSent);
+    this.statusRetries = loadStatusRetries(data.statusRetries);
     this.topics = loadTopics(data.topics);
     this.roots = loadRoots(data.roots);
   }
@@ -110,6 +182,24 @@ export class State {
       log?.warn('state file was not valid JSON; moved aside and starting fresh');
       return new State(file);
     }
+  }
+
+  // Takes the configured chat. When the saved chat differs, everything tied to its message ids is dropped
+  // (message ids restart in every chat) and the open cards and inbox items are sent again to the new one.
+  adoptChat(chatId) {
+    if (this.chatId === chatId) return false;
+    const changed = this.chatId !== null;
+    this.chatId = chatId;
+    if (!changed) return false;
+    this.messages.clear();
+    this.identifiers.clear();
+    this.cards.clear();
+    this.inbox.clear();
+    this.offers.clear();
+    this.topics.clear();
+    this.inboxSyncDone = false;
+    this.cardResync = true;
+    return true;
   }
 
   nextCardKey() {
@@ -175,6 +265,23 @@ export class State {
       if (this.inbox.size <= MAX_INBOX) break;
       if (record.status === 'resolved') this.inbox.delete(key);
     }
+  }
+
+  // Remembers that an in-review message went out for the task.
+  noteReviewSent(issueId) {
+    this.reviewSent.delete(issueId);
+    this.reviewSent.add(issueId);
+    while (this.reviewSent.size > MAX_REVIEW_SENT) this.reviewSent.delete(this.reviewSent.values().next().value);
+  }
+
+  // Counts a failed status message; returns the number of failed tries for this issue and status.
+  noteStatusFailure(issueId, status) {
+    const previous = this.statusRetries.get(issueId);
+    const tries = (previous?.status === status ? previous.tries : 0) + 1;
+    this.statusRetries.delete(issueId);
+    this.statusRetries.set(issueId, { status, tries });
+    while (this.statusRetries.size > MAX_STATUS_RETRIES) this.statusRetries.delete(this.statusRetries.keys().next().value);
+    return tries;
   }
 
   pendingCards() {
@@ -281,6 +388,7 @@ export class State {
     const referenced = new Set(this.messages.values());
     return {
       version: 2,
+      chatId: this.chatId,
       offset: this.offset,
       cardCounter: this.cardCounter,
       cards: Object.fromEntries(this.cards),
@@ -294,6 +402,8 @@ export class State {
       statuses: Object.fromEntries(this.statuses),
       baselineAt: this.baselineAt,
       initialSyncDone: this.initialSyncDone,
+      inboxSyncDone: this.inboxSyncDone,
+      cardResync: this.cardResync,
       lastPollAt: this.lastPollAt,
       lastAuthAlertAt: this.lastAuthAlertAt,
       settings: this.settings,
@@ -305,6 +415,8 @@ export class State {
       prefixCounts: this.prefixCounts,
       topics: Object.fromEntries(this.topics),
       roots: Object.fromEntries(this.roots),
+      reviewSent: [...this.reviewSent],
+      statusRetries: Object.fromEntries(this.statusRetries),
     };
   }
 

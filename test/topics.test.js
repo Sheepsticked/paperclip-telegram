@@ -364,15 +364,64 @@ test('a deleted topic is made again once and the message is resent there', async
   assert.ok(w.tg.inTopic(fresh).some((m) => m.pinned), 'the view was pinned again');
 });
 
-test('a topic that keeps vanishing is made again only once per message', async (t) => {
+test('a topic that keeps vanishing is made again only once per message, then the message goes to General', async (t) => {
   const { w, bot } = await setup(t);
   const { issue, thread } = await taskWithTopic(w, bot);
   w.tg.deleteTopic(thread);
-  w.tg.failNext('sendMessage', 400, THREAD_GONE, Infinity);
+  w.tg.failNext('sendMessage', 400, THREAD_GONE, Infinity, (params) => params.message_thread_id !== undefined);
   w.pc.addComment(issue.id, { body: 'Doomed' });
-  await assert.rejects(bot.pollOnce(), /message thread not found/);
+  await bot.pollOnce();
   assert.ok(w.tg.callsTo('createForumTopic').length <= 2, 'no creation loop');
   assert.ok(w.tg.callsTo('sendMessage').length <= 8, 'no send loop');
+  const arrived = w.tg.sent().find((m) => m.text.includes('Doomed'));
+  assert.ok(arrived, 'the comment still reached the chat');
+  assert.equal(arrived.thread, null, 'in General');
+  assert.match(logText(w), /a topic refused a message, sending it to the main chat/);
+});
+
+test('any other refusal of a send inside a topic goes to General once', async (t) => {
+  const { w, bot } = await setup(t);
+  const { issue } = await taskWithTopic(w, bot);
+  w.tg.failNext('sendMessage', 400, { ok: false, error_code: 400, description: 'Bad Request: TOPIC_CLOSED' }, Infinity, (params) => params.message_thread_id !== undefined);
+  w.pc.addComment(issue.id, { body: 'Closed topic note' });
+  await bot.pollOnce();
+  const arrived = w.tg.sent().find((m) => m.text.includes('Closed topic note'));
+  assert.equal(arrived?.thread, null);
+  assert.equal(w.tg.callsTo('createForumTopic').length, 1, 'the topic is not recreated for another refusal');
+});
+
+test('a thread id the server calls invalid or deleted makes the topic again', async (t) => {
+  for (const description of ['Bad Request: TOPIC_ID_INVALID', 'Bad Request: TOPIC_DELETED']) {
+    const { w, bot } = await setup(t);
+    const { issue, thread } = await taskWithTopic(w, bot);
+    w.tg.failNext('sendMessage', 400, { ok: false, error_code: 400, description }, 1, (params) => params.message_thread_id === thread);
+    w.pc.addComment(issue.id, { body: 'Update after the change' });
+    await bot.pollOnce();
+    const fresh = bot.state.topics.get(issue.id).thread;
+    assert.notEqual(fresh, thread, description);
+    assert.ok(w.tg.inTopic(fresh).some((m) => m.text.includes('Update after the change')), description);
+  }
+});
+
+test('a failing root lookup sends to General, caches nothing and warns once an hour', async (t) => {
+  const { w, bot } = await setup(t);
+  const first = w.pc.addIssue({ title: 'First job', status: 'in_progress' });
+  const second = w.pc.addIssue({ title: 'Second job', status: 'in_progress' });
+  const child = w.pc.addIssue({ title: 'Child job', status: 'in_progress', parentId: first.id });
+  await bot.pollOnce();
+  const before = bot.state.lastPollAt;
+  w.pc.failRequests('GET', new RegExp(`/api/issues/${first.id}$`), 500);
+  w.pc.setStatus(child.id, 'in_review');
+  w.pc.setStatus(second.id, 'in_review');
+  await bot.pollOnce();
+
+  const notices = w.tg.sent().filter((m) => m.text.startsWith('<b>In review</b>'));
+  assert.equal(notices.length, 2, 'both messages went out');
+  assert.ok(Date.parse(bot.state.lastPollAt) > Date.parse(before), 'the poll finished');
+  assert.equal(notices.find((m) => m.text.includes('TST-3')).thread, null, 'the broken root sent to General');
+  assert.ok(notices.find((m) => m.text.includes('TST-2')).thread !== null, 'the other task kept its topic');
+  assert.equal(bot.state.topics.has(child.id), false, 'the root was not cached');
+  assert.equal(logText(w).split('could not find the topic of a task').length - 1, 1, 'one warning');
 });
 
 test('when a topic cannot be created the message goes to General, with one warning an hour', async (t) => {

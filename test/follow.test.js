@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import test from 'node:test';
 import { followIssue } from '../src/follow.js';
@@ -210,7 +211,7 @@ test('a followed task that vanished is dropped, and one failing task does not st
   assert.equal(followMessages(w).length, 1);
   assert.ok(followMessages(w)[0].text.includes('Readable'));
   assert.ok(bot.state.isFollowing(broken.id), 'a server error is retried later');
-  assert.ok(w.allLogText().includes('could not read the comments of TST-1'));
+  assert.ok(w.allLogText().includes('could not follow the comments of TST-1'));
 
   w.pc.failRequests('GET', new RegExp(`/api/issues/${broken.id}/comments$`), 404, 1);
   w.pc.setStatus(broken.id, 'in_progress');
@@ -260,4 +261,46 @@ test('a rejected token during the follow read fails the poll instead of losing c
   await assert.rejects(() => bot.pollOnce(), (err) => err.status === 401);
   await bot.pollOnce();
   assert.equal(followMessages(w).length, 1);
+});
+
+test('the cursor keeps the time of its comment and moves with every comment read', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await followed(w, bot);
+  const comment = w.pc.addComment(issue.id, { body: 'First' });
+  await bot.pollOnce();
+  const entry = bot.state.following.get(issue.id);
+  assert.equal(entry.lastSeenCommentId, comment.id);
+  assert.equal(entry.lastSeenAt, comment.createdAt);
+});
+
+test('a cursor comment the server no longer finds does not stop later comments', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = w.pc.addIssue({ title: 'Followed work', status: 'in_progress' });
+  w.pc.addComment(issue.id, { body: 'Old comment' });
+  await followIssue(bot, issue);
+  const entry = bot.state.following.get(issue.id);
+  entry.lastSeenCommentId = randomUUID();
+
+  const newer = w.pc.addComment(issue.id, { body: 'Newer comment' });
+  await bot.pollOnce();
+  assert.equal(followMessages(w).length, 1);
+  assert.ok(followMessages(w)[0].text.includes('Newer comment'));
+  assert.equal(entry.lastSeenCommentId, newer.id, 'the cursor is a comment the server knows again');
+
+  w.pc.addComment(issue.id, { body: 'After the repair' });
+  await bot.pollOnce();
+  assert.equal(followMessages(w).length, 2);
+  assert.ok(followMessages(w)[1].text.includes('After the repair'));
+});
+
+test('a task that changed without a new comment does not replay comments when the cursor is gone', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = w.pc.addIssue({ title: 'Followed work', status: 'in_progress' });
+  w.pc.addComment(issue.id, { body: 'Old comment' });
+  await followIssue(bot, issue);
+  bot.state.following.get(issue.id).lastSeenCommentId = randomUUID();
+
+  w.pc.setStatus(issue.id, 'blocked');
+  await bot.pollOnce();
+  assert.equal(followMessages(w).length, 0);
 });
