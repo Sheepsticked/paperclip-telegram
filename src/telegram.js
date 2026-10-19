@@ -100,11 +100,23 @@ export class TelegramClient {
     return this.call('editMessageText', params);
   }
 
+  editMessageReplyMarkup(params) {
+    return this.call('editMessageReplyMarkup', params);
+  }
+
   answerCallbackQuery(params) {
     return this.call('answerCallbackQuery', params);
   }
 
   setMyCommands(commands) {
     return this.call('setMyCommands', { commands });
+  }
+
+  setMyShortDescription(shortDescription) {
+    return this.call('setMyShortDescription', { short_description: shortDescription });
+  }
+
+  setMyDescription(description) {
+    return this.call('setMyDescription', { description });
   }
 }

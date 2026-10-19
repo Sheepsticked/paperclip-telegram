@@ -2,6 +2,9 @@ import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 
 const FEED_PAGE_MAX = 100;
+const ISSUE_LIST_MAX = 1000;
+const STATUSES = ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled'];
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const TERMINAL_CODES = {
   stale_target: 'interaction_stale_target',
@@ -27,6 +30,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
   const issues = new Map();
   const interactions = new Map();
   const comments = [];
+  const projects = [];
   const failedRuns = [];
   const requests = [];
   const idempotency = new Map();
@@ -42,8 +46,9 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
     return new Date(clock).toISOString();
   };
 
-  function getIssue(id) {
-    const issue = issues.get(id);
+  // Routes take the UUID or the identifier (TST-3), like the server.
+  function getIssue(ref) {
+    const issue = issues.get(ref) ?? [...issues.values()].find((i) => i.identifier.toLowerCase() === String(ref).toLowerCase());
     if (!issue) throw new HttpError(404, 'Issue not found');
     return issue;
   }
@@ -199,6 +204,12 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
     return { ...issue, labels: [], labelIds: [] };
   }
 
+  // The single-issue route also embeds the project row.
+  function issueDetail(issue) {
+    const project = projects.find((p) => p.id === issue.projectId);
+    return { ...issueView(issue), project: project ? { id: project.id, name: project.name, urlKey: project.urlKey, status: project.status } : null };
+  }
+
   const routes = [];
   const route = (method, pattern, handler) => routes.push({ method, regex: new RegExp(`^${pattern.replace(/:(\w+)/g, '(?<$1>[^/]+)')}$`), handler });
 
@@ -236,9 +247,15 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
       if (!Number.isFinite(since)) throw new HttpError(400, 'updatedSince must be a valid ISO 8601 timestamp when provided');
       list = list.filter((i) => Date.parse(i.updatedAt) >= since);
     }
+    const q = query.get('q')?.trim().toLowerCase();
+    if (q) {
+      const inComments = (issue) => comments.some((c) => c.issueId === issue.id && !c.deletedAt && c.body.toLowerCase().includes(q));
+      list = list.filter((i) => [i.title, i.identifier, i.description ?? ''].some((v) => v.toLowerCase().includes(q)) || inComments(i));
+    }
     list.sort((a, b) => (query.get('sortDir') === 'asc' ? 1 : -1) * (Date.parse(a.updatedAt) - Date.parse(b.updatedAt)));
     const offset = Number(query.get('offset') ?? 0);
     const limit = Number(query.get('limit') ?? 500);
+    if (!Number.isInteger(limit) || limit < 1 || limit > ISSUE_LIST_MAX) throw new HttpError(400, 'Validation error');
     return list.slice(offset, offset + limit).map(issueView);
   });
 
@@ -255,6 +272,43 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
     });
     if (key) idempotency.set(key, issue);
     return { status: 201, body: issueView(issue) };
+  });
+
+  route('GET', '/api/issues/:id', ({ params }) => issueDetail(getIssue(params.id)));
+
+  route('PATCH', '/api/issues/:id', ({ params, body }) => {
+    const issue = getIssue(params.id);
+    const allowed = ['status', 'assigneeAgentId', 'assigneeUserId', 'projectId', 'title', 'description', 'priority'];
+    if (Object.keys(body).some((k) => !allowed.includes(k))) throw new HttpError(400, 'Validation error');
+    if (body.status !== undefined && !STATUSES.includes(body.status)) throw new HttpError(400, 'Validation error');
+    if (body.projectId != null && !UUID.test(body.projectId) && !projects.some((p) => p.id === body.projectId)) throw new HttpError(400, 'Validation error');
+    if (body.assigneeAgentId != null) {
+      const agent = agents.find((a) => a.id === body.assigneeAgentId);
+      if (!agent) throw new HttpError(404, 'Agent not found');
+      if (['terminated', 'pending_approval'].includes(agent.status)) throw new HttpError(409, `Cannot assign work to ${agent.status} agent`);
+    }
+    const nextAgent = body.assigneeAgentId !== undefined ? body.assigneeAgentId : issue.assigneeAgentId;
+    const nextUser = body.assigneeUserId !== undefined ? body.assigneeUserId : issue.assigneeUserId;
+    if (nextAgent && nextUser) throw new HttpError(422, 'Issue can only have one assignee');
+    const changes = {};
+    for (const key of allowed) {
+      if (key === 'assigneeAgentId' || key === 'assigneeUserId') continue;
+      if (body[key] !== undefined && body[key] !== issue[key]) {
+        changes[key] = body[key];
+        issue[key] = body[key];
+      }
+    }
+    if (nextAgent !== issue.assigneeAgentId) changes.assigneeAgentId = nextAgent;
+    if (nextUser !== issue.assigneeUserId) changes.assigneeUserId = nextUser;
+    issue.assigneeAgentId = nextAgent;
+    issue.assigneeUserId = nextUser;
+    issue.updatedAt = tick();
+    return { ...issueDetail(issue), changes };
+  });
+
+  route('GET', '/api/companies/:cid/projects', ({ query }) => {
+    const archived = query.get('includeArchived') === 'true';
+    return projects.filter((p) => archived || !p.archivedAt);
   });
 
   route('GET', '/api/issues/:id/interactions', ({ params }) => {
@@ -293,20 +347,31 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
   });
 
   route('GET', '/api/issues/:id/comments', ({ params, query }) => {
-    getIssue(params.id);
+    const issue = getIssue(params.id);
     const limit = Number(query.get('limit') ?? 0) || Infinity;
-    const list = comments.filter((c) => c.issueId === params.id);
-    list.sort((a, b) => (query.get('order') === 'asc' ? 1 : -1) * (Date.parse(a.createdAt) - Date.parse(b.createdAt)));
+    const asc = query.get('order') === 'asc';
+    let list = comments.filter((c) => c.issueId === issue.id);
+    list.sort((a, b) => (asc ? 1 : -1) * (Date.parse(a.createdAt) - Date.parse(b.createdAt)));
+    // `after` is exclusive; an unknown or malformed anchor yields an empty page.
+    const after = query.get('after');
+    if (after) {
+      const index = UUID.test(after) ? list.findIndex((c) => c.id === after) : -1;
+      list = index < 0 ? [] : list.slice(index + 1);
+    }
     return list.slice(0, limit);
   });
 
   route('POST', '/api/issues/:id/comments', ({ params, body }) => {
-    getIssue(params.id);
+    const issue = getIssue(params.id);
     if (typeof body.body !== 'string' || !body.body.length) throw new HttpError(400, 'Validation error');
-    return { status: 201, body: api.addComment(params.id, { body: body.body, authorType: 'user' }) };
+    return { status: 201, body: api.addComment(issue.id, { body: body.body, authorType: 'user' }) };
   });
 
-  route('GET', '/api/companies/:cid/agents', () => agents);
+  // The server rejects query parameters on this route.
+  route('GET', '/api/companies/:cid/agents', ({ query }) => {
+    if ([...query.keys()].length > 0) throw new HttpError(400, 'Validation error');
+    return agents;
+  });
 
   const server = http.createServer((req, res) => {
     const chunks = [];
@@ -328,7 +393,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
       if (failure) {
         failure.times -= 1;
         if (failure.times <= 0) failures.splice(failures.indexOf(failure), 1);
-        return send(failure.status, { error: 'Injected failure' });
+        return send(failure.status, { error: failure.message });
       }
       try {
         for (const r of routes) {
@@ -357,6 +422,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
     issues,
     interactions,
     comments,
+    projects,
     failedRuns,
     requestsTo: (method, pathPattern) => requests.filter((r) => r.method === method && pathPattern.test(r.path)),
     setUnauthorized: (value) => {
@@ -366,11 +432,11 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
       dropConnections = value;
     },
     // Makes matching requests answer with `status` (for `times` calls) instead of reaching the route.
-    failRequests(method, pattern, status = 500, times = Infinity) {
-      failures.push({ method, pattern, status, times });
+    failRequests(method, pattern, status = 500, times = Infinity, message = 'Injected failure') {
+      failures.push({ method, pattern, status, times, message });
     },
     clearFailures: () => failures.splice(0),
-    addIssue({ title, description = null, status = 'todo', assigneeAgentId = null, projectId = null, createdAt, updatedAt } = {}) {
+    addIssue({ title, description = null, status = 'todo', assigneeAgentId = null, assigneeUserId = null, projectId = null, createdAt, updatedAt } = {}) {
       issueNumber += 1;
       const now = tick();
       const issue = {
@@ -382,7 +448,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
         status,
         priority: 'medium',
         assigneeAgentId,
-        assigneeUserId: null,
+        assigneeUserId,
         issueNumber,
         identifier: `${prefix}-${issueNumber}`,
         createdAt: createdAt ?? now,
@@ -433,19 +499,35 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
     resolveElsewhere(interactionId, status = 'accepted', result = { version: 1, outcome: status }) {
       return settle(interactions.get(interactionId), status, result);
     },
-    addComment(issueId, { body, authorType = 'agent' }) {
+    addProject({ name, urlKey = name.toLowerCase().replace(/\W+/g, '-'), archived = false } = {}) {
+      const project = { id: randomUUID(), companyId, name, urlKey, status: 'in_progress', archivedAt: archived ? tick() : null };
+      projects.push(project);
+      return project;
+    },
+    addAgent({ name, role = 'engineer', status = 'idle' } = {}) {
+      const agent = { id: `agent-${agents.length + 1}`, companyId, name, role, status, urlKey: name.toLowerCase().replace(/\W+/g, '-') };
+      agents.push(agent);
+      return agent;
+    },
+    // A comment from the board user, an agent (default), the system, or an agent posting under the local board user.
+    addComment(issueId, { body, authorType = 'agent', authorAgentId, authorUserId, derivedAuthorAgentId = null, deletedAt = null } = {}) {
+      const issue = getIssue(issueId);
       const comment = {
         id: randomUUID(),
         companyId,
-        issueId,
-        authorAgentId: authorType === 'agent' ? 'agent-1' : null,
-        authorUserId: authorType === 'user' ? 'board-user-1' : null,
+        issueId: issue.id,
+        authorAgentId: authorAgentId !== undefined ? authorAgentId : authorType === 'agent' ? 'agent-1' : null,
+        authorUserId: authorUserId !== undefined ? authorUserId : authorType === 'user' ? 'board-user-1' : null,
+        derivedAuthorAgentId,
         authorType,
         body,
         createdAt: tick(),
         updatedAt: tick(),
+        deletedAt,
       };
       comments.push(comment);
+      // A new comment counts as an update of its issue, so update polls see it.
+      issue.updatedAt = tick();
       return comment;
     },
     addFailedRun({ agentId = 'agent-1', issueId = null, errorCode = 'adapter_failed', error = 'The adapter exited with code 1' } = {}) {

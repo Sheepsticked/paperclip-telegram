@@ -85,6 +85,19 @@ export class PaperclipClient {
     return this.request('GET', `/api/companies/${companyId}/issues`, { query });
   }
 
+  // `ref` is an issue id or an identifier such as ABC-12.
+  getIssue(ref) {
+    return this.request('GET', `/api/issues/${encodeURIComponent(ref)}`);
+  }
+
+  updateIssue(issueId, body) {
+    return this.request('PATCH', `/api/issues/${issueId}`, { body });
+  }
+
+  listProjects(companyId) {
+    return this.request('GET', `/api/companies/${companyId}/projects`);
+  }
+
   listInteractions(issueId) {
     return this.request('GET', `/api/issues/${issueId}/interactions`);
   }

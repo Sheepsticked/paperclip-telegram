@@ -1,4 +1,57 @@
 export const MESSAGE_LIMIT = 4096;
+export const CALLBACK_DATA_LIMIT = 64;
+const BUTTON_LABEL_MAX = 60;
+
+export const STATUS_ICONS = {
+  backlog: '📥',
+  todo: '⏳',
+  in_progress: '🔄',
+  in_review: '👀',
+  blocked: '🚧',
+  done: '✅',
+  cancelled: '🚫',
+};
+
+export const STATUS_NAMES = {
+  backlog: 'Backlog',
+  todo: 'To do',
+  in_progress: 'In progress',
+  in_review: 'In review',
+  blocked: 'Blocked',
+  done: 'Done',
+  cancelled: 'Cancelled',
+};
+
+export function statusIcon(status) {
+  return STATUS_ICONS[status] ?? '•';
+}
+
+export function statusName(status) {
+  return STATUS_NAMES[status] ?? String(status ?? 'Unknown');
+}
+
+// An inline keyboard button; callback data over Telegram's byte limit would be rejected, so it fails early.
+export function button(label, data) {
+  if (Buffer.byteLength(data) > CALLBACK_DATA_LIMIT) throw new Error(`callback data over ${CALLBACK_DATA_LIMIT} bytes: ${data}`);
+  return { text: truncate(label, BUTTON_LABEL_MAX), callback_data: data };
+}
+
+// The extra button on messages about one task; it sends the task view.
+export function taskButton(issueId) {
+  return button('📋 Task', `T:v:${issueId}`);
+}
+
+// "5 min ago", "3 h ago", "2 d ago".
+export function ago(iso, nowMs) {
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return 'unknown time ago';
+  const minutes = Math.max(0, Math.floor((nowMs - then) / 60_000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return `${Math.floor(hours / 24)} d ago`;
+}
 
 export function escapeHtml(text) {
   return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

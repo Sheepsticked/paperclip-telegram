@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { COMMANDS } from '../src/bot.js';
 import { validateTelegramHtml } from './fakes/telegram.js';
 import { LEAD_AGENT_ID, UI_BASE_URL, confirmPayload, startWorld } from './helpers.js';
 
@@ -123,10 +124,10 @@ test('a reply without text is declined', async (t) => {
   assert.equal(posts(w, '/comments').length, 0);
 });
 
-test('a plain message that is not a reply gets a hint', async (t) => {
+test('a message without text and without a reply gets a hint', async (t) => {
   const { w, bot } = await setup(t);
-  await bot.handleUpdate(w.tg.message('just chatting'));
-  assert.match(w.tg.lastMessage().text, /Reply to a task message/);
+  await bot.handleUpdate(w.tg.message(undefined, { extra: { photo: [{ file_id: 'x' }] } }));
+  assert.match(w.tg.lastMessage().text, /Send text to create a task, or reply to a task message/);
   assert.equal(w.pc.requests.filter((r) => r.method === 'POST').length, 0);
 });
 
@@ -152,10 +153,10 @@ test('a reply to an open text question answers the question, not the task thread
   assert.equal(posts(w, '/comments').length, 1);
 });
 
-test('/status lists running work and what waits for the owner', async (t) => {
+test('/status lists running work and what waits for the owner as task buttons', async (t) => {
   const { w, bot } = await setup(t);
-  w.pc.addIssue({ title: 'Build the API', status: 'in_progress', assigneeAgentId: 'agent-1' });
-  w.pc.addIssue({ title: 'Plan the roadmap', status: 'in_progress', assigneeAgentId: LEAD_AGENT_ID });
+  const build = w.pc.addIssue({ title: 'Build the API', status: 'in_progress', assigneeAgentId: 'agent-1' });
+  const plan = w.pc.addIssue({ title: 'Plan the roadmap', status: 'in_progress', assigneeAgentId: LEAD_AGENT_ID });
   w.pc.addIssue({ title: 'Already finished', status: 'done' });
   const review = w.pc.addIssue({ title: 'Check the draft', status: 'in_review' });
   const asked = w.pc.addIssue({ title: 'Pick a colour', status: 'in_review' });
@@ -164,48 +165,53 @@ test('/status lists running work and what waits for the owner', async (t) => {
   w.tg.calls.length = 0;
 
   await bot.handleUpdate(w.tg.message('/status'));
-  const [reply] = w.tg.callsTo('sendMessage');
-  const text = reply.params.text;
-  assert.match(text, /<b>Running<\/b> \(2\)/);
-  assert.match(text, /• <a href="[^"]+\/TST\/issues\/TST-1">TST-1<\/a> Build the API — Dev/);
-  assert.match(text, /Plan the roadmap — Lead/);
-  assert.ok(!text.includes('Already finished'));
-  assert.match(text, /<b>Waiting for you<\/b> \(2\)/);
-  assert.match(text, /❓ <a href="[^"]+#interaction-[^"]+">TST-5<\/a> Colour choice/);
-  assert.match(text, new RegExp(`👀 <a href="[^"]+">${review.identifier}</a> Check the draft`));
-  assert.ok(!text.includes('Pick a colour'), 'a review that already has a card is listed once, as the card');
-  assert.equal(validateTelegramHtml(text), null);
+  const [running, waiting] = w.tg.callsTo('sendMessage').map((c) => c.params);
+  assert.equal(running.text, '<b>Running</b> (2)');
+  // Most recently updated first, as the server lists them.
+  assert.deepEqual(running.reply_markup.inline_keyboard.flat(), [
+    { text: '🔄 TST-2 · Plan the roadmap — Lead', callback_data: `T:v:${plan.id}` },
+    { text: '🔄 TST-1 · Build the API — Dev', callback_data: `T:v:${build.id}` },
+  ]);
+  assert.equal(waiting.text, '<b>Waiting for you</b> (2)');
+  assert.deepEqual(
+    waiting.reply_markup.inline_keyboard.flat().map((b) => b.text),
+    ['❓ TST-5 · Colour choice', `👀 ${review.identifier} · Check the draft`],
+  );
+  assert.ok(!JSON.stringify(waiting).includes('Pick a colour'), 'a review that already has a card is listed once, as the card');
+  assert.ok(!JSON.stringify(running).includes('Already finished'));
+  assert.equal(validateTelegramHtml(running.text), null);
 });
 
 test('/status with nothing to show says so', async (t) => {
   const { w, bot } = await setup(t);
   await bot.handleUpdate(w.tg.message('/status'));
-  const text = w.tg.lastMessage().text;
-  assert.match(text, /<b>Running<\/b> \(0\)\nNothing here\./);
-  assert.match(text, /<b>Waiting for you<\/b> \(0\)\nNothing here\./);
+  const [running, waiting] = w.tg.sent().map((m) => m.text);
+  assert.equal(running, '<b>Running</b> (0)\nNothing here.');
+  assert.equal(waiting, '<b>Waiting for you</b> (0)\nNothing here.');
 });
 
-test('/status shows at most 15 lines per section plus a remainder', async (t) => {
+test('/status shows at most 15 buttons per section plus a remainder', async (t) => {
   const { w, bot } = await setup(t);
   for (let i = 0; i < 40; i += 1) w.pc.addIssue({ title: `Running job ${i}`, status: 'in_progress', assigneeAgentId: 'agent-1' });
   for (let i = 0; i < 20; i += 1) w.pc.addIssue({ title: `Review item ${i}`, status: 'in_review' });
   await bot.handleUpdate(w.tg.message('/status'));
-  const text = w.tg.sent().map((m) => m.text).join('\n');
-  assert.equal(text.match(/^• .*Running job/gm).length, 15);
-  assert.match(text, /\+25 more/);
-  assert.equal(text.match(/^• 👀/gm).length, 15);
-  assert.match(text, /\+5 more/);
+  const [running, waiting] = w.tg.sent();
+  assert.match(running.text, /\+25 more/);
+  assert.equal(running.markup.inline_keyboard.length, 15);
+  assert.match(waiting.text, /\+5 more/);
+  assert.equal(waiting.markup.inline_keyboard.length, 15);
   for (const message of w.tg.sent()) assert.ok(message.text.length <= 4096);
 });
 
-test('/start and /help list the commands', async (t) => {
+test('/start and /help list the commands in menu order', async (t) => {
   const { w, bot } = await setup(t);
   for (const command of ['/start', '/help', '/nonsense']) {
     await bot.handleUpdate(w.tg.message(command));
     const text = w.tg.lastMessage().text;
-    assert.match(text, /\/new &lt;text&gt;/);
-    assert.match(text, /\/status/);
-    assert.match(text, /\/help/);
+    assert.match(text, /\/new \[@agent\] \[#project\] &lt;text&gt;/);
+    const listed = [...text.matchAll(/^\/(\w+)/gm)].map((m) => m[1]);
+    assert.deepEqual(listed, COMMANDS.map((c) => c.command));
+    assert.equal(validateTelegramHtml(text), null);
   }
 });
 

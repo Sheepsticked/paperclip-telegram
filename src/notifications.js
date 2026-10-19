@@ -1,6 +1,9 @@
 import { refreshCard, sendCard } from './actions.js';
-import { escapeHtml, firstLine, issueUrl, link, prefixOf, runUrl, truncate, truncateLines } from './format.js';
+import { pollFollowing } from './follow.js';
+import { escapeHtml, firstLine, issueUrl, link, prefixOf, runUrl, taskButton, truncate, truncateLines } from './format.js';
+import { guarded, isUnauthorized } from './guard.js';
 import { PaperclipError } from './paperclip.js';
+import { allow, announceMuteEnd } from './settings.js';
 
 const INITIAL_CARD_LIMIT = 10;
 const CHANGE_SUMMARY_THRESHOLD = 10;
@@ -12,24 +15,14 @@ const NOTIFIED_STATUSES = new Set(['done', 'in_review']);
 
 const iso = (ms) => new Date(ms).toISOString();
 
-const isUnauthorized = (err) => err instanceof PaperclipError && err.status === 401;
-
-// Runs one item of a poll; a failure is logged and skipped so the rest still goes out, except a 401.
-async function guarded(bot, label, job) {
-  try {
-    return await job();
-  } catch (err) {
-    if (isUnauthorized(err)) throw err;
-    bot.log.warn(`could not process ${label}`, { error: err.message });
-    return undefined;
-  }
-}
-
 async function seedStatuses(bot) {
   const statuses = new Map();
   for (let offset = 0; ; offset += SEED_PAGE) {
     const page = await bot.pc.listIssues(bot.config.companyId, { limit: SEED_PAGE, offset });
-    for (const issue of page) statuses.set(issue.id, issue.status);
+    for (const issue of page) {
+      statuses.set(issue.id, issue.status);
+      bot.state.notePrefix(issue.identifier);
+    }
     if (page.length < SEED_PAGE) break;
   }
   bot.state.statuses = statuses;
@@ -92,7 +85,10 @@ async function sendRunAlert(bot, item) {
   const detail = [meta.errorCode, reason].filter(Boolean).join(' — ');
   if (detail) lines.push(escapeHtml(detail));
   lines.push('', link(runUrl(bot.config.uiBaseUrl, runPrefix(item), meta.agentId, item.subject.id), 'Open run'));
-  await bot.send(lines.join('\n'), { issue: issue ? { id: issue.id, identifier: issue.identifier } : undefined });
+  await bot.send(lines.join('\n'), {
+    keyboard: issue ? [[taskButton(issue.id)]] : undefined,
+    issue: issue ? { id: issue.id, identifier: issue.identifier } : undefined,
+  });
 }
 
 async function alertFailedRuns(bot, failedRuns) {
@@ -102,7 +98,7 @@ async function alertFailedRuns(bot, failedRuns) {
     if (bot.state.alertedRuns.includes(runId)) continue;
     if (skip.has(item.subject.metadata?.errorCode)) continue;
     await guarded(bot, `run ${runId}`, async () => {
-      await sendRunAlert(bot, item);
+      if (allow(bot, 'runFailed')) await sendRunAlert(bot, item);
       bot.state.markRunAlerted(runId);
       bot.state.save();
     });
@@ -137,6 +133,7 @@ async function lastAgentComment(bot, issueId) {
   }
 }
 
+// Sends the done / in-review message and returns the id of the comment it quotes, if any.
 async function sendStatusUpdate(bot, issue) {
   const done = issue.status === 'done';
   const comment = await lastAgentComment(bot, issue.id);
@@ -144,7 +141,8 @@ async function sendStatusUpdate(bot, issue) {
   const excerpt = comment ? truncateLines(comment.body, 5, 400) : '';
   if (excerpt) lines.push(`<blockquote>${escapeHtml(excerpt)}</blockquote>`);
   lines.push(link(issueUrl(bot.config.uiBaseUrl, issue.identifier), 'Open in Paperclip'));
-  await bot.send(lines.join('\n'), { issue: { id: issue.id, identifier: issue.identifier } });
+  await bot.send(lines.join('\n'), { keyboard: [[taskButton(issue.id)]], issue: { id: issue.id, identifier: issue.identifier } });
+  return excerpt ? comment.id : null;
 }
 
 async function reportStatusChanges(bot, sentIssueIds) {
@@ -153,8 +151,9 @@ async function reportStatusChanges(bot, sentIssueIds) {
   const baseline = Date.parse(state.baselineAt);
   const pendingIssueIds = new Set(state.pendingCards().map((card) => card.issueId));
   const changes = [];
+  const updated = await listUpdatedIssues(bot, since);
 
-  for (const issue of await listUpdatedIssues(bot, since)) {
+  for (const issue of updated) {
     const previous = state.statuses.get(issue.id);
     const changed = previous === undefined ? Date.parse(issue.createdAt) > baseline : previous !== issue.status;
     const covered = issue.status === 'in_review' && (sentIssueIds.has(issue.id) || pendingIssueIds.has(issue.id));
@@ -162,17 +161,27 @@ async function reportStatusChanges(bot, sentIssueIds) {
     else state.statuses.set(issue.id, issue.status);
   }
 
-  if (changes.length > CHANGE_SUMMARY_THRESHOLD) {
-    const done = changes.filter((issue) => issue.status === 'done').length;
-    await bot.send(`${done} done, ${changes.length - done} in review since the last check, see /status`);
-    for (const issue of changes) state.statuses.set(issue.id, issue.status);
-    return;
+  // Turned-off and muted kinds are dropped here (muted ones are counted for the catch-up line).
+  const outgoing = changes.filter((issue) => {
+    const send = allow(bot, issue.status === 'done' ? 'done' : 'inReview');
+    if (!send) state.statuses.set(issue.id, issue.status);
+    return send;
+  });
+
+  const quoted = new Set();
+  if (outgoing.length > CHANGE_SUMMARY_THRESHOLD) {
+    const done = outgoing.filter((issue) => issue.status === 'done').length;
+    await bot.send(`${done} done, ${outgoing.length - done} in review since the last check, see /status`);
+    for (const issue of outgoing) state.statuses.set(issue.id, issue.status);
+  } else {
+    for (const issue of outgoing.reverse()) {
+      const quote = await sendStatusUpdate(bot, issue);
+      if (quote) quoted.add(quote);
+      state.statuses.set(issue.id, issue.status);
+      state.save();
+    }
   }
-  for (const issue of changes.reverse()) {
-    await sendStatusUpdate(bot, issue);
-    state.statuses.set(issue.id, issue.status);
-    state.save();
-  }
+  await pollFollowing(bot, updated, quoted);
 }
 
 // One pass over Paperclip: new cards, closed cards, failed runs and done / in-review changes.
@@ -180,6 +189,8 @@ export async function pollPaperclip(bot) {
   const { state } = bot;
   const startedAt = bot.now();
   state.pruneCards(startedAt);
+  state.pruneOffers(startedAt);
+  await announceMuteEnd(bot);
 
   const firstRun = !state.baselineAt;
   if (firstRun) {

@@ -5,11 +5,14 @@ import path from 'node:path';
 import test from 'node:test';
 import { buildCard, renderCard } from '../src/cards.js';
 import { DEFAULT_ROUTINE_RUN_ERROR_CODES, defaultStatePath, parseConfig, readTokenFile } from '../src/config.js';
-import { MESSAGE_LIMIT, chunkLines, escapeHtml, fitMessage, firstLine, issueUrl, cardUrl, runUrl, truncate, truncateLines } from '../src/format.js';
+import { isBoardComment } from '../src/comments.js';
+import { MESSAGE_LIMIT, ago, button, chunkLines, escapeHtml, fitMessage, firstLine, issueUrl, cardUrl, runUrl, truncate, truncateLines } from '../src/format.js';
 import { createLogger } from '../src/log.js';
 import { PaperclipClient, PaperclipError } from '../src/paperclip.js';
 import { SerialQueue } from '../src/queue.js';
 import { State } from '../src/state.js';
+import { parseNewArgs } from '../src/create.js';
+import { parseTaskRef } from '../src/tasks.js';
 import { TelegramClient, TelegramError } from '../src/telegram.js';
 import { validateTelegramHtml } from './fakes/telegram.js';
 import { writeTokenFile } from './helpers.js';
@@ -260,4 +263,67 @@ test('SerialQueue runs jobs one at a time, in order, and survives a failing job'
   await last;
   await queue.idle();
   assert.deepEqual(events, ['a:start', 'a:end', 'b', 'c']);
+});
+
+test('an old state file loads with default settings and nothing followed', (t) => {
+  const file = path.join(tempDir(t), 'state.json');
+  fs.writeFileSync(file, JSON.stringify({ version: 1, offset: 7, cards: {}, messages: [[5, 'issue-1']], statuses: { 'issue-1': 'done' } }));
+  const state = State.load(file);
+  assert.equal(state.offset, 7);
+  assert.deepEqual(state.settings, { done: true, inReview: true, runFailed: true, followedComments: true, autoFollowCreated: true });
+  assert.equal(state.following.size, 0);
+  assert.equal(state.offers.size, 0);
+  assert.equal(state.muteUntil, null);
+  assert.equal(state.hiddenCounts(), null);
+  assert.equal(JSON.parse(JSON.stringify(state)).version, 2);
+});
+
+test('State ignores malformed settings and counts from a hand-edited file', (t) => {
+  const file = path.join(tempDir(t), 'state.json');
+  fs.writeFileSync(file, JSON.stringify({ settings: { done: 'no', inReview: false, extra: true }, mutedCounts: { done: -3, comments: 2.5, runFailed: 4 } }));
+  const state = State.load(file);
+  assert.deepEqual(state.settings, { done: true, inReview: false, runFailed: true, followedComments: true, autoFollowCreated: true });
+  assert.deepEqual(state.mutedCounts, { done: 0, inReview: 0, runFailed: 4, comments: 0 });
+});
+
+test('parseTaskRef accepts identifiers in any case and bare numbers with a default prefix', () => {
+  assert.equal(parseTaskRef('TST-12'), 'TST-12');
+  assert.equal(parseTaskRef(' tst-012 '), 'TST-12');
+  assert.equal(parseTaskRef('#12', 'TST'), 'TST-12');
+  assert.equal(parseTaskRef('12'), null, 'a bare number needs a prefix');
+  for (const bad of ['', 'TST-', 'TST-1a', 'two words', '-5', 'TST--5']) assert.equal(parseTaskRef(bad, 'TST'), null, bad);
+});
+
+test('parseNewArgs takes one leading agent and one leading project', () => {
+  assert.deepEqual(parseNewArgs('@dev #web Do it'), { agent: 'dev', project: 'web', text: 'Do it' });
+  assert.deepEqual(parseNewArgs('#web @dev Do it'), { agent: 'dev', project: 'web', text: 'Do it' });
+  assert.deepEqual(parseNewArgs('@dev @lead Do it'), { agent: 'dev', project: null, text: '@lead Do it' });
+  assert.deepEqual(parseNewArgs('Do it @dev'), { agent: null, project: null, text: 'Do it @dev' });
+  assert.deepEqual(parseNewArgs('@dev'), { agent: 'dev', project: null, text: '' });
+});
+
+test('button refuses callback data over 64 bytes and cuts long labels', () => {
+  assert.deepEqual(button('Go', 'T:v:abc'), { text: 'Go', callback_data: 'T:v:abc' });
+  assert.throws(() => button('Go', 'x'.repeat(65)), /callback data over 64 bytes/);
+  assert.doesNotThrow(() => button('Go', 'x'.repeat(64)));
+  assert.equal(Array.from(button('L'.repeat(200), 'a').text).length, 60);
+});
+
+test('ago names minutes, hours and days', () => {
+  const now = Date.parse('2030-01-10T12:00:00Z');
+  assert.equal(ago('2030-01-10T11:59:50Z', now), 'just now');
+  assert.equal(ago('2030-01-10T11:15:00Z', now), '45 min ago');
+  assert.equal(ago('2030-01-10T07:00:00Z', now), '5 h ago');
+  assert.equal(ago('2030-01-07T12:00:00Z', now), '3 d ago');
+  assert.equal(ago('2030-01-11T12:00:00Z', now), 'just now', 'a time in the future is not negative');
+  assert.equal(ago('garbage', now), 'unknown time ago');
+});
+
+test('isBoardComment tells the owner from agents and the system', () => {
+  assert.equal(isBoardComment({ authorType: 'user', authorUserId: 'board-user-1' }), true);
+  assert.equal(isBoardComment({ authorType: 'agent', authorAgentId: 'a1' }), false);
+  assert.equal(isBoardComment({ authorType: 'system' }), false);
+  assert.equal(isBoardComment({ authorType: 'user', authorUserId: 'local-board' }), false);
+  assert.equal(isBoardComment({ authorType: 'user', authorUserId: 'local-board', derivedAuthorAgentId: 'a1' }), false);
+  assert.equal(isBoardComment({ authorType: 'user', authorUserId: 'board-user-1', authorAgentId: 'a1' }), false);
 });

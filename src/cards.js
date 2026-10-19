@@ -1,9 +1,8 @@
-import { cardUrl, escapeHtml, fitMessage, link, truncate } from './format.js';
+import { button, cardUrl, escapeHtml, fitMessage, link, taskButton, truncate } from './format.js';
 
 export const MAX_CHECKBOX_OPTIONS = 30;
 export const MAX_FORM_QUESTIONS = 20;
 const MAX_BUTTONS = 90;
-const BUTTON_LABEL_MAX = 60;
 const ALERT_MAX = 190;
 
 // Progressively smaller text budgets used until the message fits the Telegram limit.
@@ -199,12 +198,7 @@ function composeText(card, uiBaseUrl, level) {
   return lines.join('\n');
 }
 
-function button(label, data) {
-  return { text: truncate(label, BUTTON_LABEL_MAX), callback_data: data };
-}
-
-function keyboardFor(card) {
-  if (card.status !== 'pending') return [];
+function answerRows(card) {
   const k = card.key;
   if (card.mode === 'confirm') {
     return [[button(card.confirm.acceptLabel, `${k}:a`), button(card.confirm.rejectLabel, `${k}:d`)]];
@@ -228,6 +222,12 @@ function keyboardFor(card) {
     return rows;
   }
   return [];
+}
+
+// Pending cards get the answer buttons plus a button that opens the task.
+function keyboardFor(card) {
+  if (card.status !== 'pending') return [];
+  return [...answerRows(card), [taskButton(card.issueId)]];
 }
 
 export function renderCard(card, uiBaseUrl) {

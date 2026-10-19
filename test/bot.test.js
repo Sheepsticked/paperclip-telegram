@@ -116,6 +116,40 @@ test('the loops serve the owner, register commands once and persist the offset',
   assert.equal(w.tg.callsTo('setMyCommands').length, 2, 'a new process registers the commands again');
 });
 
+test('the menu lists the commands in order and the bot profile text is set once', async (t) => {
+  const w = await world(t);
+  const bot = w.makeBot();
+  const stop = runLoops(bot);
+  await waitFor(() => w.tg.description, { label: 'profile text' });
+  await stop();
+
+  assert.deepEqual(
+    w.tg.commands.map((c) => c.command),
+    ['new', 'task', 'tasks', 'find', 'status', 'following', 'agents', 'settings', 'help'],
+  );
+  assert.ok(w.tg.shortDescription.length > 0 && w.tg.shortDescription.length <= 120);
+  assert.ok(w.tg.description.length > 0 && w.tg.description.length <= 512);
+  assert.equal(w.tg.callsTo('setMyShortDescription').length, 1);
+  assert.equal(w.tg.callsTo('setMyDescription').length, 1);
+});
+
+test('a refused profile text does not stop the bot and is not retried', async (t) => {
+  const w = await world(t);
+  w.tg.failNext('setMyShortDescription', 400, { ok: false, error_code: 400, description: 'Bad Request: nope' });
+  w.tg.failNext('setMyDescription', 500, { ok: false, error_code: 500, description: 'Internal Server Error' });
+  const bot = w.makeBot();
+  const stop = runLoops(bot);
+  w.tg.push(w.tg.message('/help'));
+  await waitFor(() => w.tg.callsTo('sendMessage').length >= 1, { label: 'help reply' });
+  await waitFor(() => w.tg.callsTo('getUpdates').length >= 3, { label: 'more polls' });
+  await stop();
+
+  assert.equal(w.tg.callsTo('setMyShortDescription').length, 1);
+  assert.equal(w.tg.callsTo('setMyDescription').length, 1);
+  assert.ok(w.logs.err.concat(w.logs.out).some((line) => line.includes('could not set the bot short description')));
+  assert.ok(w.logs.err.concat(w.logs.out).some((line) => line.includes('could not set the bot description')));
+});
+
 test('a tap that arrives through the loop answers the card', async (t) => {
   const w = await world(t);
   const bot = await w.primedBot();
@@ -203,7 +237,7 @@ test('a webhook conflict is logged clearly and the webhook is never deleted', as
   );
   const bot = w.makeBot();
   const stop = runLoops(bot);
-  await waitFor(() => w.sleeps.length >= 3, { label: 'backoff' });
+  await waitFor(() => w.sleeps.some((ms) => ms >= 2000), { label: 'backoff' });
   await stop();
 
   assert.ok(w.logs.err.some((line) => line.includes('Telegram 409: a webhook is set or another copy of the bot is running')));

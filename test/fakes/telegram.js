@@ -40,6 +40,8 @@ export async function startFakeTelegram({ token = 'fake-telegram-token', userId 
   let nextMessageId = 100;
   let nextUpdateId = 1;
   let commands = null;
+  let shortDescription = null;
+  let description = null;
 
   function respond(res, status, body) {
     if (res.destroyed) return;
@@ -60,6 +62,18 @@ export async function startFakeTelegram({ token = 'fake-telegram-token', userId 
     }
   }
 
+  // Telegram refuses callback data of 0 or more than 64 bytes, and more than 100 buttons.
+  function checkMarkup(res, markup) {
+    const buttons = (markup?.inline_keyboard ?? []).flat();
+    if (buttons.length > 100) return error(res, 400, 'Bad Request: reply markup is too long'), false;
+    for (const b of buttons) {
+      const size = Buffer.byteLength(b.callback_data ?? '');
+      if (b.callback_data !== undefined && (size === 0 || size > 64)) return error(res, 400, 'Bad Request: BUTTON_DATA_INVALID'), false;
+      if (typeof b.text !== 'string' || b.text.length === 0) return error(res, 400, 'Bad Request: text buttons are unallowed in the inline keyboard'), false;
+    }
+    return true;
+  }
+
   function checkMessage(res, params) {
     if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found'), false;
     if (typeof params.text !== 'string' || params.text.length === 0) return error(res, 400, 'Bad Request: message text is empty'), false;
@@ -68,7 +82,7 @@ export async function startFakeTelegram({ token = 'fake-telegram-token', userId 
       const problem = validateTelegramHtml(params.text);
       if (problem) return error(res, 400, `Bad Request: can't parse entities: ${problem}`), false;
     }
-    return true;
+    return checkMarkup(res, params.reply_markup);
   }
 
   const handlers = {
@@ -116,13 +130,39 @@ export async function startFakeTelegram({ token = 'fake-telegram-token', userId 
       message.edits += 1;
       respond(res, 200, { ok: true, result: { message_id: message.message_id, chat: message.chat, date: 0, text: message.text } });
     },
+    editMessageReplyMarkup(res, params) {
+      if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found');
+      const message = messages.get(params.message_id);
+      if (!message) return error(res, 400, 'Bad Request: message to edit not found');
+      if (!checkMarkup(res, params.reply_markup)) return undefined;
+      const markup = params.reply_markup ?? null;
+      if (JSON.stringify(message.markup) === JSON.stringify(markup)) {
+        return error(res, 400, 'Bad Request: message is not modified: specified new message content and reply markup are exactly the same');
+      }
+      message.markup = markup;
+      message.edits += 1;
+      return respond(res, 200, { ok: true, result: { message_id: message.message_id, chat: message.chat, date: 0, text: message.text } });
+    },
     answerCallbackQuery(res, params) {
       callbackAnswers.push({ id: params.callback_query_id, text: params.text ?? '', alert: params.show_alert === true });
       respond(res, 200, { ok: true, result: true });
     },
     setMyCommands(res, params) {
-      commands = params.commands;
-      respond(res, 200, { ok: true, result: true });
+      const list = params.commands;
+      const valid = Array.isArray(list) && list.length <= 100 && list.every((c) => /^[a-z0-9_]{1,32}$/.test(c.command) && c.description?.length >= 1 && c.description.length <= 256);
+      if (!valid) return error(res, 400, 'Bad Request: invalid commands');
+      commands = list;
+      return respond(res, 200, { ok: true, result: true });
+    },
+    setMyShortDescription(res, params) {
+      if ((params.short_description ?? '').length > 120) return error(res, 400, 'Bad Request: short description is too long');
+      shortDescription = params.short_description ?? '';
+      return respond(res, 200, { ok: true, result: true });
+    },
+    setMyDescription(res, params) {
+      if ((params.description ?? '').length > 512) return error(res, 400, 'Bad Request: description is too long');
+      description = params.description ?? '';
+      return respond(res, 200, { ok: true, result: true });
     },
   };
 
@@ -165,6 +205,12 @@ export async function startFakeTelegram({ token = 'fake-telegram-token', userId 
     callbackAnswers,
     get commands() {
       return commands;
+    },
+    get shortDescription() {
+      return shortDescription;
+    },
+    get description() {
+      return description;
     },
     callsTo: (method) => calls.filter((c) => c.method === method),
     // Bot messages in send order, with their current text after any edits.

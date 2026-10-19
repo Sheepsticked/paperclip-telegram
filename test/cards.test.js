@@ -16,7 +16,9 @@ async function cardWorld(t, { kind, payload, title = 'Ship v2' }) {
 }
 
 const posts = (w, suffix) => w.pc.requests.filter((r) => r.method === 'POST' && r.path.endsWith(suffix));
-const labels = (w, message) => w.tg.buttons(message.message_id).map((b) => b.text);
+const TASK_BUTTON = '📋 Task';
+// The answer buttons of a card; the trailing task button is checked on its own.
+const labels = (w, message) => w.tg.buttons(message.message_id).map((b) => b.text).filter((text) => text !== TASK_BUTTON);
 
 test('confirmation card shows the prompt, a deep link and its buttons', async (t) => {
   const { w, issue, interaction, message } = await cardWorld(t, { kind: 'request_confirmation', payload: confirmPayload() });
@@ -25,6 +27,12 @@ test('confirmation card shows the prompt, a deep link and its buttons', async (t
   assert.deepEqual(labels(w, message), ['Deploy', 'Hold']);
   for (const button of w.tg.buttons(message.message_id)) assert.ok(Buffer.byteLength(button.callback_data) <= 64);
   assert.equal(w.tg.callsTo('sendMessage').length, 1);
+});
+
+test('a pending card ends with a task button that opens the task', async (t) => {
+  const { w, issue, message } = await cardWorld(t, { kind: 'request_confirmation', payload: confirmPayload() });
+  const rows = message.markup.inline_keyboard;
+  assert.deepEqual(rows.at(-1), [{ text: TASK_BUTTON, callback_data: `T:v:${issue.id}` }]);
 });
 
 test('confirmation accept: calls accept, drops the keyboard and closes the card', async (t) => {
@@ -93,7 +101,7 @@ test('single-question form submits on tap and sends no otherText', async (t) => 
 test('single text question: the reply is submitted as otherText', async (t) => {
   const payload = questionsPayload([textQuestion('why', 'What is the reason?')]);
   const { w, bot, interaction, message } = await cardWorld(t, { kind: 'ask_user_questions', payload });
-  assert.deepEqual(w.tg.buttons(message.message_id), []);
+  assert.deepEqual(labels(w, message), []);
   assert.match(message.text, /Reply to this message/);
 
   await bot.handleUpdate(w.tg.message('Because of the audit', { replyTo: message.message_id }));
@@ -214,7 +222,7 @@ test('checkbox defaults are pre-selected and decline works', async (t) => {
 test('cards the bot cannot render as buttons are text plus a link only', async (t) => {
   const many = Array.from({ length: 31 }, (_, i) => ({ id: `o${i}`, label: `Option ${i}` }));
   const big = await cardWorld(t, { kind: 'request_checkbox_confirmation', payload: { version: 1, prompt: 'Too many', options: many } });
-  assert.deepEqual(big.w.tg.buttons(big.message.message_id), []);
+  assert.deepEqual(labels(big.w, big.message), []);
   assert.match(big.message.text, /31 options: answer in Paperclip/);
   assert.match(big.message.text, /Open in Paperclip/);
 
@@ -222,7 +230,7 @@ test('cards the bot cannot render as buttons are text plus a link only', async (
     kind: 'request_item_verdicts',
     payload: { version: 1, items: [{ id: 'x', label: 'First item' }, { id: 'y', label: 'Second item' }] },
   });
-  assert.deepEqual(verdicts.w.tg.buttons(verdicts.message.message_id), []);
+  assert.deepEqual(labels(verdicts.w, verdicts.message), []);
   assert.match(verdicts.message.text, /Verdicts requested/);
   assert.match(verdicts.message.text, /First item/);
 });
@@ -230,7 +238,7 @@ test('cards the bot cannot render as buttons are text plus a link only', async (
 test('a form with more than 20 questions is text plus a link only', async (t) => {
   const questions = Array.from({ length: 21 }, (_, i) => choiceQuestion(`q${i}`, `Question ${i}`, ['Yes', 'No']));
   const { w, message } = await cardWorld(t, { kind: 'ask_user_questions', payload: questionsPayload(questions) });
-  assert.deepEqual(w.tg.buttons(message.message_id), []);
+  assert.deepEqual(labels(w, message), []);
   assert.match(message.text, /21 questions: answer in Paperclip/);
 });
 
@@ -238,19 +246,19 @@ test('the largest supported cards keep every callback_data within 64 bytes', asy
   const options = Array.from({ length: 30 }, (_, i) => ({ id: `option-${i}`, label: `Option ${i}` }));
   const checkbox = await cardWorld(t, { kind: 'request_checkbox_confirmation', payload: { version: 1, prompt: 'Many', options } });
   const buttons = checkbox.w.tg.buttons(checkbox.message.message_id);
-  assert.equal(buttons.length, 32);
+  assert.equal(buttons.length, 33);
   for (const button of buttons) assert.ok(Buffer.byteLength(button.callback_data) <= 64, button.callback_data);
 
   const questions = Array.from({ length: 20 }, (_, i) => choiceQuestion(`question-${i}`, `Question ${i}`, ['One', 'Two', 'Three']));
   const form = await cardWorld(t, { kind: 'ask_user_questions', payload: questionsPayload(questions) });
   const formButtons = form.w.tg.buttons(form.message.message_id);
-  assert.equal(formButtons.length, 61);
+  assert.equal(formButtons.length, 62);
   for (const button of formButtons) assert.ok(Buffer.byteLength(button.callback_data) <= 64, button.callback_data);
 });
 
 test('a card resolved in Paperclip loses its buttons on the next poll', async (t) => {
   const { w, bot, interaction, message } = await cardWorld(t, { kind: 'request_confirmation', payload: confirmPayload() });
-  assert.equal(w.tg.buttons(message.message_id).length, 2);
+  assert.equal(labels(w, message).length, 2);
 
   w.pc.resolveElsewhere(interaction.id, 'accepted');
   await bot.pollOnce();
@@ -292,7 +300,7 @@ test('an unreachable Paperclip leaves the card pending and answers with a retry 
   await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Deploy'));
   w.pc.setDropConnections(false);
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Paperclip unreachable, try again');
-  assert.equal(w.tg.buttons(message.message_id).length, 2);
+  assert.equal(labels(w, message).length, 2);
 
   await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Deploy'));
   assert.equal(w.pc.interactions.get(interaction.id).status, 'accepted');
@@ -328,7 +336,7 @@ test('a new request replaces the older pending confirmation on the same issue', 
   assert.deepEqual(w.tg.buttons(message.message_id), []);
   const newer = w.tg.findMessage('A newer question');
   assert.ok(newer);
-  assert.equal(w.tg.buttons(newer.message_id).length, 2);
+  assert.equal(labels(w, newer).length, 2);
 });
 
 test('cards are not sent twice by repeated polls', async (t) => {

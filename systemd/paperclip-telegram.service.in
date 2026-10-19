@@ -11,6 +11,7 @@ Restart=always
 RestartSec=10
 RestartPreventExitStatus=78
 StateDirectory=paperclip-telegram
+StateDirectoryMode=0700
 NoNewPrivileges=yes
 
 [Install]
