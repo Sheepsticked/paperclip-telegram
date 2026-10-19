@@ -2,6 +2,7 @@ import { reportFailure } from './actions.js';
 import { ALERT_LIMIT, MESSAGE_LIMIT, button, escapeHtml, fitMessage, flat, headline, issueUrl, kindWord, link, openRows, truncate, truncateLines } from './format.js';
 import { guarded } from './guard.js';
 import { PaperclipError } from './paperclip.js';
+import { RICH_ALERT_LIMIT, RICH_LIMIT, escapeRich, richBody, richJoin } from './rich.js';
 import { reportActionFailure } from './tasks.js';
 import { threadOf } from './thread.js';
 
@@ -24,6 +25,8 @@ const APPROVAL_TYPES = {
   request_board_approval: 'Board approval',
 };
 const BODY_MAX = 800;
+// How much of a decision's text is kept; the message shows the part that fits.
+const BODY_KEEP = 4000;
 const VALUE_MAX = 200;
 const CONFIRM_LABEL = 'Tap again to confirm';
 const RECENT_MS = 2 * 60 * 1000;
@@ -128,7 +131,7 @@ async function hydrate(bot, record) {
   } else if (record.kind === 'decision') {
     const decision = await readOrGone(() => bot.pc.getDecision(record.refId));
     if (!decision || decision.status !== 'open') return false;
-    record.body = truncate(String(decision.body ?? '').trim(), BODY_MAX);
+    record.body = truncate(String(decision.body ?? '').trim(), BODY_KEEP);
     // Inputs belong to the whole decision, so a required one leaves no option that can be a button.
     record.needsInput = (decision.inputs ?? []).some((input) => input.required === true);
     record.options = (decision.options ?? []).map((option) => ({
@@ -147,30 +150,30 @@ function recordUrl(record, uiBaseUrl) {
   return record.issue?.identifier ? issueUrl(uiBaseUrl, record.issue.identifier) : null;
 }
 
-function compose(record, ctx, level) {
+// The item as classic HTML, or as rich Markdown with `rich` set.
+function compose(record, ctx, level, rich = false) {
   const { issue } = record;
+  const esc = rich ? escapeRich : escapeHtml;
   const url = recordUrl(record, ctx.uiBaseUrl);
   const lines = [];
   let openLine = null;
   if (issue) {
-    lines.push(headline(HEAD[record.kind], issue, { own: ctx.own, titleMax: level.title, url }));
-    if (record.title && record.title !== issue.title) lines.push(`<b>${escapeHtml(truncate(record.title, 200))}</b>`);
+    lines.push(headline(HEAD[record.kind], issue, { own: ctx.own, titleMax: level.title, url, esc }));
+    if (record.title && record.title !== issue.title) lines.push(`<b>${esc(truncate(record.title, 200))}</b>`);
   } else {
     const title = record.title ? truncate(record.title, level.title) : '';
-    lines.push(`${kindWord(HEAD[record.kind])}${title ? ` · ${url ? link(url, title) : escapeHtml(title)}` : ''}`);
+    lines.push(`${kindWord(HEAD[record.kind], null, esc)}${title ? ` · ${url ? link(url, title, esc) : esc(title)}` : ''}`);
     // The kind word stays free for the owner mention; without a title the link goes on a last line.
-    if (!title && url) openLine = link(url, 'Open in Paperclip');
+    if (!title && url) openLine = link(url, 'Open in Paperclip', esc);
   }
-  if (record.whyNow && level.why > 0) lines.push(escapeHtml(truncate(record.whyNow, level.why)));
+  if (record.whyNow && level.why > 0) lines.push(esc(truncate(record.whyNow, level.why)));
   if (level.body > 0) {
-    for (const fact of record.facts) lines.push(escapeHtml(truncate(fact, 120)));
-    if (record.body) lines.push('', escapeHtml(truncate(record.body, level.body)));
+    for (const fact of record.facts) lines.push(esc(truncate(fact, 120)));
+    if (record.body) lines.push('', rich ? richBody(record.body, level.body, { uiBaseUrl: ctx.uiBaseUrl, fullUrl: url }) : escapeHtml(truncate(record.body, level.body)));
     const described = record.options.some((option) => option.description);
     if (level.options > 0 && (described || record.needsInput)) {
-      lines.push('');
-      for (const option of record.options) {
-        lines.push(`- ${escapeHtml(truncate(option.label, 60))}${option.description ? `: ${escapeHtml(truncate(option.description, level.options))}` : ''}`);
-      }
+      const options = record.options.map((option) => `- ${esc(truncate(option.label, 60))}${option.description ? `: ${esc(truncate(option.description, level.options))}` : ''}`);
+      lines.push('', options.join('\n'));
     }
   }
   if (record.status === 'open') {
@@ -178,9 +181,9 @@ function compose(record, ctx, level) {
     if (record.kind === 'approval' && !record.inlineResolvable) lines.push('', 'Answer this one in Paperclip');
     if (record.notePromptMessageId) lines.push('', 'Waiting for the note (reply to the prompt below).');
   }
-  if (record.resolution) lines.push('', escapeHtml(record.resolution));
+  if (record.resolution) lines.push('', esc(record.resolution));
   if (openLine) lines.push(...(lines.length > 1 ? ['', openLine] : [openLine]));
-  return lines.join('\n');
+  return rich ? richJoin(lines) : lines.join('\n');
 }
 
 function keyboardFor(record, armed) {
@@ -204,18 +207,21 @@ function keyboardFor(record, armed) {
   return rows;
 }
 
-// `messageId` picks the armed buttons of that message.
+// `messageId` picks the armed buttons of that message. `rich` is the same item as Markdown; only a decision
+// has Paperclip Markdown (its text), so the other kinds have none.
 function renderInbox(bot, record, messageId = null) {
   const armed = messageId ? bot.armedOps(messageId) : new Set();
   const context = { own: record.own, uiBaseUrl: bot.config.uiBaseUrl };
-  const limit = needsOwner(record) ? ALERT_LIMIT : MESSAGE_LIMIT;
-  return { text: fitMessage((level) => compose(record, context, level), LEVELS, limit), keyboard: keyboardFor(record, armed) };
+  const alert = needsOwner(record);
+  const text = fitMessage((level) => compose(record, context, level), LEVELS, alert ? ALERT_LIMIT : MESSAGE_LIMIT);
+  const rich = record.kind === 'decision' && record.body ? fitMessage((level) => compose(record, context, level, true), LEVELS, alert ? RICH_ALERT_LIMIT : RICH_LIMIT) : null;
+  return { text, rich, keyboard: keyboardFor(record, armed) };
 }
 
 async function editOne(bot, record, messageId) {
-  const { text: html, keyboard } = renderInbox(bot, record, messageId);
+  const { text: html, rich, keyboard } = renderInbox(bot, record, messageId);
   try {
-    await bot.edit(messageId, html, keyboard);
+    await bot.edit(messageId, html, keyboard, rich);
   } catch (err) {
     bot.log.warn('could not update an inbox message', { error: err.message });
   }
@@ -240,8 +246,8 @@ async function sendRecord(bot, record, { thread, alert = false } = {}) {
     record.messageIds.push(sent.messageId);
     return;
   }
-  const { text: html, keyboard } = build({ own: false });
-  record.messageIds.push(await bot.send(html, { keyboard, thread, alert }));
+  const { text: html, rich, keyboard } = build({ own: false });
+  record.messageIds.push(await bot.send(html, { keyboard, thread, alert, rich }));
 }
 
 export async function resolveRecord(bot, record, line) {

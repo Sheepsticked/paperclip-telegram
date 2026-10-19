@@ -27,13 +27,14 @@ export function mentionProblems(calls, ownerId) {
   const head = new RegExp(`^<b><a href="tg://user\\?id=${ownerId}">[^<]+</a></b>`);
   const problems = [];
   for (const { method, params } of calls) {
-    if ((method !== 'sendMessage' && method !== 'editMessageText') || params.chat_id === ownerId) continue;
-    const text = String(params.text ?? '');
+    const isSend = method === 'sendMessage' || method === 'sendRichMessage';
+    if ((!isSend && method !== 'editMessageText') || params.chat_id === ownerId) continue;
+    const text = String(params.text ?? params.rich_message?.markdown ?? '');
     const count = (text.match(MENTION) ?? []).length;
-    const loud = method === 'sendMessage' && params.disable_notification !== true;
+    const loud = isSend && params.disable_notification !== true;
     const first = text.split('\n')[0];
     if (loud && !(count === 1 && head.test(text))) problems.push(`a message with a sound needs one mention on its first bold word: ${first}`);
-    if (!loud && count > 0) problems.push(`${method === 'sendMessage' ? 'a silent message' : 'an edit'} mentions the owner: ${first}`);
+    if (!loud && count > 0) problems.push(`${isSend ? 'a silent message' : 'an edit'} mentions the owner: ${first}`);
   }
   return problems;
 }

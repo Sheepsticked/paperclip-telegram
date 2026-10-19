@@ -4,6 +4,7 @@ import { followIssue, unfollowIssue } from './follow.js';
 import { ago, button, escapeHtml, fitMessage, headline, issueUrl, link, quote, statusName, truncate } from './format.js';
 import { PaperclipError } from './paperclip.js';
 import { ID_PREFIX, byPrefix } from './pick.js';
+import { RICH_LIMIT, RICH_QUOTE_MAX, escapeRich, richBody, richJoin } from './rich.js';
 import { ownTopic, threadOf } from './thread.js';
 
 export { ID_PREFIX, byPrefix };
@@ -22,6 +23,9 @@ const LEVELS = [
   { title: 60, description: 0, comment: 50 },
   { title: 50, description: 0, comment: 0 },
 ];
+
+// The same for a rich task view, which can hold the description and the comment in full, folded.
+const RICH_LEVELS = [{ title: 100, description: RICH_QUOTE_MAX, comment: RICH_QUOTE_MAX }, ...LEVELS];
 
 // Status moves: callback op, target status, button label, answer and whether a second tap is needed.
 const MOVES = {
@@ -71,10 +75,10 @@ async function runningAgentName(bot, nameKey) {
 }
 
 // The status line: "In progress · Dev · Project · updated 5 min ago", with the priority only when it is high.
-function statusLine(view, now) {
+function statusLine(view, now, esc) {
   const { issue } = view;
-  const name = (value) => escapeHtml(truncate(value, 60));
-  const parts = [escapeHtml(statusName(issue.status)), view.running && view.running === view.assignee ? `${name(view.assignee)} running` : name(view.assignee)];
+  const name = (value) => esc(truncate(value, 60));
+  const parts = [esc(statusName(issue.status)), view.running && view.running === view.assignee ? `${name(view.assignee)} running` : name(view.assignee)];
   if (view.running && view.running !== view.assignee) parts.push(`${name(view.running)} running`);
   if (view.project) parts.push(name(view.project));
   parts.push(`updated ${ago(issue.updatedAt, now)}`);
@@ -82,18 +86,28 @@ function statusLine(view, now) {
   return parts.join(' · ');
 }
 
-function composeTask(view, { note, own, now, uiBaseUrl }, level) {
+// The task view as classic HTML, or as rich Markdown with `rich` set.
+function composeTask(view, { note, own, now, uiBaseUrl }, level, rich = false) {
   const { issue } = view;
-  const title = issue.title ? ` ${escapeHtml(truncate(issue.title, level.title))}` : '';
-  const lines = [`<b>${link(issueUrl(uiBaseUrl, issue.identifier), issue.identifier)}</b>${title}`];
-  if (note) lines.push(escapeHtml(note));
-  lines.push(statusLine(view, now));
+  const esc = rich ? escapeRich : escapeHtml;
+  const url = issueUrl(uiBaseUrl, issue.identifier);
+  const title = issue.title ? ` ${esc(truncate(issue.title, level.title))}` : '';
+  const lines = [`<b>${link(url, issue.identifier, esc)}</b>${title}`];
+  if (note) lines.push(esc(note));
+  lines.push(statusLine(view, now, esc));
   const description = String(issue.description ?? '').trim();
-  if (description && level.description > 0) lines.push(`<blockquote>${escapeHtml(truncate(description, level.description))}</blockquote>`);
-  const last = !own && level.comment > 0 && view.comment ? quote(view.comment.body, level.comment) : '';
-  if (last) lines.push(`<b>${escapeHtml(truncate(view.author, 60))}</b>`, last);
-  return lines.join('\n');
+  if (description && level.description > 0) {
+    lines.push(rich ? richBody(description, level.description, { uiBaseUrl, fullUrl: url }) : `<blockquote>${escapeHtml(truncate(description, level.description))}</blockquote>`);
+  }
+  const comment = view.comment;
+  const showComment = !own && level.comment > 0 && comment;
+  const last = showComment ? (rich ? richBody(comment.body, level.comment, { uiBaseUrl, fullUrl: `${url}#comment-${comment.id}` }) : quote(comment.body, level.comment)) : '';
+  if (last) lines.push(`<b>${esc(truncate(view.author, 60))}</b>`, last);
+  return rich ? richJoin(lines) : lines.join('\n');
 }
+
+// True when the view shows Paperclip Markdown: a description or, outside the task's own topic, a comment.
+const hasMarkdown = (view, own) => Boolean(String(view.issue.description ?? '').trim() || (!own && view.comment?.body?.trim()));
 
 // First keyboard: one row. `more` shows the second one with the rarer actions.
 export function taskKeyboard(issue, { following, armed, own = false, more = false }) {
@@ -122,17 +136,20 @@ export function taskKeyboard(issue, { following, armed, own = false, more = fals
   return rows.filter((row) => row.length > 0);
 }
 
+// `rich` is the same view as Markdown, and `hasMarkdown` says whether it has Paperclip Markdown to show.
 export function renderTask(bot, view, { note = null, own = false, armed = new Set(), more = false } = {}) {
   const context = { note, own, now: bot.now(), uiBaseUrl: bot.config.uiBaseUrl };
   const text = fitMessage((level) => composeTask(view, context, level), LEVELS);
-  return { text, keyboard: taskKeyboard(view.issue, { following: bot.state.isFollowing(view.issue.id), armed, own, more }) };
+  const rich = fitMessage((level) => composeTask(view, context, level, true), RICH_LEVELS, RICH_LIMIT);
+  const keyboard = taskKeyboard(view.issue, { following: bot.state.isFollowing(view.issue.id), armed, own, more });
+  return { text, rich, hasMarkdown: hasMarkdown(view, own), keyboard };
 }
 
 // Sends an already loaded task view as a new message; replies to it become comments on the task.
 export async function sendLoadedView(bot, view, { note = null, replyTo, thread = null } = {}) {
   const { issue } = view;
-  const { text, keyboard } = renderTask(bot, view, { note, own: ownTopic(bot, issue.id, thread) });
-  const messageId = await bot.send(text, { keyboard, replyTo, thread, issue: { id: issue.id, identifier: issue.identifier } });
+  const { text, rich, hasMarkdown: markdown, keyboard } = renderTask(bot, view, { note, own: ownTopic(bot, issue.id, thread) });
+  const messageId = await bot.send(text, { keyboard, replyTo, thread, rich: markdown ? rich : null, issue: { id: issue.id, identifier: issue.identifier } });
   return { issue, messageId };
 }
 
@@ -144,8 +161,8 @@ export async function sendTaskView(bot, ref, options = {}) {
 async function showTask(bot, message, ref, view, { more = false } = {}) {
   const current = view ?? (await loadTask(bot, ref));
   const own = ownTopic(bot, current.issue.id, threadOf(bot, message));
-  const { text, keyboard } = renderTask(bot, current, { own, armed: bot.armedOps(message.message_id), more });
-  await bot.edit(message.message_id, text, keyboard);
+  const { text, rich, keyboard } = renderTask(bot, current, { own, armed: bot.armedOps(message.message_id), more });
+  await bot.edit(message.message_id, text, keyboard, rich);
 }
 
 // What the owner is told when Paperclip refuses or fails a button action.

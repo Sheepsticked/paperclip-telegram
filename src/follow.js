@@ -1,6 +1,7 @@
 import { authorName, isBoardComment } from './comments.js';
 import { QUOTE_LEVELS, fitMessage, headline, issueUrl, openRows, quote } from './format.js';
 import { isTelegramOutage, isUnauthorized } from './guard.js';
+import { RICH_LIMIT, RICH_QUOTE_LEVELS, escapeRich, richBody, richJoin } from './rich.js';
 import { gate } from './settings.js';
 import { PaperclipError } from './paperclip.js';
 
@@ -35,10 +36,15 @@ export function unfollowIssue(bot, issueId) {
 // One followed comment: the author's name is the kind, the text follows as a quote.
 async function sendFollowComment(bot, issue, comment) {
   const author = await authorName(bot, comment);
+  const { uiBaseUrl } = bot.config;
+  const url = issueUrl(uiBaseUrl, issue.identifier);
   await bot.sendAbout(issue, ({ own }) => {
-    const head = headline(author, issue, { own, url: issueUrl(bot.config.uiBaseUrl, issue.identifier) });
+    const head = headline(author, issue, { own, url });
     const text = fitMessage((max) => [head, quote(comment.body, max)].filter(Boolean).join('\n'), QUOTE_LEVELS);
-    return { text, keyboard: openRows(issue.id, own) };
+    const richHead = headline(author, issue, { own, url, esc: escapeRich });
+    const context = { uiBaseUrl, fullUrl: `${url}#comment-${comment.id}` };
+    const rich = fitMessage((max) => richJoin([richHead, richBody(comment.body, max, context)]), RICH_QUOTE_LEVELS, RICH_LIMIT);
+    return { text, rich, keyboard: openRows(issue.id, own) };
   });
   bot.state.noteShown(comment.id);
 }

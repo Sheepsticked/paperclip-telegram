@@ -78,6 +78,7 @@ Edit it:
 | `telegramChatId` | Chat the bot writes to. Optional; defaults to `telegramUserId`. For a group with topics, the group id (a negative number). |
 | `topics` | Optional, `"auto"` (default) or `"off"`. With `"auto"` topics are used when the chat is a forum group where the bot is an admin who may manage topics; `"off"` keeps everything in one chat. |
 | `closedTopicDays` | Optional, default `7`. Topics of finished tasks are deleted this many days after they were closed; `0` keeps them for ever. See [Finished topics](#finished-topics). |
+| `richMessages` | Optional, `"auto"` (default) or `"off"`. With `"auto"` messages that hold Paperclip Markdown are sent as Telegram rich messages; `"off"` sends only plain messages. See [Rich messages](#rich-messages). |
 | `telegramTokenFile`, `paperclipTokenFile` | Paths of the two token files. `~/` is expanded. |
 | `telegramApiUrl` | Optional, defaults to `https://api.telegram.org`. |
 | `pollSeconds` | Optional, seconds between Paperclip polls (default 15). |
@@ -119,7 +120,17 @@ If Paperclip rejects the key (HTTP 401), the log says so and the bot sends one T
 
 Line 1 of a task message is `Kind · ID Title` with the kind in bold and the id linked to the task (or, for a card or inbox item, to that card or item) in Paperclip. Inside the task's own topic line 1 is only the kind, and the pinned task view there links the task. A message without a task links its title instead (or ends with an **Open in Paperclip** link when it has no title), and the run-failed alert links to the agent's name. A comment's kind is the agent's name. There is no separate link line.
 
-Quoted text (the last agent comment, a description) is cut at 2000 characters with `…` and is folded in Telegram when it is longer than 3 lines or 300 characters.
+Quoted text (the last agent comment, a description) is cut at 2000 characters with `…` and is folded in Telegram when it is longer than 3 lines or 300 characters. With rich messages (the default, see below) a comment is cut at 4000 characters.
+
+### Rich messages
+
+With `richMessages: "auto"` the messages that hold Paperclip Markdown are sent as Telegram rich messages (Bot API 10.1), so bold text, lists, tables, code and links show as their author wrote them: followed comments, the comment quoted in done and in-review messages, the description and last comment in the task view, the prompt and details of a card, the text of a decision and the documents of a task. Command replies, lists, the board, pickers and short notices stay plain messages.
+
+Line 1 is the same as in a plain message. The text below it is a quote when it has up to 3 lines and 300 characters, else it is folded under its first line (plain, up to 80 characters); a text that starts with a code block, table or list is folded under **Show all**. Links to Paperclip are made absolute, `agent://` links show only their text, images become links and raw HTML is shown as text. A text over its limit is cut at a line, an open code block is closed and the cut ends with a **Full text in Paperclip** link.
+
+A message sent as a rich message is edited as one. A document is one rich message, or several split at headings (at most three, the last one ends with the link when more was left).
+
+When Telegram refuses a rich message, or the edit of one, for a reason other than a missing topic, missing rights or an edit that changes nothing, the plain message is sent or edited instead and the log warns (at most once an hour). After three refusals in a row the bot sends plain messages until it is restarted. `"off"` sends plain messages only.
 
 Buttons have one or two words. Some have a colour: green for accept, confirm, approve, submit and **Done**; red for decline, reject, pause, **Stop run** and **Cancel task**; blue for the chosen option or filter. All others are plain. A destructive button needs a second tap within 30 seconds. Messages about a task inside its own topic have no buttons, except cards and inbox items with answer buttons; elsewhere they have **Open task**.
 
@@ -178,7 +189,7 @@ The first row has **Done** (green, needs a second tap within 30 seconds) and **M
 | Project | Shows the projects (8 per page) and "No project". |
 | To do | Sets the status to to do. Only shown when it changes the status. |
 | Cancel task | Cancels the task (red). Needs a second tap within 30 seconds (the label says "Tap again to confirm"). |
-| Docs | Shown when the task has documents. Turns the buttons into a list of the documents (title and key) with **Back**; tapping one sends it as plain text in at most three messages. A longer document ends with "The document continues in Paperclip" and the link. Documents are read-only. |
+| Docs | Shown when the task has documents. Turns the buttons into a list of the documents (title and key) with **Back**; tapping one sends it as a rich message, split at headings into at most three messages when it is long (with `richMessages: "off"` as plain text in at most three messages). A longer document ends with a link to the full text in Paperclip. Documents are read-only. |
 | Follow, Unfollow | Starts or stops following the task. Not shown in the task's own topic, where the task is already followed. |
 | Comment | Asks for a reply; your reply becomes a comment. A plain reply to the task message works too. Not shown in the task's own topic, where plain text is a comment. |
 | Refresh | Reads the task again. |
@@ -222,7 +233,7 @@ Sent on its own, a file with a caption offers "Create a task from this?" with th
 
 ### Following
 
-Each new comment of a followed task is one message: the agent's name in bold as the kind (and the task, outside its own topic), then the comment as a quote of up to 2000 characters. Your own comments are not sent. Every comment is said once: the bot remembers the last 500 comment ids it showed (in follow messages and in done and in-review quotes; a task view does not count), and a comment in that memory is not sent or quoted again, in the same poll or a later one. The memory is kept across restarts and cleared when `telegramChatId` changes. More than five new comments on one task arrive as one summary line. A task stops being followed when it is done or cancelled. At most 50 tasks are followed; following one more drops the oldest. Tasks you create from Telegram are followed by default (the **Follow new tasks** setting), and so are tasks that have a topic. The **Followed comments** setting decides whether their comments are sent.
+Each new comment of a followed task is one message: the agent's name in bold as the kind (and the task, outside its own topic), then the comment as a quote of up to 4000 characters (2000 as a plain message). Your own comments are not sent. Every comment is said once: the bot remembers the last 500 comment ids it showed (in follow messages and in done and in-review quotes; a task view does not count), and a comment in that memory is not sent or quoted again, in the same poll or a later one. The memory is kept across restarts and cleared when `telegramChatId` changes. More than five new comments on one task arrive as one summary line. A task stops being followed when it is done or cancelled. At most 50 tasks are followed; following one more drops the oldest. Tasks you create from Telegram are followed by default (the **Follow new tasks** setting), and so are tasks that have a topic. The **Followed comments** setting decides whether their comments are sent.
 
 ### Settings and mute
 

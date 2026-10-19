@@ -29,9 +29,9 @@ function classify(err) {
 
 export async function editCardMessage(bot, card) {
   if (!card.messageId) return;
-  const { text, keyboard } = renderCard(card, bot.config.uiBaseUrl);
+  const { text, rich, keyboard } = renderCard(card, bot.config.uiBaseUrl);
   try {
-    await bot.edit(card.messageId, text, keyboard);
+    await bot.edit(card.messageId, text, keyboard, rich);
   } catch (err) {
     bot.log.warn('could not update a card message', { error: err.message });
   }

@@ -83,6 +83,116 @@ export function mentionEntities(html) {
   return entities;
 }
 
+const RICH_TAGS = new Set(['b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'a', 'code', 'details', 'summary']);
+const RICH_ENTITY = /^&(amp|lt|gt|quot|apos|nbsp|hellip|mdash|ndash|lsquo|rsquo|ldquo|rdquo|#\d+|#x[0-9a-fA-F]+);/;
+const RICH_CHAR_LIMIT = 32768;
+const RICH_BLOCK_LIMIT = 500;
+
+// The line without its code spans: a backtick run closes at the next run of the same length; an unmatched run is text.
+function withoutSpans(line) {
+  let out = '';
+  for (let i = 0; i < line.length; ) {
+    if (line[i] === '\\') {
+      out += line.slice(i, i + 2);
+      i += 2;
+    } else if (line[i] !== '`') {
+      out += line[i];
+      i += 1;
+    } else {
+      const size = /^`+/.exec(line.slice(i))[0].length;
+      let j = i + size;
+      let close = -1;
+      while (j < line.length) {
+        if (line[j] !== '`') {
+          j += 1;
+          continue;
+        }
+        const run = /^`+/.exec(line.slice(j))[0].length;
+        if (run === size) {
+          close = j;
+          break;
+        }
+        j += run;
+      }
+      if (close < 0) {
+        out += line.slice(i, i + size);
+        i += size;
+      } else {
+        i = close + size;
+      }
+    }
+  }
+  return out;
+}
+
+// Lines of rich Markdown with the fenced code blocks and the inline code spans taken out; null when a fence stays open.
+function outsideCode(markdown) {
+  const kept = [];
+  let fence = null;
+  for (const line of markdown.split('\n')) {
+    const found = /^[\s>]*(`{3,}|~{3,})(.*)$/.exec(line);
+    // A backtick fence cannot have a backtick in its info string; such a line is a code span.
+    const mark = found && !(found[1][0] === '`' && found[2].includes('`')) ? found : null;
+    if (fence) {
+      if (mark && mark[1][0] === fence[0] && mark[1].length >= fence.length && /^[\s>]*(`+|~+)\s*$/.test(line)) fence = null;
+      continue;
+    }
+    if (mark) {
+      fence = mark[1];
+      kept.push('(code block)');
+      continue;
+    }
+    kept.push(withoutSpans(line));
+  }
+  return fence ? null : kept;
+}
+
+// Stricter than Telegram on some points so a slip shows up: no media, no unknown tag, no loose `&`, no open code block.
+export function validateRichMarkdown(markdown) {
+  if (typeof markdown !== 'string' || markdown.trim().length === 0) return 'message text is empty';
+  if (Array.from(markdown).length > RICH_CHAR_LIMIT) return 'rich message is too long';
+  const lines = outsideCode(markdown);
+  if (lines === null) return "code block is not closed";
+  if (lines.filter((line) => line.trim()).length > RICH_BLOCK_LIMIT) return 'rich message has too many blocks';
+  const stack = [];
+  for (const line of lines) {
+    if (/(?<!\\)!\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])/.test(line)) return 'media blocks are not allowed here';
+    for (let i = 0; i < line.length; i += 1) {
+      const rest = line.slice(i);
+      if (line[i] === '\\') {
+        i += 1;
+      } else if (line[i] === '&') {
+        if (!RICH_ENTITY.test(rest)) return `Unsupported entity at byte offset ${i}`;
+      } else if (line[i] === '<') {
+        const match = /^<(\/?)([A-Za-z][\w-]*)([^<>]*)>/.exec(rest);
+        if (!match) return `Unescaped "<" at byte offset ${i}`;
+        const [whole, closing, name, attrs] = match;
+        if (!RICH_TAGS.has(name)) return `Unsupported start tag "${name}" at byte offset ${i}`;
+        if (closing) {
+          if (stack.pop() !== name) return `Unmatched end tag at byte offset ${i}`;
+        } else {
+          if (name === 'a' && !/\shref="[^"]*"/.test(attrs)) return 'Link without href';
+          stack.push(name);
+        }
+        i += whole.length - 1;
+      }
+    }
+  }
+  if (stack.length) return `Can't find end tag for "${stack.at(-1)}"`;
+  // The Markdown inside <details> is only parsed when it stands apart from the tags by blank lines.
+  if (/<\/summary>(?!\n\n)/.test(lines.join('\n')) && /<details>/.test(markdown)) return 'details content must follow a blank line';
+  return null;
+}
+
+// The user ids that rich Markdown links with tg://user, outside code.
+export function richMentionIds(markdown) {
+  const ids = [];
+  for (const line of outsideCode(markdown) ?? []) {
+    for (const match of line.matchAll(/\]\(tg:\/\/user\?id=(\d+)\)|href="tg:\/\/user\?id=(\d+)"/g)) ids.push(Number(match[1] ?? match[2]));
+  }
+  return ids;
+}
+
 // A stand-in for the Telegram Bot API that records every call and checks what the real API checks.
 // With `forum: true` the chat is a supergroup with topics and the bot an admin holding `botRights`.
 export async function startFakeTelegram({
@@ -116,6 +226,7 @@ export async function startFakeTelegram({
   let nextMessageId = firstMessageId;
   let nextUpdateId = 1;
   let dropMentions = false;
+  let richRefusal = null;
   let premium = ownerPremium;
   let commands = null;
   let shortDescription = null;
@@ -189,6 +300,34 @@ export async function startFakeTelegram({
     return checkMarkup(res, params.reply_markup);
   }
 
+  // A rich send or edit; false after answering with an error. `richRefusal` makes the fake refuse them on demand.
+  function checkRich(res, params) {
+    if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found'), false;
+    const markdown = params.rich_message?.markdown;
+    const keys = Object.keys(params.rich_message ?? {}).filter((key) => ['html', 'markdown', 'blocks'].includes(key));
+    if (keys.length !== 1 || params.text !== undefined || params.parse_mode !== undefined || params.link_preview_options !== undefined) {
+      return error(res, 400, 'Bad Request: rich_message must be the only content'), false;
+    }
+    note('text', markdown);
+    if (richRefusal && richRefusal.times > 0) {
+      if (richRefusal.times !== Infinity) richRefusal.times -= 1;
+      return error(res, 400, richRefusal.description), false;
+    }
+    const problem = validateRichMarkdown(markdown);
+    if (problem) return error(res, 400, `Bad Request: can't parse rich message: ${problem}`), false;
+    return checkMarkup(res, params.reply_markup);
+  }
+
+  // The rich_message Telegram returns: the mention shows up as a text_mention block.
+  const richResult = (markdown) => ({
+    blocks: [
+      {
+        type: 'paragraph',
+        text: dropMentions ? markdown : richMentionIds(markdown).map((id) => ({ type: 'text_mention', text: 'Owner', user: { id, is_bot: false, first_name: 'Owner' } })),
+      },
+    ],
+  });
+
   const handlers = {
     getUpdates(res, params) {
       const offset = params.offset ?? 0;
@@ -238,18 +377,52 @@ export async function startFakeTelegram({
         },
       });
     },
+    sendRichMessage(res, params) {
+      if (!checkRich(res, params)) return;
+      if (!checkThread(res, params.message_thread_id)) return;
+      const thread = params.message_thread_id ?? null;
+      const markdown = params.rich_message.markdown;
+      const message = {
+        message_id: nextMessageId++,
+        chat: { id: chatId, type: chat.type },
+        date: 0,
+        text: markdown,
+        rich: true,
+        markup: params.reply_markup ?? null,
+        replyTo: params.reply_parameters?.message_id ?? null,
+        thread,
+        pinned: null,
+        edits: 0,
+        silent: params.disable_notification === true,
+      };
+      messages.set(message.message_id, message);
+      sends.push({ messageId: message.message_id, text: markdown, rich: true, markup: params.reply_markup ?? null, silent: message.silent });
+      respond(res, 200, {
+        ok: true,
+        result: {
+          message_id: message.message_id,
+          chat: message.chat,
+          date: 0,
+          rich_message: richResult(markdown),
+          ...(thread ? { message_thread_id: thread, is_topic_message: true } : {}),
+        },
+      });
+    },
     editMessageText(res, params) {
-      if (!checkMessage(res, params)) return;
+      const rich = params.rich_message !== undefined;
+      if (rich ? !checkRich(res, params) : !checkMessage(res, params)) return;
       const message = messages.get(params.message_id);
       if (!message) return error(res, 400, 'Bad Request: message to edit not found');
       const markup = params.reply_markup ?? null;
-      if (message.text === params.text && JSON.stringify(message.markup) === JSON.stringify(markup)) {
+      const text = rich ? params.rich_message.markdown : params.text;
+      if (message.text === text && Boolean(message.rich) === rich && JSON.stringify(message.markup) === JSON.stringify(markup)) {
         return error(res, 400, 'Bad Request: message is not modified: specified new message content and reply markup are exactly the same');
       }
-      message.text = params.text;
+      message.text = text;
+      message.rich = rich;
       message.markup = markup;
       message.edits += 1;
-      respond(res, 200, { ok: true, result: { message_id: message.message_id, chat: message.chat, date: 0, text: message.text } });
+      respond(res, 200, { ok: true, result: { message_id: message.message_id, chat: message.chat, date: 0, ...(rich ? { rich_message: richResult(text) } : { text }) } });
     },
     editMessageReplyMarkup(res, params) {
       if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found');
@@ -477,6 +650,15 @@ export async function startFakeTelegram({
     dropMentions(value = true) {
       dropMentions = value;
     },
+    // Makes the next `times` rich sends and rich edits fail with a refusal (all of them by default).
+    refuseRich({ times = Infinity, description = "Bad Request: can't parse rich message" } = {}) {
+      richRefusal = { times, description };
+    },
+    allowRich() {
+      richRefusal = null;
+    },
+    // Messages sent or last edited as rich messages.
+    richMessages: () => [...messages.values()].filter((m) => m.rich),
     // Whether the bot owner has Telegram Premium, which button icons need.
     setOwnerPremium(value) {
       premium = value;

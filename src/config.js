@@ -97,6 +97,7 @@ export function parseConfig(raw) {
     'pollSeconds must be a positive number when set',
   );
   need(c.topics === undefined || c.topics === 'auto' || c.topics === 'off', 'topics must be "auto" or "off" when set');
+  need(c.richMessages === undefined || c.richMessages === 'auto' || c.richMessages === 'off', 'richMessages must be "auto" or "off" when set');
   need(
     c.closedTopicDays === undefined || (typeof c.closedTopicDays === 'number' && Number.isFinite(c.closedTopicDays) && c.closedTopicDays >= 0),
     'closedTopicDays must be a number of days (0 or more) when set',
@@ -125,6 +126,7 @@ export function parseConfig(raw) {
       telegramApiUrl: trimSlash(c.telegramApiUrl ?? 'https://api.telegram.org'),
       pollSeconds: c.pollSeconds ?? 15,
       topics: c.topics ?? 'auto',
+      richMessages: c.richMessages ?? 'auto',
       closedTopicDays: c.closedTopicDays ?? 7,
       routineRunErrorCodes: c.routineRunErrorCodes ?? DEFAULT_ROUTINE_RUN_ERROR_CODES,
     },

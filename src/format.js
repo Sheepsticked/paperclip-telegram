@@ -93,23 +93,24 @@ export function truncateLines(text, maxLines, maxChars) {
   return cut && limited === joined ? `${limited}…` : limited;
 }
 
-export function link(url, label) {
-  return `<a href="${escapeAttribute(url)}">${escapeHtml(label)}</a>`;
+// `esc` escapes the plain text: escapeHtml for a classic message, escapeRich for a rich one.
+export function link(url, label, esc = escapeHtml) {
+  return `<a href="${escapeAttribute(url)}">${esc(label)}</a>`;
 }
 
 // The bold first word of a message; `url` makes it a link.
-export function kindWord(kind, url = null) {
+export function kindWord(kind, url = null, esc = escapeHtml) {
   const label = truncate(kind, 80);
-  return `<b>${url ? link(url, label) : escapeHtml(label)}</b>`;
+  return `<b>${url ? link(url, label, esc) : esc(label)}</b>`;
 }
 
 // Line 1 of a task message: "Kind · ID Title", or the kind alone inside the task's own topic.
 // `url` links the ID; `kindUrl` links the kind word instead.
-export function headline(kind, issue, { own = false, titleMax = 100, url = null, kindUrl = null } = {}) {
-  if (own) return kindWord(kind, kindUrl);
-  const id = url && !kindUrl ? link(url, issue.identifier) : escapeHtml(issue.identifier);
-  const title = issue.title ? ` ${escapeHtml(truncate(issue.title, titleMax))}` : '';
-  return `${kindWord(kind, kindUrl)} · ${id}${title}`;
+export function headline(kind, issue, { own = false, titleMax = 100, url = null, kindUrl = null, esc = escapeHtml } = {}) {
+  if (own) return kindWord(kind, kindUrl, esc);
+  const id = url && !kindUrl ? link(url, issue.identifier, esc) : esc(issue.identifier);
+  const title = issue.title ? ` ${esc(truncate(issue.title, titleMax))}` : '';
+  return `${kindWord(kind, kindUrl, esc)} · ${id}${title}`;
 }
 
 export const QUOTE_MAX = 2000;
@@ -151,12 +152,12 @@ export function runUrl(uiBaseUrl, prefix, agentId, runId) {
 const BOLD_WORD = /^<b>([^<]+)<\/b>/;
 
 // The message with its leading bold word turned into a mention of the user; null when it does not start with an
-// unlinked bold word or the mention would push it over the Telegram limit.
-export function withMention(html, userId) {
+// unlinked bold word or the mention would push it over `limit`.
+export function withMention(html, userId, limit = MESSAGE_LIMIT) {
   const bold = BOLD_WORD.exec(html);
   if (!bold) return null;
   const text = `<b>${mentionLink(userId, bold[1])}</b>${html.slice(bold[0].length)}`;
-  return text.length <= MESSAGE_LIMIT ? text : null;
+  return text.length <= limit ? text : null;
 }
 
 // Tries build(level) from the roomiest level down and returns the first result within `limit`.

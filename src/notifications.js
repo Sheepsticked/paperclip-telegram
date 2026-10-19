@@ -5,6 +5,7 @@ import { ALERT_LIMIT, MESSAGE_LIMIT, QUOTE_LEVELS, escapeHtml, firstLine, fitMes
 import { guarded, isTelegramOutage, isUnauthorized } from './guard.js';
 import { INBOX_KINDS, isFreshInbox, itemIssueId, sendInboxItem, syncInbox } from './inbox.js';
 import { PaperclipError } from './paperclip.js';
+import { RICH_ALERT_LIMIT, RICH_LIMIT, RICH_QUOTE_LEVELS, escapeRich, richBody, richJoin } from './rich.js';
 import { allow, announceMuteEnd } from './settings.js';
 import { syncTopics } from './topics.js';
 
@@ -233,15 +234,32 @@ async function sendStatusUpdate(bot, issue) {
   const comment = found && !bot.state.hasShown(found.id) ? found : null;
   const alert = isTopLevelDone(issue);
   let quoted = false;
+  const { uiBaseUrl } = bot.config;
+  const url = issueUrl(uiBaseUrl, issue.identifier);
   const build = ({ own }) => {
-    const head = headline(kind, issue, { own, url: issueUrl(bot.config.uiBaseUrl, issue.identifier) });
+    const head = headline(kind, issue, { own, url });
     const text = (max) => {
       const body = comment ? quote(comment.body, max) : '';
       quoted = body !== '';
       return [head, body].filter(Boolean).join('\n');
     };
     // The last build is the one that fits, so `quoted` describes the sent text.
-    return { text: fitMessage(text, QUOTE_LEVELS, alert ? ALERT_LIMIT : MESSAGE_LIMIT), keyboard: openRows(issue.id, own) };
+    const fitted = { text: fitMessage(text, QUOTE_LEVELS, alert ? ALERT_LIMIT : MESSAGE_LIMIT), keyboard: openRows(issue.id, own) };
+    if (!comment) return fitted;
+    const richHead = headline(kind, issue, { own, url, esc: escapeRich });
+    const context = { uiBaseUrl, fullUrl: `${url}#comment-${comment.id}` };
+    let richQuoted = false;
+    const rich = fitMessage(
+      (max) => {
+        const body = richBody(comment.body, max, context);
+        richQuoted = body !== '';
+        return richJoin([richHead, body]);
+      },
+      RICH_QUOTE_LEVELS,
+      alert ? RICH_ALERT_LIMIT : RICH_LIMIT,
+    );
+    quoted ||= richQuoted;
+    return richQuoted ? { ...fitted, rich } : fitted;
   };
   await bot.sendAbout(issue, build, { alert });
   if (quoted) bot.state.noteShown(comment.id);

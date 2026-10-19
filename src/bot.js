@@ -1,11 +1,12 @@
 import { routeCallback } from './callbacks.js';
 import { handleMessage } from './commands.js';
 import { MESSAGE_LIMIT, truncate, withMention } from './format.js';
-import { warnHourly } from './guard.js';
+import { isRichFault, warnHourly } from './guard.js';
 import { iconList } from './icons.js';
 import { pollPaperclip } from './notifications.js';
 import { PaperclipClient, PaperclipError } from './paperclip.js';
 import { SerialQueue } from './queue.js';
+import { RICH_LIMIT, hasRichMention } from './rich.js';
 import { TelegramClient, TelegramError, defaultSleep } from './telegram.js';
 import { DELETE_RIGHT_WARNING, dropTopic, topicTarget } from './topics.js';
 import { COMMENT_REACTION, isServiceMessage, threadGone } from './thread.js';
@@ -16,6 +17,9 @@ const PROJECT_CACHE_MS = 60 * 1000;
 const CONFIRM_MS = 30 * 1000;
 const AUTH_ALERT_INTERVAL_MS = 60 * 60 * 1000;
 const BACKOFF_CAP_MS = 60_000;
+// Refusals of rich messages in a row after which the bot sends plain messages for the rest of the run.
+const RICH_REFUSALS_LIMIT = 3;
+const HARMLESS_EDIT = /not modified|not found|can't be edited/i;
 
 export const COMMANDS = [
   { command: 'new', description: 'Create a task: /new [@agent] [#project] <text>' },
@@ -70,6 +74,8 @@ export class Bot {
     this.botId = null;
     this.mentionDropped = false;
     this.mentionAccepted = false;
+    this.richRefusals = 0;
+    this.richOff = config.richMessages === 'off';
     if (state.adoptChat(config.telegramChatId)) {
       log.info('chat changed: dropped the message ids of the old chat; open cards and inbox items are sent again');
       state.save();
@@ -80,31 +86,75 @@ export class Bot {
   // Every outgoing message goes to the one configured chat; `thread` picks a topic (none means the main chat).
   // A message is silent unless `alert` is set, which is for the few that need the owner. In a group an alert
   // also mentions the owner, so it still pops up when the group is muted.
-  async send(html, { keyboard, replyTo, forceReply, issue, thread, alert = false } = {}) {
+  // `rich` is the same message as Markdown for a rich message; it is sent instead of `html` unless rich
+  // messages are off or Telegram refuses it, and then `html` goes out.
+  async send(html, { keyboard, replyTo, forceReply, issue, thread, alert = false, rich = null } = {}) {
     if (html.length > MESSAGE_LIMIT) throw new Error('refusing to send a message over the Telegram limit');
-    const mentioned = alert ? this.#mentionOwner(html) : null;
+    if (rich !== null) {
+      const richId = await this.sendRich(rich, { keyboard, replyTo, issue, thread, alert });
+      if (richId !== null) return richId;
+    }
+    const mentioned = alert ? this.#mentionOwner(html, MESSAGE_LIMIT) : null;
     const params = {
-      chat_id: this.config.telegramChatId,
+      ...this.#sendParams({ keyboard, replyTo, thread, alert }),
       text: mentioned ?? html,
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
     };
-    if (!alert) params.disable_notification = true;
-    if (thread != null && this.topics.on) params.message_thread_id = thread;
-    if (keyboard?.length) params.reply_markup = { inline_keyboard: keyboard };
     if (forceReply) params.reply_markup = { force_reply: true, input_field_placeholder: typeof forceReply === 'string' ? forceReply : 'Reason' };
-    if (replyTo) params.reply_parameters = { message_id: replyTo, allow_sending_without_reply: true };
     const sent = await this.tg.sendMessage(params);
     if (mentioned) this.#checkMention(sent);
     if (issue) this.state.mapMessage(sent.message_id, issue.id, issue.identifier);
     return sent.message_id;
   }
 
+  #sendParams({ keyboard, replyTo, thread, alert }) {
+    const params = { chat_id: this.config.telegramChatId };
+    if (!alert) params.disable_notification = true;
+    if (thread != null && this.topics.on) params.message_thread_id = thread;
+    if (keyboard?.length) params.reply_markup = { inline_keyboard: keyboard };
+    if (replyTo) params.reply_parameters = { message_id: replyTo, allow_sending_without_reply: true };
+    return params;
+  }
+
+  // Sends Markdown as a rich message and returns its id; null when rich messages are off or Telegram refused
+  // this one (the caller then sends the plain version). Any other failure is thrown.
+  async sendRich(markdown, { keyboard, replyTo, issue, thread, alert = false } = {}) {
+    if (this.richOff) return null;
+    if (markdown.length > RICH_LIMIT) throw new Error('refusing to send a rich message over the Telegram limit');
+    const mentioned = alert ? this.#mentionOwner(markdown, RICH_LIMIT) : null;
+    let sent;
+    try {
+      sent = await this.tg.sendRichMessage({ ...this.#sendParams({ keyboard, replyTo, thread, alert }), rich_message: { markdown: mentioned ?? markdown } });
+    } catch (err) {
+      if (this.#refusedRich(err)) return null;
+      throw err;
+    }
+    this.richRefusals = 0;
+    if (mentioned) this.#checkMention(sent);
+    this.state.noteRich(sent.message_id);
+    if (issue) this.state.mapMessage(sent.message_id, issue.id, issue.identifier);
+    return sent.message_id;
+  }
+
+  // Counts a refused rich message; true when it was Telegram's refusal of the rich format (the plain message
+  // goes instead). After a few in a row the rest of the run sends plain messages.
+  #refusedRich(err) {
+    if (!isRichFault(err)) return false;
+    this.richRefusals += 1;
+    warnHourly(this, 'rich-refused', 'rich message refused, sent as plain text', { error: err.message });
+    if (this.richRefusals >= RICH_REFUSALS_LIMIT && !this.richOff) {
+      this.richOff = true;
+      this.log.warn(`rich messages refused ${RICH_REFUSALS_LIMIT} times in a row, sending plain messages from now on`);
+    }
+    return true;
+  }
+
   // The alert with the owner mention, or null in a private chat and for an alert that cannot carry one.
-  #mentionOwner(html) {
+  #mentionOwner(html, limit) {
     const owner = this.config.telegramUserId;
     if (this.config.telegramChatId === owner) return null;
-    const text = withMention(html, owner);
+    const text = withMention(html, owner, limit);
     if (text === null) this.log.warn('alert without an owner mention');
     return text;
   }
@@ -112,7 +162,9 @@ export class Bot {
   // Telegram reports the mention back as an entity; log it once when it comes through and once when it is dropped.
   #checkMention(sent) {
     const owner = this.config.telegramUserId;
-    const kept = Array.isArray(sent?.entities) && sent.entities.some((entity) => entity.type === 'text_mention' && entity.user?.id === owner);
+    const kept =
+      (Array.isArray(sent?.entities) && sent.entities.some((entity) => entity.type === 'text_mention' && entity.user?.id === owner)) ||
+      hasRichMention(sent?.rich_message, owner);
     if (kept && !this.mentionAccepted) {
       this.mentionAccepted = true;
       this.log.info('owner mention accepted');
@@ -124,7 +176,8 @@ export class Bot {
 
   // Sends a message about a task into its top-level task's topic. A deleted topic is made again once;
   // any other refusal of the topic send goes to the main chat once.
-  // `build({ own })` returns { text, keyboard }; own is true when the message lands in the task's own topic.
+  // `build({ own })` returns { text, keyboard } and optionally `rich`, the Markdown of the same message;
+  // own is true when the message lands in the task's own topic.
   async sendAbout(issue, build, { replyTo, alert = false } = {}) {
     let target = await topicTarget(this, issue);
     const refusedInTopic = (err) => target.thread !== null && err instanceof TelegramError && err.code === 400;
@@ -147,11 +200,12 @@ export class Bot {
   }
 
   async #sendInTopic(target, issue, build, replyTo, alert) {
-    const { text, keyboard } = build({ own: target.own });
+    const { text, keyboard, rich = null } = build({ own: target.own });
     const messageId = await this.send(text, {
       keyboard,
       replyTo,
       alert,
+      rich,
       thread: target.thread,
       issue: { id: issue.id, identifier: issue.identifier },
     });
@@ -173,19 +227,32 @@ export class Bot {
     }
   }
 
-  async edit(messageId, html, keyboard = []) {
+  // Edits a message in place. A message that was sent as a rich message is edited with `rich` (the Markdown of
+  // the same message) and falls back to `html` when Telegram refuses that.
+  async edit(messageId, html, keyboard = [], rich = null) {
+    const target = { chat_id: this.config.telegramChatId, message_id: messageId };
+    const harmless = (err) => err instanceof TelegramError && err.code === 400 && HARMLESS_EDIT.test(err.description);
+    if (rich !== null && !this.richOff && this.state.isRich(messageId)) {
+      try {
+        await this.tg.editMessageText({ ...target, rich_message: { markdown: rich }, reply_markup: { inline_keyboard: keyboard } });
+        this.richRefusals = 0;
+        return;
+      } catch (err) {
+        if (harmless(err)) return;
+        if (!this.#refusedRich(err)) throw err;
+      }
+    }
     try {
       await this.tg.editMessageText({
-        chat_id: this.config.telegramChatId,
-        message_id: messageId,
+        ...target,
         text: html,
         parse_mode: 'HTML',
         link_preview_options: { is_disabled: true },
         reply_markup: { inline_keyboard: keyboard },
       });
+      this.state.dropRich(messageId);
     } catch (err) {
-      const harmless = err instanceof TelegramError && err.code === 400 && /not modified|not found|can't be edited/i.test(err.description);
-      if (!harmless) throw err;
+      if (!harmless(err)) throw err;
     }
   }
 

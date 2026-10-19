@@ -96,6 +96,10 @@ export class TelegramClient {
     return this.call('sendMessage', params);
   }
 
+  sendRichMessage(params) {
+    return this.call('sendRichMessage', params);
+  }
+
   editMessageText(params) {
     return this.call('editMessageText', params);
   }

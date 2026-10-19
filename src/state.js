@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const MAX_MESSAGES = 2000;
+const MAX_RICH_MESSAGES = 2000;
 const MAX_ALERTED_RUNS = 500;
 const MAX_SKIPPED_CARDS = 500;
 const MAX_SKIPPED_INBOX = 500;
@@ -166,6 +167,7 @@ export class State {
     this.cardCounter = data.cardCounter ?? 0;
     this.cards = new Map(Object.entries(data.cards ?? {}));
     this.messages = new Map((data.messages ?? []).map(([id, issueId]) => [Number(id), issueId]));
+    this.richMessages = new Set((Array.isArray(data.richMessages) ? data.richMessages : []).filter(Number.isInteger).slice(-MAX_RICH_MESSAGES));
     this.identifiers = new Map(Object.entries(data.identifiers ?? {}));
     this.alertedRuns = data.alertedRuns ?? [];
     this.skippedCards = data.skippedCards ?? [];
@@ -222,6 +224,7 @@ export class State {
     this.chatId = chatId;
     if (!changed) return false;
     this.messages.clear();
+    this.richMessages.clear();
     this.identifiers.clear();
     this.cards.clear();
     this.inbox.clear();
@@ -245,6 +248,21 @@ export class State {
     this.messages.set(messageId, issueId);
     if (identifier) this.identifiers.set(issueId, identifier);
     while (this.messages.size > MAX_MESSAGES) this.messages.delete(this.messages.keys().next().value);
+  }
+
+  // Messages sent as rich messages, so an edit of one is a rich edit.
+  noteRich(messageId) {
+    this.richMessages.delete(messageId);
+    this.richMessages.add(messageId);
+    while (this.richMessages.size > MAX_RICH_MESSAGES) this.richMessages.delete(this.richMessages.values().next().value);
+  }
+
+  isRich(messageId) {
+    return this.richMessages.has(messageId);
+  }
+
+  dropRich(messageId) {
+    this.richMessages.delete(messageId);
   }
 
   issueForMessage(messageId) {
@@ -465,6 +483,7 @@ export class State {
       cardCounter: this.cardCounter,
       cards: Object.fromEntries(this.cards),
       messages: [...this.messages],
+      richMessages: [...this.richMessages],
       identifiers: Object.fromEntries([...this.identifiers].filter(([issueId]) => referenced.has(issueId))),
       alertedRuns: this.alertedRuns,
       skippedCards: this.skippedCards,

@@ -53,6 +53,8 @@ export async function startWorld({ config: overrides = {}, telegram = {}, paperc
     paperclipTokenFile,
     telegramApiUrl: tg.url,
     pollSeconds: 1,
+    // Most tests read classic messages; the rich ones switch this on.
+    richMessages: 'off',
     ...overrides,
   };
   fs.writeFileSync(configFile, JSON.stringify(rawConfig), { mode: 0o600 });

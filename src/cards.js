@@ -1,4 +1,5 @@
 import { ALERT_LIMIT, button, cardUrl, escapeHtml, fitMessage, headline, openRows, truncate } from './format.js';
+import { RICH_ALERT_LIMIT, escapeRich, richBody, richJoin, richText } from './rich.js';
 
 export const MAX_CHECKBOX_OPTIONS = 30;
 export const MAX_FORM_QUESTIONS = 20;
@@ -159,38 +160,47 @@ function questionLabel(q) {
   return truncate(q.header ?? q.prompt, 100);
 }
 
-function composeText(card, uiBaseUrl, level) {
+// The card as classic HTML, or as rich Markdown with `rich` set.
+function composeText(card, uiBaseUrl, level, rich = false) {
+  const esc = rich ? escapeRich : escapeHtml;
+  const url = cardUrl(uiBaseUrl, card.identifier, card.interactionId);
+  const context = { uiBaseUrl, fullUrl: url };
   const lines = [];
   const issue = { identifier: card.identifier, title: card.issueTitle };
-  lines.push(headline(CARD_KIND, issue, { own: card.own, titleMax: level.title, url: cardUrl(uiBaseUrl, card.identifier, card.interactionId) }));
+  lines.push(headline(CARD_KIND, issue, { own: card.own, titleMax: level.title, url, esc }));
   if (level.prompt > 0) {
-    if (card.cardTitle && card.cardTitle !== card.prompt) lines.push(`<b>${escapeHtml(truncate(card.cardTitle, 200))}</b>`);
-    if (card.prompt) lines.push(escapeHtml(truncate(card.prompt, level.prompt)));
-    if (card.details && level.details > 0) lines.push('', escapeHtml(truncate(card.details, level.details)));
+    if (card.cardTitle && card.cardTitle !== card.prompt) lines.push(`<b>${esc(truncate(card.cardTitle, 200))}</b>`);
+    if (card.prompt) lines.push(rich ? richText(card.prompt, level.prompt, context) : escapeHtml(truncate(card.prompt, level.prompt)));
+    if (card.details && level.details > 0) lines.push('', rich ? richBody(card.details, level.details, context) : escapeHtml(truncate(card.details, level.details)));
     if (card.toolAction) {
       const head = [card.toolAction.name, card.toolAction.risk ? `risk: ${card.toolAction.risk}` : null].filter(Boolean).join(' · ');
-      if (head) lines.push('', `<b>${escapeHtml(truncate(head, 200))}</b>`);
-      if (card.toolAction.preview && level.preview > 0) lines.push(escapeHtml(truncate(card.toolAction.preview, level.preview)));
+      if (head) lines.push('', `<b>${esc(truncate(head, 200))}</b>`);
+      if (card.toolAction.preview && level.preview > 0) {
+        lines.push(rich ? richBody(card.toolAction.preview, level.preview, context) : escapeHtml(truncate(card.toolAction.preview, level.preview)));
+      }
     }
-    if (card.note) lines.push('', escapeHtml(card.note));
+    if (card.note) lines.push('', esc(card.note));
     if (card.mode === 'form' && level.question > 0) {
       lines.push('');
       const numbered = card.questions.length > 1;
       card.questions.forEach((q, index) => {
-        lines.push(`${numbered ? `${index + 1}. ` : ''}${escapeHtml(truncate(q.prompt, level.question))}${q.required ? '' : ' (optional)'}`);
+        lines.push(`${numbered ? `${index + 1}${rich ? '\\.' : '.'} ` : ''}${esc(truncate(q.prompt, level.question))}${q.required ? '' : ' (optional)'}`);
         const answer = card.answers[index];
         let shown = null;
         if (q.mode === 'text' && answer.text) shown = `“${truncate(answer.text, level.answer)}”`;
         else if (q.mode !== 'text' && answer.sel.length > 0) shown = answer.sel.map((i) => truncate(q.options[i].label, 60)).join(', ');
-        if (shown) lines.push(`${numbered ? '   ' : ''}Answer: ${escapeHtml(shown)}`);
+        if (shown) lines.push(`${numbered && !rich ? '   ' : ''}Answer: ${esc(shown)}`);
       });
       if (card.status === 'pending' && openTextQuestion(card) >= 0) lines.push('', 'Reply to this message to answer the text question.');
     }
     if (card.reasonPromptMessageId && card.status === 'pending') lines.push('', 'Waiting for the decline reason (reply to the prompt below).');
   }
-  if (card.resolution) lines.push('', escapeHtml(card.resolution));
-  return lines.join('\n');
+  if (card.resolution) lines.push('', esc(card.resolution));
+  return rich ? richJoin(lines) : lines.join('\n');
 }
+
+// True when the card has a prompt, details or a tool preview, which are Paperclip Markdown.
+const hasMarkdown = (card) => Boolean(card.prompt || card.details || card.toolAction?.preview);
 
 // A choice button: the plain label, or a blue one with a check mark when selected.
 function choiceButton(label, on, data) {
@@ -226,9 +236,11 @@ function keyboardFor(card) {
   return [...answerRows(card), ...openRows(card.issueId, card.own)];
 }
 
+// `rich` is the same card as Markdown, or null when the card has no Markdown to render.
 export function renderCard(card, uiBaseUrl) {
   const html = fitMessage((level) => composeText(card, uiBaseUrl, level), LEVELS, ALERT_LIMIT);
-  return { text: html, keyboard: keyboardFor(card) };
+  const rich = hasMarkdown(card) ? fitMessage((level) => composeText(card, uiBaseUrl, level, true), LEVELS, RICH_ALERT_LIMIT) : null;
+  return { text: html, rich, keyboard: keyboardFor(card) };
 }
 
 export function parseCallback(data) {
