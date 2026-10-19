@@ -308,7 +308,7 @@ test('parseConfig defaults closedTopicDays to 7 and accepts 0 or more only', () 
 
 test('forgetTopic drops the topic and the offers made in its thread', (t) => {
   const state = new State(path.join(tempDir(t), 'state.json'));
-  state.topics.set('root-1', { thread: 77, identifier: 'TST-1', title: 'A task', closed: null, suffixed: false, closedAt: null, projectId: null, iconId: '' });
+  state.topics.set('root-1', { thread: 77, identifier: 'TST-1', title: 'A task', closed: null, suffixed: false, closedAt: null });
   const inside = state.addOffer('inside', 1, 2, 0, 77);
   const outside = state.addOffer('outside', 3, 4, 0, 78);
   state.forgetTopic('root-1');
@@ -321,7 +321,7 @@ test('forgetTopic drops the topic and the offers made in its thread', (t) => {
 test('State keeps topics and the issue to root cache across a save, capped at 2000 roots', (t) => {
   const file = path.join(tempDir(t), 'state.json');
   const state = new State(file);
-  const topic = { thread: 77, identifier: 'TST-1', title: 'A task', closed: 'done', suffixed: false, closedAt: 1_000, projectId: 'project-1', iconId: 'icon-1' };
+  const topic = { thread: 77, identifier: 'TST-1', title: 'A task', closed: 'done', suffixed: false, closedAt: 1_000 };
   state.topics.set('root-1', topic);
   for (let i = 0; i < 2100; i += 1) state.noteRoot(`issue-${i}`, 'root-1');
   assert.equal(state.roots.size, 2000);

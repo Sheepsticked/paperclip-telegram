@@ -2,7 +2,6 @@ import { routeCallback } from './callbacks.js';
 import { handleMessage } from './commands.js';
 import { MESSAGE_LIMIT, truncate, withMention } from './format.js';
 import { isRichFault, warnHourly } from './guard.js';
-import { iconList } from './icons.js';
 import { pollPaperclip } from './notifications.js';
 import { PaperclipClient, PaperclipError } from './paperclip.js';
 import { SerialQueue } from './queue.js';
@@ -66,7 +65,6 @@ export class Bot {
     this.armed = new Map();
     this.profileRegistered = false;
     this.topics = { on: false, canPin: false, canDelete: false };
-    this.icons = { list: null, triedAt: null, plainLabels: false, iconsLogged: false };
     this.warnedAt = new Map();
     this.sweptAt = null;
     this.ignoredChats = new Set();
@@ -437,7 +435,6 @@ export class Bot {
     this.log.info('topics on');
     if (!this.topics.canPin) this.log.warn('the bot lacks the Pin messages right, so task views are not pinned');
     if (!this.topics.canDelete && this.config.closedTopicDays > 0) warnHourly(this, 'delete-right', DELETE_RIGHT_WARNING);
-    await iconList(this);
     return undefined;
   }
 

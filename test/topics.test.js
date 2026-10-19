@@ -132,7 +132,6 @@ test('the first message about a task creates its topic with a name, a colour and
   assert.deepEqual(view.pinned, { silent: true });
   assert.equal(notice.text, '<b>In review</b>', 'inside its own topic the notice is the kind word alone');
   assert.equal(w.tg.callsTo('createForumTopic').length, 1);
-  const folder = w.tg.iconStickers.find((sticker) => sticker.emoji === '\u{1F4C1}').custom_emoji_id;
   assert.deepEqual(bot.state.topics.get(issue.id), {
     thread,
     identifier: 'TST-1',
@@ -140,8 +139,6 @@ test('the first message about a task creates its topic with a name, a colour and
     closed: null,
     suffixed: false,
     closedAt: null,
-    projectId: project.id,
-    iconId: folder,
   });
   assert.ok(bot.state.isFollowing(issue.id), 'a task with a topic is followed');
 

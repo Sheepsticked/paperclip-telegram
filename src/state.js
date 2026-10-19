@@ -37,7 +37,7 @@ function loadMutedCounts(saved) {
 }
 
 // Keeps only well-formed topic entries, so a hand-edited file cannot break the lookups.
-// `projectId` is undefined for an entry that does not know its project yet (saved by an older version).
+// `iconId` is only kept for an open topic that an older version gave an icon, until the bot has taken the icon off.
 function loadTopics(saved) {
   const topics = new Map();
   for (const [rootId, topic] of Object.entries(saved && typeof saved === 'object' ? saved : {})) {
@@ -45,7 +45,6 @@ function loadTopics(saved) {
     const closed = topic.closed === 'done' || topic.closed === 'cancelled' ? topic.closed : null;
     // An entry without the flag that is closed is taken to carry a status suffix in its name.
     const suffixed = typeof topic.suffixed === 'boolean' ? topic.suffixed : closed !== null;
-    const projectId = typeof topic.projectId === 'string' || topic.projectId === null ? topic.projectId : undefined;
     topics.set(rootId, {
       thread: topic.thread,
       identifier: String(topic.identifier ?? ''),
@@ -53,8 +52,7 @@ function loadTopics(saved) {
       closed,
       suffixed,
       closedAt: closed !== null && Number.isFinite(topic.closedAt) ? topic.closedAt : null,
-      projectId,
-      iconId: typeof topic.iconId === 'string' ? topic.iconId : '',
+      ...(closed === null && typeof topic.iconId === 'string' && topic.iconId !== '' ? { iconId: topic.iconId } : {}),
     });
   }
   return topics;
@@ -114,13 +112,6 @@ function loadPrefixCounts(saved) {
   const counts = {};
   for (const [prefix, count] of Object.entries(isObject(saved) ? saved : {})) if (Number.isInteger(count) && count > 0) counts[prefix] = count;
   return counts;
-}
-
-// Project id to the custom emoji id of its topics; "" means no icon.
-function loadProjectIcons(saved) {
-  const icons = new Map();
-  for (const [projectId, iconId] of Object.entries(isObject(saved) ? saved : {})) if (typeof iconId === 'string') icons.set(projectId, iconId);
-  return icons;
 }
 
 function loadReviewSent(saved) {
@@ -193,7 +184,6 @@ export class State {
     this.shownComments = loadShownComments(data.shownComments);
     this.topics = loadTopics(data.topics);
     this.roots = loadRoots(data.roots);
-    this.projectIcons = loadProjectIcons(data.projectIcons);
     this.boardMessageId = Number.isInteger(data.boardMessageId) ? data.boardMessageId : null;
     this.boardHash = stringOrNull(data.boardHash);
   }
@@ -506,7 +496,6 @@ export class State {
       prefixCounts: this.prefixCounts,
       topics: Object.fromEntries(this.topics),
       roots: Object.fromEntries(this.roots),
-      projectIcons: Object.fromEntries(this.projectIcons),
       boardMessageId: this.boardMessageId,
       boardHash: this.boardHash,
       reviewSent: [...this.reviewSent],

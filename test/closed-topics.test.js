@@ -207,7 +207,7 @@ test('the sweep deletes only topics in state: not General, not a topic the owner
   const { w, bot, clock } = await setup(t);
   const side = w.tg.ownerTopic('Side topic');
   const { topic } = await finishedTask(w, bot);
-  bot.state.topics.set('general-task', { thread: 1, identifier: 'TST-99', title: 'In General', closed: 'done', suffixed: true, closedAt: clock.at - 30 * DAY, projectId: null, iconId: '' });
+  bot.state.topics.set('general-task', { thread: 1, identifier: 'TST-99', title: 'In General', closed: 'done', suffixed: true, closedAt: clock.at - 30 * DAY });
   clock.at += 8 * DAY;
   await bot.pollOnce();
 
@@ -267,12 +267,10 @@ test('a state file of the previous version with open and closed topics upgrades 
 
   // Takes out what the new version added, as the old version wrote the file.
   const saved = JSON.parse(fs.readFileSync(w.statePath, 'utf8'));
-  for (const topic of Object.values(saved.topics)) for (const key of ['closedAt', 'projectId', 'iconId']) delete topic[key];
-  for (const key of ['projectIcons', 'boardMessageId', 'boardHash']) delete saved[key];
+  for (const topic of Object.values(saved.topics)) delete topic.closedAt;
+  for (const key of ['boardMessageId', 'boardHash']) delete saved[key];
   assert.equal(saved.topics[closed.id].closed, 'done');
   fs.writeFileSync(w.statePath, JSON.stringify(saved));
-  // The topics of the previous version had no icons.
-  for (const topic of Object.values(saved.topics)) w.tg.topics.get(topic.thread).iconId = '';
   clock.at += 30 * DAY;
 
   const upgraded = w.makeBot({ now: () => clock.at });
@@ -281,15 +279,7 @@ test('a state file of the previous version with open and closed topics upgrades 
   await upgraded.pollOnce();
   await upgraded.pollOnce();
 
-  assert.equal(upgraded.state.topics.get(open.id).projectId, project.id);
-  assert.equal(upgraded.state.topics.get(bare.id).projectId, null);
-  const edits = w.tg.callsTo('editForumTopic').slice(editsBefore);
-  assert.deepEqual(
-    edits.map((c) => [c.params.message_thread_id, c.params.icon_custom_emoji_id]),
-    [[saved.topics[open.id].thread, upgraded.state.projectIcons.get(project.id)]],
-    'the open topic of a project gets its icon once; the closed one and the one without a project are left alone',
-  );
-  assert.ok(upgraded.state.projectIcons.get(project.id));
+  assert.equal(w.tg.callsTo('editForumTopic').length, editsBefore, 'no topic is edited');
   assert.equal(deletes(w).length, 0, 'nothing is deleted on the first start');
   assert.equal(upgraded.state.topics.has(closed.id), true);
 

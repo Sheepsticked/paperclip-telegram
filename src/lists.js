@@ -1,10 +1,8 @@
 import { PaperclipError } from './paperclip.js';
 import { button, escapeHtml, truncate } from './format.js';
-import { pickedIcon, showIconPicker } from './icons.js';
 import { inboxItems, itemIssueId, statusEntry } from './inbox.js';
 import { OPEN_STATUSES, projectsView } from './projects.js';
 import { threadOf, where } from './thread.js';
-import { syncTopicIcons } from './topics.js';
 
 const PAGE_SIZE = 10;
 const FIND_LIMIT = 10;
@@ -27,7 +25,7 @@ export function taskRow(issue, { prefix = '' } = {}) {
 }
 
 // `project` is { id, name } while the list is limited to one project; every button keeps the limit.
-function openTasksView(issues, filter, page, hasNext, project, { icons = false } = {}) {
+function openTasksView(issues, filter, page, hasNext, project) {
   const { label } = FILTERS[filter];
   const suffix = project ? `:${project.id}` : '';
   const rows = issues.map((issue) => taskRow(issue));
@@ -37,7 +35,7 @@ function openTasksView(issues, filter, page, hasNext, project, { icons = false }
   if (nav.length > 0) rows.push(nav);
   const filters = Object.entries(FILTERS).map(([key, entry]) => button(entry.label, `L:t:${key}:0${suffix}`, key === filter ? 'primary' : undefined));
   for (let first = 0; first < filters.length; first += FILTER_ROW) rows.push(filters.slice(first, first + FILTER_ROW));
-  if (project) rows.push([button('All projects', `L:t:${filter}:0`), ...(icons ? [button('Icon', `L:i:${filter}:0:${project.id}`)] : [])]);
+  if (project) rows.push([button('All projects', `L:t:${filter}:0`)]);
   const head = `<b>${filter === 'd' ? 'Tasks' : 'Open tasks'}</b> · ${escapeHtml(label)}${project ? ` · ${escapeHtml(truncate(project.name, 60))}` : ''} · page ${page + 1}`;
   return { text: issues.length > 0 ? head : `${head}\nNothing here.`, keyboard: rows };
 }
@@ -52,30 +50,11 @@ export async function loadOpenTasks(bot, filter, page, projectId = null) {
     offset: page * PAGE_SIZE,
   });
   const project = projectId ? await projectOf(bot, projectId) : null;
-  // Topic icons only matter when topics are on.
-  return openTasksView(rows.slice(0, PAGE_SIZE), filter, page, rows.length > PAGE_SIZE, project, { icons: bot.topics.on });
+  return openTasksView(rows.slice(0, PAGE_SIZE), filter, page, rows.length > PAGE_SIZE, project);
 }
 
 async function projectOf(bot, projectId) {
   return { id: projectId, name: (await bot.projectList()).find((entry) => entry.id === projectId)?.name ?? 'Project' };
-}
-
-// The Icon button and the buttons of the picker: open a page of icons, or pick one (an index in the list, or "n" for none).
-async function handleIconCallback(bot, cq, { op, filter, arg, projectId }) {
-  const messageId = cq.message.message_id;
-  if (op === 'i') {
-    const page = Number(arg);
-    const shown = Number.isInteger(page) && (await showIconPicker(bot, messageId, await projectOf(bot, projectId), filter, page));
-    return shown ? bot.answer(cq.id) : bot.answer(cq.id, 'Icons are not available, try again later');
-  }
-  const iconId = await pickedIcon(bot, arg);
-  if (iconId === null) return bot.answer(cq.id, 'Unknown action');
-  bot.state.projectIcons.set(projectId, iconId);
-  bot.state.save();
-  await syncTopicIcons(bot, { projectId });
-  const { text, keyboard } = await loadOpenTasks(bot, filter, 0, projectId);
-  await bot.edit(messageId, text, keyboard);
-  return bot.answer(cq.id, 'Icon set');
 }
 
 export async function commandTasks(bot, msg) {
@@ -95,9 +74,6 @@ export async function handleListCallback(bot, cq) {
       const { text, keyboard } = await projectsView(bot, Number(first));
       await bot.edit(cq.message.message_id, text, keyboard);
       return await bot.answer(cq.id);
-    }
-    if ((op === 'i' || op === 's') && FILTERS[first] && UUID.test(projectId ?? '')) {
-      return await handleIconCallback(bot, cq, { op, filter: first, arg: pageText, projectId });
     }
     const page = Number(pageText);
     const validProject = projectId === undefined || UUID.test(projectId);

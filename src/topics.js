@@ -1,13 +1,12 @@
 import { followIssue } from './follow.js';
 import { truncate } from './format.js';
 import { guarded, isRefused, isTelegramOutage, isUnauthorized, warnHourly } from './guard.js';
-import { projectIcon } from './icons.js';
 import { PaperclipError } from './paperclip.js';
 import { loadTask, sendLoadedView } from './tasks.js';
 import { TelegramError } from './telegram.js';
 import { threadGone, topicUnchanged } from './thread.js';
 
-// The six colours Telegram allows for a topic icon.
+// The six colours Telegram allows for a topic's bubble.
 export const ICON_COLORS = [7322096, 16766590, 13338331, 9367192, 16749490, 16478047];
 const NAME_MAX = 128;
 const MAX_ROOT_DEPTH = 10;
@@ -129,32 +128,20 @@ async function fillTopic(bot, view, thread) {
 async function createTopic(bot, rootId) {
   const view = await loadTask(bot, rootId);
   const { issue } = view;
-  const projectId = issue.projectId ?? null;
-  let iconId = await projectIcon(bot, projectId);
-  const make = () =>
-    bot.tg.createForumTopic({
-      chat_id: bot.config.telegramChatId,
-      name: topicName(issue.identifier, issue.title),
-      icon_color: iconColor(projectId),
-      ...(iconId ? { icon_custom_emoji_id: iconId } : {}),
-    });
   let created;
   try {
-    try {
-      created = await make();
-    } catch (err) {
-      // A refused icon must not keep the task out of its topic.
-      if (!iconId || !isRefused(err)) throw err;
-      iconId = '';
-      created = await make();
-    }
+    created = await bot.tg.createForumTopic({
+      chat_id: bot.config.telegramChatId,
+      name: topicName(issue.identifier, issue.title),
+      icon_color: iconColor(issue.projectId ?? null),
+    });
   } catch (err) {
     if (!(err instanceof TelegramError) || err.aborted) throw err;
     warnTopics(bot, 'could not create a topic, using the main chat', { error: err.message });
     return null;
   }
   const thread = created.message_thread_id;
-  bot.state.topics.set(rootId, { thread, identifier: issue.identifier, title: issue.title, closed: null, suffixed: false, closedAt: null, projectId, iconId });
+  bot.state.topics.set(rootId, { thread, identifier: issue.identifier, title: issue.title, closed: null, suffixed: false, closedAt: null });
   bot.state.noteRoot(rootId, rootId);
   bot.state.save();
   await guarded(bot, `the topic of ${issue.identifier}`, () => fillTopic(bot, view, thread));
@@ -190,23 +177,11 @@ export async function topicTarget(bot, issue) {
 
 // Makes a topic the owner started the topic of a new task: renames it and posts the pinned view.
 export async function linkTopic(bot, thread, issue) {
-  const projectId = issue.projectId ?? null;
-  const iconId = await projectIcon(bot, projectId);
-  const entry = { thread, identifier: issue.identifier, title: issue.title, closed: null, suffixed: false, closedAt: null, projectId, iconId: '' };
-  bot.state.topics.set(issue.id, entry);
+  bot.state.topics.set(issue.id, { thread, identifier: issue.identifier, title: issue.title, closed: null, suffixed: false, closedAt: null });
   bot.state.noteRoot(issue.id, issue.id);
   bot.state.save();
   try {
-    // The rename carries the project's icon, so the topic gets one grey line instead of two.
-    await quiet(() =>
-      bot.tg.editForumTopic({
-        chat_id: bot.config.telegramChatId,
-        message_thread_id: thread,
-        name: topicName(issue.identifier, issue.title),
-        ...(iconId ? { icon_custom_emoji_id: iconId } : {}),
-      }),
-    );
-    entry.iconId = iconId;
+    await quiet(() => bot.tg.editForumTopic({ chat_id: bot.config.telegramChatId, message_thread_id: thread, name: topicName(issue.identifier, issue.title) }));
   } catch (err) {
     if (threadGone(err)) {
       dropTopic(bot, issue.id);
@@ -219,42 +194,27 @@ export async function linkTopic(bot, thread, issue) {
   return true;
 }
 
-// Sets the icon of one open topic to its project's icon. A refused edit is given up on (and logged); a lost
-// connection leaves the topic as it is, so the next poll tries again.
-async function setTopicIcon(bot, rootId, topic, iconId) {
-  try {
-    await quiet(() => bot.tg.editForumTopic({ chat_id: bot.config.telegramChatId, message_thread_id: topic.thread, icon_custom_emoji_id: iconId }));
-  } catch (err) {
-    if (threadGone(err)) {
-      dropTopic(bot, rootId);
-      return;
-    }
-    if (!isRefused(err)) throw err;
-    warnHourly(bot, 'topic-icon', 'a topic icon was refused', { error: err.message });
-  }
-  topic.iconId = iconId;
-  bot.state.save();
-}
-
-// A topic saved by an older version does not know its project; a task that is gone has none.
-async function learnProject(bot, rootId, topic) {
-  try {
-    topic.projectId = (await bot.pc.getIssue(rootId)).projectId ?? null;
-  } catch (err) {
-    if (!(err instanceof PaperclipError && err.status === 404)) throw err;
-    topic.projectId = null;
-  }
-}
-
-// Gives each open topic its project's icon, editing only where it differs (every edit leaves a line in the topic).
-// `projectId` limits it to one project.
-export async function syncTopicIcons(bot, { projectId } = {}) {
+// Takes the icon off each open topic whose saved entry still has one (an older version gave topics icons). Each topic is
+// edited once: a refused edit is logged and given up on, a lost connection leaves the entry for the next poll.
+// A closed topic is left as it is.
+export async function removeTopicIcons(bot) {
   for (const [rootId, topic] of [...bot.state.topics]) {
-    if (topic.closed || (projectId !== undefined && topic.projectId !== projectId)) continue;
+    if (topic.iconId === undefined) continue;
     await guarded(bot, `the icon of ${topic.identifier}`, async () => {
-      if (topic.projectId === undefined) await learnProject(bot, rootId, topic);
-      const want = await projectIcon(bot, topic.projectId);
-      if (want !== topic.iconId) await setTopicIcon(bot, rootId, topic, want);
+      if (!topic.closed) {
+        try {
+          await quiet(() => bot.tg.editForumTopic({ chat_id: bot.config.telegramChatId, message_thread_id: topic.thread, icon_custom_emoji_id: '' }));
+        } catch (err) {
+          if (threadGone(err)) {
+            dropTopic(bot, rootId);
+            return;
+          }
+          if (!isRefused(err)) throw err;
+          bot.log.warn('could not remove the icon of a topic', { error: err.message });
+        }
+      }
+      delete topic.iconId;
+      bot.state.save();
     });
   }
 }
@@ -297,8 +257,8 @@ export async function sweepClosedTopics(bot) {
   }
 }
 
-// Brings every topic in line with its task: the status (closed or open), the project and its icon, and the age of the
-// closed ones. Titles and projects of changed tasks are refreshed first.
+// Brings every topic in line with its task: the status (closed or open) and the age of the closed ones. Titles of
+// changed tasks are refreshed first.
 export async function syncTopics(bot, updated = []) {
   await bot.topicsReady();
   if (!bot.topics.on) return;
@@ -307,13 +267,12 @@ export async function syncTopics(bot, updated = []) {
     const topic = state.topics.get(issue.id);
     if (!topic) continue;
     topic.title = issue.title;
-    if (issue.projectId !== undefined) topic.projectId = issue.projectId ?? null;
   }
   for (const [rootId, topic] of [...state.topics]) {
     const status = state.statuses.get(rootId);
     if (status === undefined || (CLOSED_STATUSES.has(status) ? status : null) === topic.closed) continue;
     await guarded(bot, `the topic of ${topic.identifier}`, () => applyStatus(bot, rootId, status));
   }
-  await syncTopicIcons(bot);
+  await removeTopicIcons(bot);
   await guarded(bot, 'the sweep of finished topics', () => sweepClosedTopics(bot));
 }
