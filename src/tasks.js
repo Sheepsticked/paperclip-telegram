@@ -55,7 +55,17 @@ export async function loadTask(bot, ref) {
   let assignee = 'Unassigned';
   if (issue.assigneeAgentId) assignee = (await bot.agentName(issue.assigneeAgentId)) ?? 'An agent';
   else if (issue.assigneeUserId) assignee = 'You';
-  return { issue, comments, authors, assignee, project: issue.project?.name ?? null };
+  const running = issue.executionRunId ? await runningAgentName(bot, issue.executionAgentNameKey) : null;
+  return { issue, comments, authors, assignee, running, project: issue.project?.name ?? null };
+}
+
+// The agent holding the run: the server reports its lower-cased name, matched here to an agent's name or URL key.
+async function runningAgentName(bot, nameKey) {
+  const key = String(nameKey ?? '').trim().toLowerCase();
+  if (!key) return 'An agent';
+  const agents = await bot.agentRecords();
+  const found = agents.find((agent) => agent.urlKey === key || String(agent.name ?? '').trim().toLowerCase() === key);
+  return found?.name ?? 'An agent';
 }
 
 function composeTask(view, { kind, note, own, now, uiBaseUrl }, level) {
@@ -63,7 +73,7 @@ function composeTask(view, { kind, note, own, now, uiBaseUrl }, level) {
   const lines = [headline(kind, issue, { own, titleMax: level.title })];
   if (note) lines.push(escapeHtml(note));
   lines.push(`Status: ${escapeHtml(statusName(issue.status))}`);
-  if (issue.executionRunId) lines.push(`Running: ${escapeHtml(truncate(view.assignee !== 'Unassigned' ? view.assignee : (issue.executionAgentNameKey ?? 'An agent'), 60))}`);
+  if (view.running) lines.push(`Running: ${escapeHtml(truncate(view.running, 60))}`);
   lines.push(`Assignee: ${escapeHtml(truncate(view.assignee, 60))}`);
   lines.push(`Project: ${escapeHtml(truncate(view.project ?? 'None', 60))}`);
   lines.push(`Priority: ${escapeHtml(issue.priority ?? 'medium')}`);

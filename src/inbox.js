@@ -187,12 +187,13 @@ function keyboardFor(record, armed) {
   if (record.kind === 'approval' && record.inlineResolvable) {
     rows.push([button(label('a', 'Approve'), `I:a:${k}`), button(label('r', 'Reject'), `I:r:${k}`)]);
   }
-  if (record.kind === 'decision') {
-    if (!record.needsInput) record.options.forEach((option, index) => rows.push([button(label(`o${index}`, option.label), `I:o:${k}:${index}`)]));
+  // Dismissing decides an option too, which the server refuses while a required input is empty.
+  if (record.kind === 'decision' && !record.needsInput) {
+    record.options.forEach((option, index) => rows.push([button(label(`o${index}`, option.label), `I:o:${k}:${index}`)]));
     rows.push([button('Dismiss', `I:x:${k}`)]);
   }
   if (record.kind === 'review' && record.stalled && record.issue) {
-    rows.push([button('Approve', `I:s:${k}:a`), button('Request changes', `I:s:${k}:c`), button('Send back', `I:s:${k}:b`)]);
+    rows.push([button(label('sa', 'Approve'), `I:s:${k}:a`), button('Request changes', `I:s:${k}:c`), button(label('sb', 'Send back'), `I:s:${k}:b`)]);
   }
   const taskId = record.issue?.id ?? record.issueId;
   if (taskId) rows.push([taskButton(taskId)]);
@@ -377,10 +378,12 @@ export async function handleInboxCallback(bot, cq) {
       const body = { optionId: option.id, idempotencyKey: `telegram-decision-${record.refId}` };
       return await act(bot, cq, record, () => bot.pc.decide(record.refId, body), `Decided: ${truncate(option.label, 80)}`);
     }
-    if (op === 'x' && record.kind === 'decision') return await act(bot, cq, record, () => bot.pc.dismissDecision(record.refId), 'Dismissed');
+    if (op === 'x' && record.kind === 'decision' && !record.needsInput) return await act(bot, cq, record, () => bot.pc.dismissDecision(record.refId), 'Dismissed');
     if (op === 's' && record.kind === 'review' && record.stalled && record.issue) {
       if (arg === 'c') return await askForNote(bot, cq, record);
       const choice = REVIEW_ACTIONS[arg];
+      // Approve and Send back move the task, so they need a second tap like Done.
+      if (choice && !(await confirmTap(bot, cq, record, `s${arg}`))) return undefined;
       if (choice) return await act(bot, cq, record, () => bot.pc.stalledReviewDecision(record.issue.id, { action: choice.action }), choice.line);
     }
   } catch (err) {

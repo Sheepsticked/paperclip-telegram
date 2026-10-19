@@ -81,7 +81,7 @@ test('Pause needs a second tap, then pauses the agent and shows Resume', async (
 });
 
 test('the Pause confirmation goes back to normal when the window ends', async (t) => {
-  const { w, bot } = await setup(t, undefined, { confirmMs: 40 });
+  const { w, bot } = await setup(t, undefined, { confirmMs: 300 });
   const view = await openAgent(w, bot);
   await tap(w, bot, view, 'Pause');
   await waitFor(() => rowsOf(w, view.message_id)[0][0].startsWith('Pause'), { label: 'button reset' });
@@ -230,7 +230,24 @@ test('a running task without an assignee names the agent from the run', async (t
   const { w, bot } = await setup(t);
   const { issue } = runningTask(w, { assigneeAgentId: null });
   const view = await openTask(w, bot, issue);
-  assert.ok(view.text.split('\n').includes('Running: dev'));
+  assert.ok(view.text.split('\n').includes('Running: Dev'));
+});
+
+test('the Running line names the agent that holds the run, not the assignee', async (t) => {
+  const { w, bot } = await setup(t);
+  const { issue } = runningTask(w, { assigneeAgentId: 'agent-lead' });
+  const view = await openTask(w, bot, issue);
+  const lines = view.text.split('\n');
+  assert.ok(lines.includes('Running: Dev'));
+  assert.ok(lines.includes('Assignee: Lead'));
+});
+
+test('the Running line says an agent when the run holder is unknown', async (t) => {
+  const { w, bot } = await setup(t);
+  const { issue } = runningTask(w);
+  w.pc.issues.get(issue.id).executionAgentNameKey = 'someone-removed';
+  const view = await openTask(w, bot, issue);
+  assert.ok(view.text.split('\n').includes('Running: An agent'));
 });
 
 test('Stop run needs a second tap, then cancels the run and redraws the view', async (t) => {

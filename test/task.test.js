@@ -154,7 +154,7 @@ test('Cancel needs a second tap too', async (t) => {
 });
 
 test('an armed button goes back to normal when the confirm window ends', async (t) => {
-  const { w, bot } = await setup(t, undefined, { confirmMs: 40 });
+  const { w, bot } = await setup(t, undefined, { confirmMs: 300 });
   const issue = w.pc.addIssue({ title: 'Careful', status: 'todo' });
   const view = await openTask(w, bot, null, issue);
 

@@ -111,7 +111,7 @@ test('Reject needs a second tap, then posts an empty body', async (t) => {
 });
 
 test('an armed approval button goes back to normal when the window ends', async (t) => {
-  const { w, bot } = await setup(t, undefined, { confirmMs: 40 });
+  const { w, bot } = await setup(t, undefined, { confirmMs: 300 });
   w.pc.addApproval({ payload: { title: 'Hire' } });
   await bot.pollOnce();
   const message = startsWith(w, '<b>Approval</b>');
@@ -194,12 +194,28 @@ test('a decision that needs input has no option buttons and points to Paperclip'
   assert.ok(message.text.includes('More options in Paperclip'));
   assert.ok(message.text.includes('- Go ahead'));
   assert.ok(message.text.includes('Open in Paperclip'));
-  assert.deepEqual(rowsOf(w, message.message_id), [['Dismiss'], ['Open task']]);
+  assert.deepEqual(rowsOf(w, message.message_id), [['Open task']], 'Dismiss would decide the first option, which needs the input');
 
-  // A hand-made option tap is refused without calling Paperclip.
-  await bot.handleUpdate(w.tg.tap(message.message_id, `I:o:${[...bot.state.inbox.keys()][0]}:0`));
+  // Hand-made option and dismiss taps are refused without calling Paperclip.
+  const key = [...bot.state.inbox.keys()][0];
+  await bot.handleUpdate(w.tg.tap(message.message_id, `I:o:${key}:0`));
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Unknown action');
+  await bot.handleUpdate(w.tg.tap(message.message_id, `I:x:${key}`));
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Unknown action');
   assert.equal(posts(w, '/decide').length, 0);
+  assert.equal(posts(w, '/dismiss').length, 0);
+  assert.equal(w.pc.decisions.get(decision.id).status, 'open');
+});
+
+test('the server refuses a dismiss while a required input is empty, as the fake does', async (t) => {
+  const { w } = await setup(t);
+  const decision = w.pc.addDecision({ issueId: null, inputs: [{ id: 'reason', label: 'Reason', type: 'text', required: true }] });
+  const response = await fetch(`${w.pc.url}/api/decisions/${decision.id}/dismiss`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${w.tokens.paperclip}`, 'content-type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(response.status, 422);
   assert.equal(w.pc.decisions.get(decision.id).status, 'open');
 });
 
@@ -254,6 +270,11 @@ test('Approve on a stalled review posts the approve action', async (t) => {
   const { w, bot } = await setup(t);
   const { issue, message } = await stalledReview(w, bot);
   await tap(w, bot, message, 'Approve');
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Tap again to confirm');
+  assert.deepEqual(rowsOf(w, message.message_id)[0], ['Tap again to confirm', 'Request changes', 'Send back']);
+  assert.equal(posts(w, '/stalled-review-decision').length, 0);
+  assert.equal(w.pc.issues.get(issue.id).status, 'in_review');
+  await tap(w, bot, message, 'Tap again to confirm');
   const calls = posts(w, '/stalled-review-decision');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].path, `/api/issues/${issue.id}/stalled-review-decision`);
@@ -267,6 +288,9 @@ test('Send back on a stalled review posts the send_back action', async (t) => {
   const { w, bot } = await setup(t);
   const { issue, message } = await stalledReview(w, bot);
   await tap(w, bot, message, 'Send back');
+  assert.deepEqual(rowsOf(w, message.message_id)[0], ['Approve', 'Request changes', 'Tap again to confirm']);
+  assert.equal(posts(w, '/stalled-review-decision').length, 0);
+  await tap(w, bot, message, 'Tap again to confirm');
   assert.deepEqual(posts(w, '/stalled-review-decision')[0].body, { action: 'send_back' });
   assert.equal(w.pc.issues.get(issue.id).status, 'todo');
   assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nSent back'));
@@ -315,21 +339,22 @@ test('a reply without text to the note prompt is declined and the prompt stays',
 test('a review that is no longer stalled is reported as resolved', async (t) => {
   const { w, bot } = await setup(t);
   const { issue, message } = await stalledReview(w, bot);
-  w.pc.setStatus(issue.id, 'done');
   await tap(w, bot, message, 'Approve');
+  w.pc.setStatus(issue.id, 'done');
+  await tap(w, bot, message, 'Tap again to confirm');
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Already resolved');
   assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nResolved'));
   assert.deepEqual(rowsOf(w, message.message_id), []);
 });
 
-test('a review that is not stalled gets text, a link and the task button only', async (t) => {
+test('a review that is not stalled gets text, a link and the task button only, even with in-review messages off', async (t) => {
   const { w, bot } = await setup(t);
+  bot.state.settings.inReview = false;
   const issue = await seenTask(w, bot, { title: 'Look at this', assigneeUserId: 'board-user-1' });
   w.pc.setStatus(issue.id, 'in_review');
-  await bot.pollOnce();
-  assert.ok(startsWith(w, '<b>In review</b>'), 'the status message comes first, from an earlier poll');
   w.pc.addReview(issue.id);
   await bot.pollOnce();
+  assert.equal(startsWith(w, '<b>In review</b>'), undefined);
 
   const message = startsWith(w, '<b>Review</b>');
   assert.ok(message);
@@ -337,6 +362,38 @@ test('a review that is not stalled gets text, a link and the task button only', 
   assert.ok(message.text.includes('Issue is in review and assigned to a user.'));
   assert.ok(message.text.includes(`${UI_BASE_URL}/TST/issues/TST-1`));
   assert.deepEqual(rowsOf(w, message.message_id), [['Open task']]);
+});
+
+test('a review is left out when an earlier poll sent the in-review message for its task', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await seenTask(w, bot, { title: 'Look at this', assigneeUserId: 'board-user-1' });
+  w.pc.setStatus(issue.id, 'in_review');
+  await bot.pollOnce();
+  assert.ok(startsWith(w, '<b>In review</b>'), 'the status message comes first, from an earlier poll');
+  w.pc.addReview(issue.id);
+  await bot.pollOnce();
+  assert.equal(startsWith(w, '<b>Review</b>'), undefined);
+  const count = w.tg.callsTo('sendMessage').length;
+  await bot.pollOnce();
+  assert.equal(w.tg.callsTo('sendMessage').length, count, 'and not on a later poll either');
+  assert.ok(bot.state.reviewSent.has(issue.id));
+});
+
+test('the memory of an in-review message ends when the task leaves review', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await seenTask(w, bot, { title: 'Back and forth', assigneeUserId: 'board-user-1' });
+  w.pc.setStatus(issue.id, 'in_review');
+  await bot.pollOnce();
+  assert.ok(bot.state.reviewSent.has(issue.id));
+  w.pc.setStatus(issue.id, 'in_progress');
+  await bot.pollOnce();
+  assert.ok(!bot.state.reviewSent.has(issue.id));
+
+  bot.state.settings.inReview = false;
+  w.pc.setStatus(issue.id, 'in_review');
+  w.pc.addReview(issue.id);
+  await bot.pollOnce();
+  assert.ok(startsWith(w, '<b>Review</b>'), 'this time no in-review message covered it');
 });
 
 test('a review is left out when the same poll sent an in-review message for its task', async (t) => {

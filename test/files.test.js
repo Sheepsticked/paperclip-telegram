@@ -234,12 +234,17 @@ test('a comment that fails after the upload is reported and nothing says Attache
 });
 
 test('the download URL and the token are never logged or sent, even when the download fails', async (t) => {
-  const { w, bot } = await setup(t);
+  const w = await startWorld();
+  t.after(() => w.close());
+  // A logger that keeps every message and field as given, without the redaction of the real one.
+  const raw = [];
+  const record = (level) => (message, fields) => raw.push(`${level} ${message} ${JSON.stringify(fields ?? {})}`);
+  const bot = await w.primedBot({ log: { info: record('info'), warn: record('warn'), error: record('error'), redact: (text) => text } });
   const issue = w.pc.addIssue({ title: 'Failing', status: 'todo' });
   const view = await openTask(w, bot, issue);
   const file = w.tg.addFile({ name: 'secret-name.txt', data: 'x' });
   const leaks = () => {
-    const visible = [w.allLogText(), ...w.tg.sent().map((m) => m.text), ...w.tg.callbackAnswers.map((a) => a.text)].join('\n');
+    const visible = [raw.join('\n'), ...w.tg.sent().map((m) => m.text), ...w.tg.callbackAnswers.map((a) => a.text)].join('\n');
     return ['/file/bot', TELEGRAM_TOKEN, 'documents/file_'].filter((needle) => visible.includes(needle));
   };
 
@@ -258,6 +263,7 @@ test('the download URL and the token are never logged or sent, even when the dow
   assert.equal(w.tg.lastMessage().text, 'Could not download the file from Telegram.');
   assert.deepEqual(leaks(), []);
   assert.ok(w.tg.downloads.length >= 3, 'the downloads were attempted');
+  assert.ok(raw.some((line) => line.includes('downloadFile')), 'the failures reached the raw log');
 });
 
 test('a download error carries only the method name and a short reason, never the URL', async (t) => {

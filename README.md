@@ -138,8 +138,8 @@ Everything else in the attention feed that waits for you gets one message: the k
 | Kind | Message | Buttons |
 | --- | --- | --- |
 | Approval | The approval type, who asked and the payload as `key: value` lines (800 characters at most). | **Approve** and **Reject** when Paperclip allows answering the approval inline; each needs a second tap within 30 seconds ("Tap again to confirm"). Other approvals (for example a board approval) are text and a link: answer them in Paperclip. |
-| Decision | The decision text (800 characters at most). The options are listed when they have descriptions or when the decision needs input. | One button per option, and **Dismiss**. A decision that asks for input values has no option buttons; the message says "More options in Paperclip". An option marked destructive needs a second tap. |
-| Review | A review that Paperclip marks as stalled (nobody is set to move it on). | **Approve**, **Request changes** and **Send back**. Request changes asks you to reply to a prompt; your reply is the note. A review that is not stalled is text, a link and **Open task**, and it is left out when an in-review message, a card or an approval message about the same task was just sent. |
+| Decision | The decision text (800 characters at most). The options are listed when they have descriptions or when the decision needs input. | One button per option, and **Dismiss**. A decision that asks for input values has no option buttons and no **Dismiss**; the message says "More options in Paperclip". An option marked destructive needs a second tap. |
+| Review | A review that Paperclip marks as stalled (nobody is set to move it on). | **Approve**, **Request changes** and **Send back**. Approve and Send back each need a second tap within 30 seconds. Request changes asks you to reply to a prompt; your reply is the note. A review that is not stalled is text, a link and **Open task**, and it is left out when a card, an approval message or an in-review message about the same task was sent, as long as the task stays in review. |
 | Blocked, Recovery, Join request | Text and the reason. | **Open task** when there is a task; answer it in Paperclip. |
 
 When an item leaves the feed (answered here or in Paperclip, or dismissed in Paperclip), its message is edited to end with `Resolved` and loses its buttons. A tap on an old button answers "Already resolved". An item about a task in a topic goes to that topic; the others go to the main chat.
@@ -152,12 +152,12 @@ When an item leaves the feed (answered here or in Paperclip, or dismissed in Pap
 | **In review** | A task changed to `in_review`. Not sent when a card for the same task was just sent or is still waiting. |
 | **Run failed** | A run failed. One alert per run. Runs that end for routine reasons (cancelled, paused, and so on) are skipped. |
 | **Comment** | A new comment from an agent on a task you follow (see below). |
-| `+N more, see /status` | More than 10 cards and inbox items were waiting when the bot first started. The extra ones are not sent later; `/status` lists them. |
+| `+N more, see /status` | More than 10 cards and inbox items were waiting when the bot first started, after an upgrade that added new kinds of inbox items, or after `telegramChatId` changed. The extra ones are not sent later; `/status` lists them. |
 | `N done, M in review since the last check, see /status` | More than 10 tasks changed in one poll (for example after the bot was stopped for a while). |
 
 Every message about one task (cards, done, in review, run failed, followed comments, the reply to `/new`) has an **Open task** button that opens the task view.
 
-On the very first start the bot sends the cards and inbox items that are waiting (at most 10 together) and nothing else: older done and in-review tasks and old failed runs are not reported.
+On the very first start the bot sends the cards and inbox items that are waiting (at most 10 together) and nothing else: older done and in-review tasks and old failed runs are not reported. When an upgrade adds inbox items, the first poll sends at most 10 of them (approvals, decisions and stalled reviews first) and marks the rest as seen; a review of a task that was already in review is not sent.
 
 ### Task view
 
@@ -239,7 +239,7 @@ The same commands are in the Telegram menu. The bot also sets its profile text (
 
 ### Replies
 
-Reply to any message the bot sent about a task (including the task view and inbox items) and your text becomes a comment on that task. With topics on, the bot reacts to your message with a thumbs-up; otherwise it answers with the lines `Comment · ID` and `Posted`. A reply to a card with an open text question answers the question instead, a reply to a decline prompt is the decline reason, and a reply to the note prompt of a stalled review is its note. The bot remembers the last 2000 messages; for an older or unrelated message it answers "I don't know which task this is". Only text replies are supported.
+Reply to any message the bot sent about a task (including the task view and inbox items) and your text becomes a comment on that task. With topics on, the bot reacts to your message with a thumbs-up; otherwise it answers with the lines `Comment · ID` and `Posted`. A reply to a card with an open text question answers the question instead, a reply to a decline prompt is the decline reason, and a reply to the note prompt of a stalled review is its note. The bot remembers the last 2000 messages; for an older or unrelated message it answers "I don't know which task this is". A photo or file as a reply is attached to the task (see [Photos and files](#photos-and-files)); other message types are not supported.
 
 ## Group with topics
 
@@ -267,6 +267,8 @@ A forum group gives every top-level task its own topic, so each task is a separa
 
 Only the configured user in the configured chat is served. Updates from any other chat are ignored.
 
+When `telegramChatId` changes, the bot logs `chat changed` and forgets the message ids of the old chat, because ids restart in every chat. The old messages are left as they are. Open cards and inbox items are sent to the new chat (at most 10, then a `+N more` line). Settings and followed tasks are kept.
+
 ### How topics work
 
 - A topic is made the first time the bot has something to say about a top-level task (a card, a done or in-review message, a comment on a followed task), or when you create a task from Telegram. Its name is `ID Title` (128 characters at most) and its colour depends on the project. The first message is the task view, pinned without a notification.
@@ -274,7 +276,7 @@ Only the configured user in the configured chat is served. Updates from any othe
 - When the task is done or cancelled the topic is renamed to `... (done)` or `... (cancelled)` and closed. When the task is open again the name is restored and the topic is reopened.
 - Plain text you write in a task topic is a comment on that task, and the bot reacts to it with a thumbs-up. If Paperclip refuses it, the bot replies with the error. A reply to a bot message about a subtask is a comment on that subtask. `/task` without an ID shows the topic's task.
 - Plain text in a topic that has no task yet offers "Create a task from this?" in the same topic. Creating the task renames the topic, links it and pins the task view; **Cancel** links nothing.
-- Commands such as `/status`, `/tasks`, `/agents` and `/settings` are answered in the General topic, together with the mute summary, token alerts and anything not about one task.
+- Commands such as `/status`, `/tasks`, `/agents` and `/settings` are answered in the topic they were sent from. The mute summary, token alerts and anything not about one task go to General.
 - If you delete a topic, the bot makes a new one the next time it has something to say about that task. If a topic cannot be created, the message goes to General and one warning an hour is logged.
 - With `"topics": "off"`, or in a chat that is not a forum, the bot behaves as in a private chat: everything goes to the one chat.
 

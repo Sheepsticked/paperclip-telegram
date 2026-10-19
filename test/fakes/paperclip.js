@@ -541,6 +541,10 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
     only(body, ['reason']);
     const decision = decisionRow(params.id);
     if (decision.status !== 'open') throw new HttpError(409, 'Decision is already resolved', 'decision_already_resolved');
+    // Like the server, a dismiss decides the first option without effects, so an empty required input refuses it.
+    if (decision.options.some((option) => option.effects.length === 0)) {
+      for (const input of decision.inputs ?? []) if (input.required) throw new HttpError(422, `Input ${input.id} is required`);
+    }
     Object.assign(decision, { status: 'cancelled', updatedAt: tick() });
     return decision;
   });
@@ -953,7 +957,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
       };
       runs.push(run);
       if (agent) agent.lastHeartbeatAt = now;
-      if (status === 'running' && issueId) Object.assign(getIssue(issueId), { executionRunId: run.id, executionAgentNameKey: agent?.urlKey ?? null, executionLockedAt: now });
+      if (status === 'running' && issueId) Object.assign(getIssue(issueId), { executionRunId: run.id, executionAgentNameKey: agent?.name.trim().toLowerCase() ?? null, executionLockedAt: now });
       return run;
     },
     addDocument(issueId, { key = 'plan', title = 'Plan', body = '' } = {}) {
