@@ -6,6 +6,7 @@ import { loadSettings } from '../src/config.js';
 import { createLogger } from '../src/log.js';
 import { State } from '../src/state.js';
 import { defaultSleep } from '../src/telegram.js';
+import { unexpectedLoud } from './alerts.js';
 import { startFakePaperclip } from './fakes/paperclip.js';
 import { startFakeTelegram } from './fakes/telegram.js';
 
@@ -113,6 +114,8 @@ export async function startWorld({ config: overrides = {}, telegram = {}, paperc
         const lines = found.map((entry) => `${entry.kind}: ${entry.emoji.join(' ')} in "${entry.text.slice(0, 80)}"`);
         throw new Error(`the bot wrote emoji:\n${lines.join('\n')}`);
       }
+      const loud = unexpectedLoud(tg.loudSends());
+      if (loud.length > 0) throw new Error(`the bot sent messages with a sound that should be silent:\n${loud.join('\n')}`);
     },
   };
   return world;

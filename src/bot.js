@@ -71,7 +71,8 @@ export class Bot {
   }
 
   // Every outgoing message goes to the one configured chat; `thread` picks a topic (none means the main chat).
-  async send(html, { keyboard, replyTo, forceReply, issue, thread } = {}) {
+  // A message is silent unless `alert` is set, which is for the few that need the owner.
+  async send(html, { keyboard, replyTo, forceReply, issue, thread, alert = false } = {}) {
     if (html.length > MESSAGE_LIMIT) throw new Error('refusing to send a message over the Telegram limit');
     const params = {
       chat_id: this.config.telegramChatId,
@@ -79,6 +80,7 @@ export class Bot {
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
     };
+    if (!alert) params.disable_notification = true;
     if (thread != null && this.topics.on) params.message_thread_id = thread;
     if (keyboard?.length) params.reply_markup = { inline_keyboard: keyboard };
     if (forceReply) params.reply_markup = { force_reply: true, input_field_placeholder: typeof forceReply === 'string' ? forceReply : 'Reason' };
@@ -91,32 +93,33 @@ export class Bot {
   // Sends a message about a task into its top-level task's topic. A deleted topic is made again once;
   // any other refusal of the topic send goes to the main chat once.
   // `build({ own })` returns { text, keyboard }; own is true when the message lands in the task's own topic.
-  async sendAbout(issue, build, { replyTo } = {}) {
+  async sendAbout(issue, build, { replyTo, alert = false } = {}) {
     let target = await topicTarget(this, issue);
     const refusedInTopic = (err) => target.thread !== null && err instanceof TelegramError && err.code === 400;
     try {
-      return await this.#sendInTopic(target, issue, build, replyTo);
+      return await this.#sendInTopic(target, issue, build, replyTo, alert);
     } catch (err) {
       if (!refusedInTopic(err)) throw err;
       if (threadGone(err)) {
         dropTopic(this, target.rootId);
         target = await topicTarget(this, issue);
         try {
-          return await this.#sendInTopic(target, issue, build, replyTo);
+          return await this.#sendInTopic(target, issue, build, replyTo, alert);
         } catch (again) {
           if (!refusedInTopic(again)) throw again;
         }
       }
       this.log.warn('a topic refused a message, sending it to the main chat', { error: err.message });
-      return this.#sendInTopic({ thread: null, own: false, rootId: target.rootId }, issue, build, replyTo);
+      return this.#sendInTopic({ thread: null, own: false, rootId: target.rootId }, issue, build, replyTo, alert);
     }
   }
 
-  async #sendInTopic(target, issue, build, replyTo) {
+  async #sendInTopic(target, issue, build, replyTo, alert) {
     const { text, keyboard } = build({ own: target.own });
     const messageId = await this.send(text, {
       keyboard,
       replyTo,
+      alert,
       thread: target.thread,
       issue: { id: issue.id, identifier: issue.identifier },
     });
@@ -257,7 +260,7 @@ export class Bot {
       this.state.lastAuthAlertAt = this.now();
       this.state.save();
       try {
-        await this.send('Paperclip token rejected: create a new board key');
+        await this.send('Paperclip token rejected: create a new board key', { alert: true });
       } catch (sendErr) {
         this.log.warn('could not send the token alert', { error: sendErr.message });
       }

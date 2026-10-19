@@ -219,19 +219,23 @@ async function editAll(bot, record) {
   for (const messageId of record.messageIds) await editOne(bot, record, messageId);
 }
 
+// An item the owner has to act on; a review that is not stalled only informs.
+const needsOwner = (record) => record.kind !== 'review' || record.stalled;
+
 // Sends the item's message (into its task's topic when it has a task) and remembers the message id.
-async function sendRecord(bot, record, { thread } = {}) {
+// A message the owner asked for by tapping a button is silent; a new item makes a sound when it needs the owner.
+async function sendRecord(bot, record, { thread, alert = false } = {}) {
   const build = ({ own }) => {
     record.own = own;
     return renderInbox(bot, record);
   };
   if (record.issue) {
-    const sent = await bot.sendAbout(record.issue, build);
+    const sent = await bot.sendAbout(record.issue, build, { alert });
     record.messageIds.push(sent.messageId);
     return;
   }
   const { text: html, keyboard } = build({ own: false });
-  record.messageIds.push(await bot.send(html, { keyboard, thread }));
+  record.messageIds.push(await bot.send(html, { keyboard, thread, alert }));
 }
 
 export async function resolveRecord(bot, record, line) {
@@ -257,7 +261,7 @@ export function isFreshInbox(bot, item) {
 export async function sendInboxItem(bot, item) {
   const record = skeleton(bot, item);
   if (!(await hydrate(bot, record))) return false;
-  await sendRecord(bot, record);
+  await sendRecord(bot, record, { alert: needsOwner(record) });
   bot.state.inbox.set(record.key, record);
   bot.state.save();
   return true;

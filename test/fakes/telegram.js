@@ -56,6 +56,7 @@ export async function startFakeTelegram({
   const reactions = [];
   const written = [];
   const messages = new Map();
+  const sends = [];
   const callbackAnswers = [];
   const updates = [];
   const waiters = new Set();
@@ -164,8 +165,10 @@ export async function startFakeTelegram({
         thread,
         pinned: null,
         edits: 0,
+        silent: params.disable_notification === true,
       };
       messages.set(message.message_id, message);
+      sends.push({ messageId: message.message_id, text: params.text, markup: params.reply_markup ?? null, silent: message.silent });
       respond(res, 200, { ok: true, result: { message_id: message.message_id, chat: message.chat, date: 0, text: message.text, ...(thread ? { message_thread_id: thread, is_topic_message: true } : {}) } });
     },
     editMessageText(res, params) {
@@ -368,6 +371,8 @@ export async function startFakeTelegram({
     // Every visible string the bot sent (messages, buttons, answers, topic names, profile text) that holds an emoji.
     emojiFindings: () => written.map((entry) => ({ ...entry, emoji: findEmoji(entry.text) })).filter((entry) => entry.emoji.length > 0),
     written: () => [...written],
+    // Every message as sent (later edits do not change these) that was not sent with disable_notification.
+    loudSends: () => sends.filter((entry) => !entry.silent),
     topicNamed: (part) => [...topics.values()].find((topic) => topic.name.includes(part)),
     // Messages the bot sent into one topic, in order.
     inTopic: (threadId) => [...messages.values()].filter((m) => m.thread === threadId),

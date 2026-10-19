@@ -45,10 +45,14 @@ export async function closeCard(bot, card, line) {
 
 export async function sendCard(bot, interaction, issue) {
   const card = buildCard({ interaction, issue, key: bot.state.nextCardKey() });
-  const sent = await bot.sendAbout(issue, ({ own }) => {
-    card.own = own;
-    return renderCard(card, bot.config.uiBaseUrl);
-  });
+  const sent = await bot.sendAbout(
+    issue,
+    ({ own }) => {
+      card.own = own;
+      return renderCard(card, bot.config.uiBaseUrl);
+    },
+    { alert: true },
+  );
   card.messageId = sent.messageId;
   bot.state.cards.set(card.key, card);
   bot.state.save();

@@ -167,14 +167,18 @@ async function sendRunAlert(bot, item) {
   const url = runUrl(bot.config.uiBaseUrl, runPrefix(item), meta.agentId, item.subject.id);
   const compose = (head, body) => [head, ...body.filter(Boolean).map(escapeHtml)].join('\n');
   if (!issue) {
-    await bot.send(compose(`${kindWord('Run failed', url)} · ${escapeHtml(truncate(agent, 80))}`, [detail]));
+    await bot.send(compose(`${kindWord('Run failed', url)} · ${escapeHtml(truncate(agent, 80))}`, [detail]), { alert: true });
     return;
   }
   const who = [truncate(agent, 80), detail].filter(Boolean).join(': ');
-  await bot.sendAbout(issue, ({ own }) => ({
-    text: compose(headline('Run failed', issue, { own, kindUrl: url }), [who]),
-    keyboard: openRows(issue.id, own),
-  }));
+  await bot.sendAbout(
+    issue,
+    ({ own }) => ({
+      text: compose(headline('Run failed', issue, { own, kindUrl: url }), [who]),
+      keyboard: openRows(issue.id, own),
+    }),
+    { alert: true },
+  );
 }
 
 async function alertFailedRuns(bot, failedRuns) {
@@ -220,21 +224,23 @@ async function lastAgentComment(bot, issueId) {
 }
 
 // Sends the done / in-review message. It quotes the last agent comment unless the chat already showed that comment.
+// Only a finished top-level task makes a sound.
 async function sendStatusUpdate(bot, issue) {
   const kind = issue.status === 'done' ? 'Done' : 'In review';
   const found = await lastAgentComment(bot, issue.id);
   const comment = found && !bot.state.hasShown(found.id) ? found : null;
   let quoted = false;
-  await bot.sendAbout(issue, ({ own }) => {
+  const build = ({ own }) => {
     const head = headline(kind, issue, { own, url: issueUrl(bot.config.uiBaseUrl, issue.identifier) });
-    const build = (max) => {
+    const text = (max) => {
       const body = comment ? quote(comment.body, max) : '';
       quoted = body !== '';
       return [head, body].filter(Boolean).join('\n');
     };
     // The last build is the one that fits, so `quoted` describes the sent text.
-    return { text: fitMessage(build, QUOTE_LEVELS), keyboard: openRows(issue.id, own) };
-  });
+    return { text: fitMessage(text, QUOTE_LEVELS), keyboard: openRows(issue.id, own) };
+  };
+  await bot.sendAbout(issue, build, { alert: issue.status === 'done' && !issue.parentId });
   if (quoted) bot.state.noteShown(comment.id);
 }
 

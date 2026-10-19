@@ -227,6 +227,8 @@ Each new comment of a followed task is one message: the agent's name in bold as 
 
 `/settings` has a toggle for each kind of message (done, in review, failed run, followed comments) and for following the tasks you create, plus **Mute 1 h**, **Mute 8 h** and **Unmute**. A toggle reads `Done messages · On` (green) or `Done messages · Off`. While muted, those messages are not sent; when the mute ends, one line says how many were hidden. Cards that need an answer and inbox items are always sent.
 
+Only what needs you makes a sound: cards, approvals, decisions, stalled reviews, blocked tasks, recovery items, join requests, a failed run, **Done** of a top-level task and a rejected Paperclip token. Everything else is delivered silently: agent comments, **In review**, **Done** of a subtask, task views, replies to your commands, lists and summary lines. The mute and the toggles above decide what is sent at all; they do not change the sound.
+
 ### Commands
 
 | Command | What it does |
