@@ -189,12 +189,14 @@ function composeText(card, uiBaseUrl, level, rich = false) {
     if (card.mode === 'form' && level.question > 0) {
       lines.push('');
       const numbered = card.questions.length > 1;
+      // A settled card whose outcome names the picked options shows them there only.
+      const picksInOutcome = Boolean(card.outcome?.detail);
       card.questions.forEach((q, index) => {
         lines.push(`${numbered ? `${index + 1}${rich ? '\\.' : '.'} ` : ''}${esc(truncate(q.prompt, level.question))}${q.required ? '' : ' (optional)'}`);
         const answer = card.answers[index];
         let shown = null;
         if (q.mode === 'text' && answer.text) shown = `“${truncate(answer.text, level.answer)}”`;
-        else if (q.mode !== 'text' && answer.sel.length > 0) shown = answer.sel.map((i) => truncate(q.options[i].label, 60)).join(', ');
+        else if (q.mode !== 'text' && answer.sel.length > 0 && !picksInOutcome) shown = answer.sel.map((i) => truncate(q.options[i].label, 60)).join(', ');
         if (shown) lines.push(`${numbered && !rich ? '   ' : ''}Answer: ${esc(shown)}`);
       });
       if (card.status === 'pending' && openTextQuestion(card) >= 0) lines.push('', 'Reply to this message to answer the text question.');
@@ -344,9 +346,12 @@ export function declinedOutcome(card, reason, nowMs) {
   return makeOutcome('Declined', why ? truncate(why, REASON_MAX) : labelDetail(card.confirm.rejectLabel, DECLINE_REPEATS), nowMs);
 }
 
-// The outcome of a form that was sent: the labels of the picked options; written answers are not shown.
+// The outcome of a form that was sent: the labels of the picked options, for a single question only (a form with
+// several keeps each answer under its question); written answers are not shown.
 export function answeredOutcome(card, nowMs) {
-  const labels = card.questions.flatMap((q, i) => (q.mode === 'text' ? [] : card.answers[i].sel.map((oi) => q.options[oi]?.label).filter(Boolean)));
+  if (card.questions.length !== 1) return makeOutcome('Answered', null, nowMs);
+  const [q] = card.questions;
+  const labels = q.mode === 'text' ? [] : card.answers[0].sel.map((oi) => q.options[oi]?.label).filter(Boolean);
   return makeOutcome('Answered', joinLabels(labels), nowMs);
 }
 

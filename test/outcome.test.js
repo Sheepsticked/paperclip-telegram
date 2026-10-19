@@ -167,21 +167,22 @@ for (const rich of MODES) {
 
   test(`${mode}: a single-choice question tapped ends with Answered and the option`, async (t) => {
     const payload = questionsPayload([choiceQuestion('env', 'Which environment?', ['Staging', 'Production'])]);
-    const { w, bot, clock, message, head, gap, intro } = await cardWorld(t, rich, { kind: 'ask_user_questions', payload });
+    const { w, bot, clock, message, head, intro } = await cardWorld(t, rich, { kind: 'ask_user_questions', payload });
     const before = `${head}\n\n${intro}Which environment?`;
     assert.equal(message.text, before);
 
     clock.at = SETTLED_AT;
     const calls = sends(w);
     await tap(w, bot, message, 'Production');
-    // The answer line is part of the card, so it stays above the outcome.
-    assert.equal(textOf(w, message), settled(rich, `${before}${gap}Answer: Production`, '<b>Answered</b> · Production'));
+    // The outcome line names the answer, so the card no longer shows it under the question.
+    assert.equal(textOf(w, message), settled(rich, before, '<b>Answered</b> · Production'));
+    assert.equal(textOf(w, message).split('Production').length - 1, 1, 'the answer is said once');
     assert.deepEqual(w.tg.buttons(message.message_id), []);
     assert.equal(w.tg.callbackAnswers.at(-1).text, 'Answered');
     assert.equal(sends(w), calls);
   });
 
-  test(`${mode}: a form that is submitted lists the picked options and leaves the written answer out`, async (t) => {
+  test(`${mode}: a form with several questions keeps each answer under its question and the outcome has no detail`, async (t) => {
     const payload = questionsPayload([
       choiceQuestion('env', 'Which environment?', ['Staging', 'Production']),
       choiceQuestion('regions', 'Which regions?', ['EU', 'US', 'Asia'], { multi: true }),
@@ -199,7 +200,9 @@ for (const rich of MODES) {
     const calls = sends(w);
     await tap(w, bot, message, 'Submit');
     const after = textOf(w, message);
-    assert.ok(after.endsWith(`\n\n${block(rich, '<b>Answered</b> · Production, EU, Asia')}`), after);
+    assert.ok(after.endsWith(`\n\n${block(rich, '<b>Answered</b>')}`), after);
+    for (const answer of ['Answer: Production', 'Answer: EU, Asia', 'Answer: “Because the freeze ends”']) assert.ok(after.includes(answer), answer);
+    assert.equal(after.split('Production').length - 1, 1, 'each answer is said once');
     assert.ok(!after.includes('Reply to this message'), 'the reply hint is gone');
     assert.deepEqual(w.tg.buttons(message.message_id), []);
     assert.equal(sends(w), calls);
