@@ -165,11 +165,11 @@ On the very first start the bot sends the cards and inbox items that are waiting
 
 ### Task view
 
-`/task <ID>` (for example `/task ABC-12`, any case; `/task 12` uses the company prefix seen most) sends the task. Line 1 is the id (linked to Paperclip) and the title. Line 2 is the status, the assignee (with `running` while a run is active), the project, when it was last updated, and `high priority` or `critical priority` when it is one of those. Then come the description (300 characters) and, in the main chat only, the last comment (200 characters), which then counts as shown. In the task's own topic the view has no comments, because the topic already holds them. The message is edited in place after every action.
+`/task <ID>` (for example `/task ABC-12`, any case; `/task 12` uses the company prefix seen most) sends the task. Line 1 is the id (linked to Paperclip) and the title. Line 2 is the status, the assignee (with `running` while a run is active), the project, when it was last updated, and `high priority` or `critical priority` when it is one of those. Then come the description (300 characters) and, in the main chat only, the last comment (200 characters) as a preview; a followed task still sends that comment in full. In the task's own topic the view has no comments, because the topic already holds them. The message is edited in place after every action.
 
 The first row has **Done** (green, needs a second tap within 30 seconds) and **More**. While the task has an active run, **Stop run** (red, also two taps; it cancels that run) comes before **More**. A done or cancelled task has **Reopen** (blue, sets the status to to do) instead of **Done**.
 
-**More** replaces the buttons with these rows, leaving out the ones that do not apply; after any action the first row is shown again.
+**More** replaces the buttons with these rows, leaving out the ones that do not apply; after any action the first row is shown again. Opening **More**, a picker or **Docs** cancels a pending second tap, and **Back** shows the first row without one.
 
 | Button | What it does |
 | --- | --- |
@@ -221,13 +221,13 @@ Sent on its own, a file with a caption offers "Create a task from this?" with th
 
 ### Following
 
-Each new comment of a followed task is one message: the agent's name in bold as the kind (and the task, outside its own topic), then the comment as a quote of up to 2000 characters. Your own comments are not sent. Every comment is said once: the bot remembers the last 500 comment ids it showed (in follow messages, in done and in-review quotes, and as the last comment of a task view in the main chat), and a comment in that memory is not sent or quoted again, in the same poll or a later one. The memory is kept across restarts and cleared when `telegramChatId` changes. More than five new comments on one task arrive as one summary line. A task stops being followed when it is done or cancelled. At most 50 tasks are followed; following one more drops the oldest. Tasks you create from Telegram are followed by default (the **Follow new tasks** setting), and so are tasks that have a topic. The **Followed comments** setting decides whether their comments are sent.
+Each new comment of a followed task is one message: the agent's name in bold as the kind (and the task, outside its own topic), then the comment as a quote of up to 2000 characters. Your own comments are not sent. Every comment is said once: the bot remembers the last 500 comment ids it showed (in follow messages and in done and in-review quotes; a task view does not count), and a comment in that memory is not sent or quoted again, in the same poll or a later one. The memory is kept across restarts and cleared when `telegramChatId` changes. More than five new comments on one task arrive as one summary line. A task stops being followed when it is done or cancelled. At most 50 tasks are followed; following one more drops the oldest. Tasks you create from Telegram are followed by default (the **Follow new tasks** setting), and so are tasks that have a topic. The **Followed comments** setting decides whether their comments are sent.
 
 ### Settings and mute
 
 `/settings` has a toggle for each kind of message (done, in review, failed run, followed comments) and for following the tasks you create, plus **Mute 1 h**, **Mute 8 h** and **Unmute**. A toggle reads `Done messages · On` (green) or `Done messages · Off`. While muted, those messages are not sent; when the mute ends, one line says how many were hidden. Cards that need an answer and inbox items are always sent.
 
-Only what needs you makes a sound: cards, approvals, decisions, stalled reviews, blocked tasks, recovery items, join requests, a failed run, **Done** of a top-level task and a rejected Paperclip token. Everything else is delivered silently: agent comments, **In review**, **Done** of a subtask, task views, replies to your commands, lists and summary lines. The mute and the toggles above decide what is sent at all; they do not change the sound.
+Only what needs you makes a sound: cards, approvals, decisions, stalled reviews, blocked tasks, recovery items, join requests, a failed run, **Done** of a top-level task and a rejected Paperclip token. The summary line for many changes makes a sound only when it counts a finished top-level task. Everything else is delivered silently: agent comments, **In review**, **Done** of a subtask, task views, replies to your commands and lists. The mute and the toggles above decide what is sent at all; they do not change the sound.
 
 ### Commands
 

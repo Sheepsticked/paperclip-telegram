@@ -223,8 +223,10 @@ async function lastAgentComment(bot, issueId) {
   }
 }
 
+// A finished task with no parent: the one status change that makes a sound.
+const isTopLevelDone = (issue) => issue.status === 'done' && !issue.parentId;
+
 // Sends the done / in-review message. It quotes the last agent comment unless the chat already showed that comment.
-// Only a finished top-level task makes a sound.
 async function sendStatusUpdate(bot, issue) {
   const kind = issue.status === 'done' ? 'Done' : 'In review';
   const found = await lastAgentComment(bot, issue.id);
@@ -240,7 +242,7 @@ async function sendStatusUpdate(bot, issue) {
     // The last build is the one that fits, so `quoted` describes the sent text.
     return { text: fitMessage(text, QUOTE_LEVELS), keyboard: openRows(issue.id, own) };
   };
-  await bot.sendAbout(issue, build, { alert: issue.status === 'done' && !issue.parentId });
+  await bot.sendAbout(issue, build, { alert: isTopLevelDone(issue) });
   if (quoted) bot.state.noteShown(comment.id);
 }
 
@@ -336,7 +338,7 @@ async function reportStatusChanges(bot, sentIssueIds) {
   const reviewed = new Set();
   if (outgoing.length > CHANGE_SUMMARY_THRESHOLD) {
     const done = outgoing.filter((issue) => issue.status === 'done').length;
-    await bot.send(`${done} done, ${outgoing.length - done} in review since the last check, see /status`);
+    await bot.send(`${done} done, ${outgoing.length - done} in review since the last check, see /status`, { alert: outgoing.some(isTopLevelDone) });
     for (const issue of outgoing) {
       state.statuses.set(issue.id, issue.status);
       state.statusRetries.delete(issue.id);

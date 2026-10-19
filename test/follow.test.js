@@ -417,16 +417,23 @@ test('a comment that a status message quoted is skipped when follow reads it aga
   assert.equal(w.tg.sent().length, 1, 'nothing was sent for it');
 });
 
-test('a comment shown in a task view in General is not followed again', async (t) => {
+test('a task view in General shows a preview and the next poll still sends the full comment', async (t) => {
   const { w, bot } = await setup(t);
   const issue = await followed(w, bot);
-  const comment = w.pc.addComment(issue.id, { body: 'Seen in the view' });
+  const body = `Start of a long report. ${'More detail follows. '.repeat(30)}The end.`;
+  const comment = w.pc.addComment(issue.id, { body });
   await bot.handleUpdate(w.tg.message('/task TST-1'));
-  assert.match(w.tg.lastMessage().text, /<b>Dev<\/b>\n<blockquote>Seen in the view<\/blockquote>/);
-  assert.ok(bot.state.hasShown(comment.id));
+  const view = w.tg.lastMessage();
+  assert.ok(view.text.includes('Start of a long report.'));
+  assert.ok(!view.text.includes('The end.'), 'the view cuts the comment');
+  assert.equal(bot.state.hasShown(comment.id), false, 'a view does not count as showing it');
 
   await bot.pollOnce();
-  assert.equal(w.tg.sent().length, 1, 'only the view');
+  assert.equal(w.tg.sent().length, 2, 'the view and the follow message');
+  const message = w.tg.lastMessage();
+  assert.equal(message.text.split('\n')[0], `<b>Dev</b> · ${HEAD}`);
+  assert.equal(quoted(message), body, 'the full comment');
+  assert.ok(bot.state.hasShown(comment.id));
   assert.equal(bot.state.following.get(issue.id).lastSeenCommentId, comment.id);
 
   w.pc.addComment(issue.id, { body: 'After the view' });
@@ -436,11 +443,18 @@ test('a comment shown in a task view in General is not followed again', async (t
 
 test('muted comments leave out those the chat already showed', async (t) => {
   const { w, bot } = await setup(t);
-  const issue = await followed(w, bot);
-  w.pc.addComment(issue.id, { body: 'Seen in the view' });
-  await bot.handleUpdate(w.tg.message('/task TST-1'));
+  const issue = w.pc.addIssue({ title: 'Followed work', status: 'in_progress', assigneeAgentId: 'agent-1' });
+  const earlier = w.pc.addComment(issue.id, { body: 'Earlier comment' });
+  await followIssue(bot, issue);
+  const entry = bot.state.following.get(issue.id);
+  const ready = w.pc.addComment(issue.id, { body: 'Ready for review' });
+  w.pc.setStatus(issue.id, 'in_review');
+  await bot.pollOnce();
+  assert.ok(bot.state.hasShown(ready.id), 'the In review message quoted it');
   const sent = w.tg.sent().length;
 
+  // The same comment is read once more, as after a read that failed halfway.
+  entry.lastSeenCommentId = earlier.id;
   bot.state.mute(bot.now(), 8);
   w.pc.addComment(issue.id, { body: 'Hidden while muted' });
   await bot.pollOnce();

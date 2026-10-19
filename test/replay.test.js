@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
+import { followIssue } from '../src/follow.js';
 import { confirmPayload, startWorld, UI_BASE_URL } from './helpers.js';
 
 const GROUP_ID = -1001234567890;
@@ -131,10 +132,10 @@ test('a done message keeps its quote when that comment was not shown before', as
 
 test('the shown comments survive a restart and are cleared when the chat changes', async (t) => {
   const { w, bot, issue } = await startScenario(t, {});
-  await bot.handleUpdate(w.tg.message('/task TST-1'));
-  const comment = w.pc.addComment(issue.id, { body: 'Shown in the view' });
-  await bot.handleUpdate(w.tg.message('/task TST-1'));
-  assert.match(w.tg.lastMessage().text, /<b>Dev<\/b>\n<blockquote>Shown in the view<\/blockquote>/);
+  await followIssue(bot, issue);
+  const comment = w.pc.addComment(issue.id, { body: 'Shown in a message' });
+  await bot.pollOnce();
+  assert.match(w.tg.lastMessage().text, /<b>Dev<\/b> · .*\n<blockquote>Shown in a message<\/blockquote>/);
   assert.ok(bot.state.hasShown(comment.id));
   bot.state.save();
 
@@ -149,6 +150,30 @@ test('the shown comments survive a restart and are cleared when the chat changes
   const moved = w.makeBot();
   assert.equal(moved.state.hasShown(comment.id), false, 'a new chat starts with an empty memory');
   assert.deepEqual(JSON.parse(fs.readFileSync(w.statePath, 'utf8')).shownComments, []);
+});
+
+test('a task view shows a cut preview of the last comment and the poll still sends the whole comment', async (t) => {
+  const body = `Report start. ${'Detail follows. '.repeat(40)}Report end.`;
+  for (const forum of [false, true]) {
+    const { w, bot, issue } = await startScenario(t, forum ? { telegram: { chatId: GROUP_ID, forum: true }, config: { topics: 'auto' } } : {});
+    await followIssue(bot, issue);
+    if (forum) {
+      w.pc.setStatus(issue.id, 'in_review');
+      await bot.pollOnce();
+    }
+    const comment = w.pc.addComment(issue.id, { body });
+    await bot.handleUpdate(w.tg.message('/task TST-1'));
+    const view = w.tg.lastMessage();
+    assert.ok(view.text.includes('Report start.') && !view.text.includes('Report end.'), 'the view has a preview');
+    assert.equal(bot.state.hasShown(comment.id), false);
+
+    await bot.pollOnce();
+    const full = w.tg.sent().filter((m) => m.text.includes('Report end.'));
+    assert.equal(full.length, 1, forum ? 'the topic gets the whole comment' : 'General gets the whole comment');
+    assert.ok(full[0].text.includes(`${'Detail follows. '.repeat(40)}Report end.`));
+    if (forum) assert.equal(full[0].thread, bot.state.topics.get(issue.id).thread);
+    assert.ok(bot.state.hasShown(comment.id));
+  }
 });
 
 test('a state file without the memory loads with an empty one, and the memory keeps the newest 500', async (t) => {

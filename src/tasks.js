@@ -82,8 +82,7 @@ function statusLine(view, now) {
   return parts.join(' · ');
 }
 
-// `shown.id` ends up holding the comment the built text includes, if any.
-function composeTask(view, { note, own, now, uiBaseUrl, shown }, level) {
+function composeTask(view, { note, own, now, uiBaseUrl }, level) {
   const { issue } = view;
   const title = issue.title ? ` ${escapeHtml(truncate(issue.title, level.title))}` : '';
   const lines = [`<b>${link(issueUrl(uiBaseUrl, issue.identifier), issue.identifier)}</b>${title}`];
@@ -91,12 +90,8 @@ function composeTask(view, { note, own, now, uiBaseUrl, shown }, level) {
   lines.push(statusLine(view, now));
   const description = String(issue.description ?? '').trim();
   if (description && level.description > 0) lines.push(`<blockquote>${escapeHtml(truncate(description, level.description))}</blockquote>`);
-  shown.id = null;
   const last = !own && level.comment > 0 && view.comment ? quote(view.comment.body, level.comment) : '';
-  if (last) {
-    lines.push(`<b>${escapeHtml(truncate(view.author, 60))}</b>`, last);
-    shown.id = view.comment.id;
-  }
+  if (last) lines.push(`<b>${escapeHtml(truncate(view.author, 60))}</b>`, last);
   return lines.join('\n');
 }
 
@@ -128,19 +123,16 @@ export function taskKeyboard(issue, { following, armed, own = false, more = fals
 }
 
 export function renderTask(bot, view, { note = null, own = false, armed = new Set(), more = false } = {}) {
-  const shown = { id: null };
-  const context = { note, own, now: bot.now(), uiBaseUrl: bot.config.uiBaseUrl, shown };
-  // The last build is the one that fits, so `shown` describes the returned text.
+  const context = { note, own, now: bot.now(), uiBaseUrl: bot.config.uiBaseUrl };
   const text = fitMessage((level) => composeTask(view, context, level), LEVELS);
-  return { text, keyboard: taskKeyboard(view.issue, { following: bot.state.isFollowing(view.issue.id), armed, own, more }), shownCommentId: shown.id };
+  return { text, keyboard: taskKeyboard(view.issue, { following: bot.state.isFollowing(view.issue.id), armed, own, more }) };
 }
 
 // Sends an already loaded task view as a new message; replies to it become comments on the task.
 export async function sendLoadedView(bot, view, { note = null, replyTo, thread = null } = {}) {
   const { issue } = view;
-  const { text, keyboard, shownCommentId } = renderTask(bot, view, { note, own: ownTopic(bot, issue.id, thread) });
+  const { text, keyboard } = renderTask(bot, view, { note, own: ownTopic(bot, issue.id, thread) });
   const messageId = await bot.send(text, { keyboard, replyTo, thread, issue: { id: issue.id, identifier: issue.identifier } });
-  bot.state.noteShown(shownCommentId);
   return { issue, messageId };
 }
 
@@ -152,9 +144,8 @@ export async function sendTaskView(bot, ref, options = {}) {
 async function showTask(bot, message, ref, view, { more = false } = {}) {
   const current = view ?? (await loadTask(bot, ref));
   const own = ownTopic(bot, current.issue.id, threadOf(bot, message));
-  const { text, keyboard, shownCommentId } = renderTask(bot, current, { own, armed: bot.armedOps(message.message_id), more });
+  const { text, keyboard } = renderTask(bot, current, { own, armed: bot.armedOps(message.message_id), more });
   await bot.edit(message.message_id, text, keyboard);
-  bot.state.noteShown(shownCommentId);
 }
 
 // What the owner is told when Paperclip refuses or fails a button action.
@@ -206,10 +197,12 @@ async function stopRun(bot, cq, issueId, prefix) {
 }
 
 // Turns the first keyboard of the task view into the second one.
+// Opening it, a picker or Docs cancels a pending two-tap, so its timer cannot redraw over them.
 async function openMore(bot, cq, issueId) {
   const issue = await bot.pc.getIssue(issueId);
   const own = ownTopic(bot, issue.id, threadOf(bot, cq.message));
-  const keyboard = taskKeyboard(issue, { following: bot.state.isFollowing(issue.id), armed: bot.armedOps(cq.message.message_id), own, more: true });
+  bot.disarm(cq.message.message_id);
+  const keyboard = taskKeyboard(issue, { following: bot.state.isFollowing(issue.id), armed: new Set(), own, more: true });
   await bot.editKeyboard(cq.message.message_id, keyboard);
   return bot.answer(cq.id);
 }
@@ -221,6 +214,7 @@ async function openDocs(bot, cq, issueId) {
     await showTask(bot, cq.message, issueId);
     return bot.answer(cq.id, 'No documents');
   }
+  bot.disarm(cq.message.message_id);
   await bot.editKeyboard(cq.message.message_id, docsKeyboard(issueId, documentSummaries));
   return bot.answer(cq.id);
 }
@@ -233,6 +227,7 @@ async function openAgentPicker(bot, cq, issueId) {
   const agents = assignableAgents(await bot.agentRecords({ fresh: true })).slice(0, PICKER_AGENT_LIMIT);
   const rows = agents.map((agent) => [button(agent.name, `T:A:${issueId}:${agent.id.slice(0, ID_PREFIX)}`)]);
   rows.push([button('◀ Back', `T:b:${issueId}`)]);
+  bot.disarm(cq.message.message_id);
   await bot.editKeyboard(cq.message.message_id, rows);
   return bot.answer(cq.id);
 }
@@ -267,6 +262,7 @@ export function projectPickerKeyboard(issueId, projects, page) {
 
 async function openProjectPicker(bot, cq, issueId, page) {
   const projects = await bot.projectList();
+  bot.disarm(cq.message.message_id);
   await bot.editKeyboard(cq.message.message_id, projectPickerKeyboard(issueId, projects, page));
   return bot.answer(cq.id);
 }

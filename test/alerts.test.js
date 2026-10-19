@@ -38,12 +38,14 @@ test('the suite-wide check lets alert kinds through and names any other loud mes
     '<b><a href="https://example.com/x">Run failed</a></b> · Dev',
     '<b>Done</b>',
     'Paperclip token rejected: create a new board key',
+    '3 done, 9 in review since the last check, see /status',
   ];
   for (const text of alerts) assert.ok(isAlertKind(entry(text)), text);
 
   const stalled = { inline_keyboard: [[{ text: 'Approve' }, { text: 'Request changes' }]] };
   assert.ok(isAlertKind(entry('<b>Review</b> · TST-1 Title', stalled)));
   assert.ok(!isAlertKind(entry('<b>Review</b> · TST-1 Title', { inline_keyboard: [[{ text: 'Open task' }]] })));
+  assert.ok(!isAlertKind(entry('0 done, 12 in review since the last check, see /status')));
 
   const loud = [entry('<b>Dev</b> · TST-1 Title\nquote'), entry('<b>Done</b>'), entry('<b>In review</b>'), entry('Usage: /task &lt;ID&gt;\nsecond line')];
   assert.deepEqual(unexpectedLoud(loud), ['<b>Dev</b> · TST-1 Title', '<b>In review</b>', 'Usage: /task &lt;ID&gt;']);
@@ -155,6 +157,36 @@ test('in a forum group the subtask Done in the parent topic is silent and the pa
   assert.equal(done[0].silent, true);
   assert.equal(done[1].text, '<b>Done</b>');
   assert.equal(done[1].silent, false);
+});
+
+test('the summary of many changes makes a sound only when a top-level task is done', async (t) => {
+  const { w, bot } = await setup(t);
+  const parent = w.pc.addIssue({ title: 'Parent work', status: 'in_progress' });
+  await bot.pollOnce();
+  for (let i = 0; i < 4; i += 1) w.pc.addIssue({ title: `Review ${i}`, status: 'in_review' });
+  for (let i = 0; i < 7; i += 1) w.pc.addIssue({ title: `Subtask ${i}`, status: 'done', parentId: parent.id });
+  await bot.pollOnce();
+  const summary = w.tg.sent().filter((m) => m.text.includes('since the last check'));
+  assert.equal(summary.length, 1);
+  assert.equal(summary[0].text, '7 done, 4 in review since the last check, see /status');
+  assert.equal(summary[0].silent, true, 'finished subtasks and reviews alone stay silent');
+
+  for (let i = 0; i < 4; i += 1) w.pc.addIssue({ title: `Late review ${i}`, status: 'in_review' });
+  for (let i = 0; i < 6; i += 1) w.pc.addIssue({ title: `Subtask ${i}`, status: 'done', parentId: parent.id });
+  w.pc.addIssue({ title: 'Finished work', status: 'done' });
+  await bot.pollOnce();
+  const second = w.tg.sent().filter((m) => m.text.includes('since the last check')).at(-1);
+  assert.equal(second.text, '7 done, 4 in review since the last check, see /status');
+  assert.equal(second.silent, false, 'a finished top-level task in it makes the summary loud');
+});
+
+test('a summary of reviews only stays silent', async (t) => {
+  const { w, bot } = await setup(t);
+  for (let i = 0; i < 12; i += 1) w.pc.addIssue({ title: `Review ${i}`, status: 'in_review' });
+  await bot.pollOnce();
+  const summary = w.tg.lastMessage();
+  assert.equal(summary.text, '0 done, 12 in review since the last check, see /status');
+  assert.equal(summary.silent, true);
 });
 
 // The sound setting of every try to send a message that holds `needle`, the refused ones included.

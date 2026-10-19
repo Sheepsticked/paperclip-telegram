@@ -60,7 +60,7 @@ test('/task shows the linked id, one status line, the description, the last comm
   assert.equal(validateTelegramHtml(view.text), null);
   assert.deepEqual(styledRows(w, view.message_id), [['Done [success]', 'More']]);
   assert.ok(w.pc.requests.some((r) => r.method === 'GET' && r.path === '/api/issues/TST-1'));
-  assert.ok(bot.state.hasShown(w.pc.comments.at(-1).id), 'the comment in the view counts as shown');
+  assert.equal(bot.state.hasShown(w.pc.comments.at(-1).id), false, 'a view never marks its comment as shown');
 });
 
 test('the status line has only the parts that apply: no project, an owner assignee, a high priority', async (t) => {
@@ -122,12 +122,13 @@ test('in its own topic the view has no comment, and the second keyboard has no C
   await bot.handleUpdate(w.tg.message('/task TST-2', { thread }));
   const sub = w.tg.lastMessage();
   assert.equal(sub.text, `<b><a href="${UI_BASE_URL}/TST/issues/TST-2">TST-2</a></b> Child\nTo do · Unassigned · updated just now\n<b>Dev</b>\n<blockquote>Child note</blockquote>`);
-  assert.ok(bot.state.hasShown(childNote.id), 'a subtask is not the topic task, so its view shows the comment');
+  assert.ok(sub.text.includes('Child note'), 'a subtask is not the topic task, so its view shows the comment');
+  assert.equal(bot.state.hasShown(childNote.id), false);
   await tap(w, bot, sub, 'More');
   assert.deepEqual(rowsOf(w, sub.message_id), [['Assign', 'Project'], ['Cancel task'], ['Follow'], ['Comment'], ['Refresh', '◀ Back']]);
 });
 
-test('a comment the view showed is not sent again as a followed comment', async (t) => {
+test('a comment the view showed is still sent as a followed comment', async (t) => {
   const { w, bot } = await setup(t);
   const issue = w.pc.addIssue({ title: 'Followed', status: 'in_progress', assigneeAgentId: 'agent-1' });
   const view = await openTask(w, bot, null, issue);
@@ -137,15 +138,17 @@ test('a comment the view showed is not sent again as a followed comment', async 
   const seen = w.pc.addComment(issue.id, { body: 'Shown first' });
   await tap(w, bot, view, 'More');
   await tap(w, bot, view, 'Refresh');
-  assert.ok(bot.state.hasShown(seen.id));
-  const later = w.pc.addComment(issue.id, { body: 'Only in the follow message' });
+  assert.ok(textOf(w, view.message_id).includes('Shown first'), 'the view shows it');
+  assert.equal(bot.state.hasShown(seen.id), false);
+  const later = w.pc.addComment(issue.id, { body: 'Also in the follow message' });
   const before = w.tg.sent().length;
   await bot.pollOnce();
 
   const news = w.tg.sent().slice(before);
-  assert.equal(news.length, 1);
-  assert.match(news[0].text, /Only in the follow message/);
-  assert.equal(bot.state.following.get(issue.id).lastSeenCommentId, later.id, 'the cursor still moves past the shown comment');
+  assert.equal(news.length, 2);
+  assert.match(news[0].text, /Shown first/);
+  assert.match(news[1].text, /Also in the follow message/);
+  assert.equal(bot.state.following.get(issue.id).lastSeenCommentId, later.id);
 });
 
 test('/task accepts a lowercase identifier and a bare number', async (t) => {
@@ -310,21 +313,43 @@ test('an armed Cancel task goes back to normal on the second keyboard when the w
   assert.equal(patches(w).length, 0);
 });
 
-test('a refresh keeps an armed button armed and Back puts it away', async (t) => {
+test('the timer of a pending Done does not redraw over an open picker or the documents list', async (t) => {
+  const { w, bot } = await setup(t, undefined, { confirmMs: 100 });
+  w.pc.addProject({ name: 'Website' });
+  const issue = w.pc.addIssue({ title: 'Careful', status: 'todo' });
+  w.pc.addDocument(issue.id, { key: 'plan', title: 'Plan', body: 'Step one' });
+  const view = await openTask(w, bot, null, issue);
+  for (const opener of ['Assign', 'Project', 'Docs']) {
+    await tap(w, bot, view, 'Done');
+    await tap(w, bot, view, 'More');
+    await tap(w, bot, view, opener);
+    const open = rowsOf(w, view.message_id);
+    assert.ok(open.flat().includes('◀ Back'), `${opener} is open`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.deepEqual(rowsOf(w, view.message_id), open, `${opener} stays open after the window`);
+    await tap(w, bot, view, 'Back');
+    assert.deepEqual(rowsOf(w, view.message_id), [['Done', 'More']]);
+  }
+  assert.equal(patches(w).length, 0);
+});
+
+test('opening More puts a pending Done away, whether it ends with Refresh or Back', async (t) => {
   const { w, bot } = await setup(t);
   const issue = w.pc.addIssue({ title: 'Careful', status: 'todo' });
   const view = await openTask(w, bot, null, issue);
   await tap(w, bot, view, 'Done');
+  assert.deepEqual(rowsOf(w, view.message_id), [['Tap again to confirm', 'More']]);
   await tap(w, bot, view, 'More');
   await tap(w, bot, view, 'Refresh');
-  assert.equal(patches(w).length, 0);
-  assert.deepEqual(rowsOf(w, view.message_id), [['Tap again to confirm', 'More']], 'a refresh keeps the armed label');
+  assert.deepEqual(rowsOf(w, view.message_id), [['Done', 'More']], 'the first keyboard comes back unarmed');
+  await tap(w, bot, view, 'Done');
+  assert.equal(patches(w).length, 0, 'the next tap arms again instead of changing the task');
 
   await tap(w, bot, view, 'More');
   await tap(w, bot, view, 'Back');
   assert.deepEqual(rowsOf(w, view.message_id), [['Done', 'More']], 'Back disarms');
   await tap(w, bot, view, 'Done');
-  assert.equal(patches(w).length, 0, 'the next tap arms again instead of changing the task');
+  assert.equal(patches(w).length, 0);
 });
 
 test('Reopen moves a finished task to To do with a bare status change', async (t) => {
