@@ -245,8 +245,20 @@ async function retriedIssues(bot, updated) {
         throw err;
       }
     });
-    if (issue) issues.push(issue);
-    else if (issue === null) state.statusRetries.delete(issueId);
+    if (issue) {
+      issues.push(issue);
+    } else if (issue === null) {
+      state.statusRetries.delete(issueId);
+    } else {
+      // A task that cannot be read counts as a failed try, so the retry ends.
+      const { status } = state.statusRetries.get(issueId);
+      if (state.noteStatusFailure(issueId, status) >= MAX_STATUS_TRIES) {
+        bot.log.warn(`gave up sending the ${status} message of ${issueId}`);
+        state.statuses.set(issueId, status);
+        state.statusRetries.delete(issueId);
+      }
+    }
+    state.save();
   }
   return issues;
 }

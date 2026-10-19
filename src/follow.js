@@ -111,7 +111,13 @@ async function retriedFollowed(bot, updatedIssues) {
       issues.push(await bot.pc.getIssue(issueId));
     } catch (err) {
       if (isUnauthorized(err)) throw err;
-      if (err instanceof PaperclipError && err.status === 404) state.unfollow(issueId);
+      if (err instanceof PaperclipError && err.status === 404) {
+        state.unfollow(issueId);
+      } else {
+        entry.retry = entry.retry + 1 >= MAX_FOLLOW_TRIES ? 0 : entry.retry + 1;
+        bot.log.warn(`could not read followed task ${entry.identifier}`, { error: err.message });
+      }
+      state.save();
     }
   }
   return issues;

@@ -483,6 +483,35 @@ test('a status message that was refused is sent by a later poll after it left th
   assert.equal(bot.state.statuses.get(issue.id), 'done');
 });
 
+test('a status retry whose task can no longer be read is given up after three tries', async (t) => {
+  const w = await world(t);
+  let clock = Date.now();
+  const bot = await w.primedBot({ now: () => clock });
+  const issue = w.pc.addIssue({ title: 'Unreadable update', status: 'in_progress' });
+  await bot.pollOnce();
+  w.pc.setStatus(issue.id, 'done');
+  w.tg.failNext('sendMessage', 400, REFUSED, 1, mentions('Unreadable update'));
+  clock += 3_600_000;
+  await bot.pollOnce();
+  assert.equal(bot.state.statusRetries.get(issue.id).tries, 1);
+
+  const reads = () => w.pc.requestsTo('GET', new RegExp(`/api/issues/${issue.id}$`)).length;
+  w.pc.failRequests('GET', new RegExp(`/api/issues/${issue.id}$`), 500);
+  const before = reads();
+  for (let i = 0; i < 2; i += 1) {
+    clock += 3_600_000;
+    await bot.pollOnce();
+  }
+  assert.equal(reads() - before, 2);
+  assert.equal(bot.state.statusRetries.size, 0, 'the retry ended');
+  assert.equal(bot.state.statuses.get(issue.id), 'done');
+  assert.match(w.allLogText(), /warn gave up sending the done message of /);
+
+  clock += 3_600_000;
+  await bot.pollOnce();
+  assert.equal(reads() - before, 2, 'no further reads');
+});
+
 test('a Telegram outage while sending a status message keeps the change for the next poll', async (t) => {
   const w = await world(t);
   const bot = await w.primedBot();

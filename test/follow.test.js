@@ -220,6 +220,31 @@ test('a followed task that vanished is dropped, and one failing task does not st
   assert.ok(bot.state.isFollowing(healthy.id));
 });
 
+test('a followed task that can no longer be read is read again at most three times', async (t) => {
+  const w = await startWorld();
+  t.after(() => w.close());
+  let clock = Date.now();
+  const bot = await w.primedBot({ now: () => clock });
+  const issue = await followed(w, bot, { title: 'Unreadable one' });
+  w.pc.addComment(issue.id, { body: 'Cannot be read' });
+  w.pc.failRequests('GET', new RegExp(`/api/issues/${issue.id}/comments$`), 500, 1);
+  clock += 3_600_000;
+  await bot.pollOnce();
+  assert.equal(bot.state.following.get(issue.id).retry, 1);
+
+  const reads = () => w.pc.requestsTo('GET', new RegExp(`/api/issues/${issue.id}$`)).length;
+  w.pc.failRequests('GET', new RegExp(`/api/issues/${issue.id}$`), 500);
+  const before = reads();
+  for (let i = 0; i < 3; i += 1) {
+    clock += 3_600_000;
+    await bot.pollOnce();
+  }
+  assert.equal(reads() - before, 2);
+  assert.equal(bot.state.following.get(issue.id).retry, 0, 'the retry ended');
+  assert.ok(bot.state.isFollowing(issue.id), 'the task stays followed');
+  assert.ok(w.allLogText().includes('could not read followed task TST-1'));
+});
+
 test('the follow list holds fifty tasks and drops the oldest', async (t) => {
   const { w, bot } = await setup(t);
   const first = w.pc.addIssue({ title: 'Oldest' });
