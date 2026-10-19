@@ -187,7 +187,7 @@ export class Bot {
   #telegramFailureDelay(err, failures) {
     if (err instanceof TelegramError) {
       if (err.code === 409) {
-        this.log.error('a webhook is set for this bot; use a separate bot or remove the webhook', { detail: err.description });
+        this.log.error('Telegram 409: a webhook is set or another copy of the bot is running', { detail: err.description });
       } else if (err.code === 401 || err.code === 404) {
         this.log.error('Telegram rejected the bot token: check telegramTokenFile');
       } else {

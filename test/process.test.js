@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -75,6 +75,15 @@ test('exits 78 when a token file is missing, empty, or not a regular file', asyn
   assert.equal(result.status, 78);
   assert.match(result.stderr, /not a regular file/);
   assert.ok(!(result.stdout + result.stderr).includes(SECRET));
+});
+
+test('a FIFO as a token file exits 78 instead of hanging', async (t) => {
+  const dir = tempDir(t);
+  writeTokenFile(path.join(dir, 'paperclip-token'), SECRET);
+  execFileSync('mkfifo', ['-m', '600', path.join(dir, 'telegram-token')]);
+  const result = runBin(writeConfig(dir), dir);
+  assert.equal(result.status, 78);
+  assert.match(result.stderr, /telegramTokenFile: token file is not a regular file/);
 });
 
 test('a world-readable Paperclip token file is refused as well', async (t) => {

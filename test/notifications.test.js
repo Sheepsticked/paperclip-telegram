@@ -142,7 +142,7 @@ test('more than ten changes in one poll become one summary line', async (t) => {
   for (let i = 0; i < 9; i += 1) w.pc.addIssue({ title: `Done ${i}`, status: 'done' });
   for (let i = 0; i < 3; i += 1) w.pc.addIssue({ title: `Review ${i}`, status: 'in_review' });
   await bot.pollOnce();
-  assert.deepEqual(sentTexts(w), ['9 done, 3 in review while the bot was offline, see /status']);
+  assert.deepEqual(sentTexts(w), ['9 done, 3 in review since the last check, see /status']);
   await bot.pollOnce();
   assert.equal(w.tg.callsTo('sendMessage').length, 1);
 });
@@ -296,4 +296,133 @@ test('a long comment full of special characters stays valid HTML under the limit
   assert.ok(message.text.length <= 4096);
   assert.equal(validateTelegramHtml(message.text), null);
   assert.ok(message.text.includes('Open in Paperclip'));
+});
+
+test('the first-start card limit holds for later polls and restarts, and /status still lists the rest', async (t) => {
+  const w = await world(t);
+  for (let i = 0; i < 25; i += 1) {
+    const issue = w.pc.addIssue({ title: `Question ${i}`, status: 'in_review' });
+    w.pc.addInteraction(issue.id, { kind: 'request_confirmation', payload: confirmPayload({ prompt: `Prompt ${i}` }) });
+  }
+  const bot = w.makeBot();
+  await bot.pollOnce();
+  await bot.pollOnce();
+  assert.equal(w.tg.callsTo('sendMessage').length, 11);
+  assert.equal(sentTexts(w).at(-1), '+15 more, see /status');
+
+  const restarted = w.makeBot();
+  await restarted.pollOnce();
+  assert.equal(w.tg.callsTo('sendMessage').length, 11);
+  assert.equal(restarted.state.pendingCards().length, 10);
+
+  await restarted.handleUpdate(w.tg.message('/status'));
+  const status = w.tg.callsTo('sendMessage').slice(11).map((call) => call.params.text).join('\n');
+  assert.match(status, /<b>Waiting for you<\/b> \(25\)/);
+  assert.match(status, /\+10 more/);
+});
+
+// An issue whose interactions cannot be read, a card on another issue, a failed run and a done change.
+async function brokenItemSetup(w) {
+  const bot = await w.primedBot();
+  const finished = w.pc.addIssue({ title: 'Finished work', status: 'in_progress' });
+  await bot.pollOnce();
+  const broken = w.pc.addIssue({ title: 'Broken lookups', status: 'in_review' });
+  w.pc.addInteraction(broken.id, { kind: 'request_confirmation', payload: confirmPayload({ prompt: 'Broken question' }) });
+  const fine = w.pc.addIssue({ title: 'Fine issue', status: 'in_review' });
+  w.pc.addInteraction(fine.id, { kind: 'request_confirmation', payload: confirmPayload({ prompt: 'Fine question' }) });
+  w.pc.addFailedRun({ errorCode: 'adapter_failed', error: 'crashed' });
+  w.pc.setStatus(finished.id, 'done');
+  return { bot, broken, finished };
+}
+
+test('one issue whose interactions fail does not stop the cards, alerts and updates of the poll', async (t) => {
+  const w = await world(t);
+  const { bot, broken } = await brokenItemSetup(w);
+  w.pc.failRequests('GET', new RegExp(`/api/issues/${broken.id}/interactions$`), 500);
+
+  await bot.pollOnce();
+  assert.ok(w.tg.findMessage('Fine question'), 'the card on the other issue was sent');
+  assert.ok(w.tg.findMessage('Run failed'), 'the failed run was alerted');
+  assert.ok(w.tg.findMessage('Done'), 'the done change was reported');
+  assert.equal(w.tg.findMessage('Broken question'), undefined);
+  assert.ok(w.tg.findMessage('In review'), 'the issue without a known card is reported as in review');
+  assert.ok(w.logs.err.some((line) => line.includes('could not process card TST-2') && line.includes('500')));
+
+  w.pc.clearFailures();
+  await bot.pollOnce();
+  assert.ok(w.tg.findMessage('Broken question'), 'the card is sent once its lookup works again');
+  assert.equal(w.tg.sent().length, 5);
+});
+
+test('a Telegram rejection of one card does not stop the rest of the poll', async (t) => {
+  const w = await world(t);
+  const { bot } = await brokenItemSetup(w);
+  w.tg.failNext('sendMessage', 400, { ok: false, error_code: 400, description: "Bad Request: can't parse entities" });
+
+  await bot.pollOnce();
+  assert.equal(w.tg.sent().length, 4, 'one card, the run alert, an in-review line and the done message');
+  assert.ok(w.tg.findMessage('Run failed'));
+  assert.ok(w.tg.findMessage('Done'));
+  assert.equal(w.tg.sent().filter((m) => m.text.includes('question')).length, 1, 'one of the two cards got through');
+  assert.ok(w.logs.err.some((line) => line.includes('could not process card')));
+
+  await bot.pollOnce();
+  assert.equal(w.tg.sent().filter((m) => m.text.includes('question')).length, 2, 'the rejected card is retried');
+  assert.equal(w.tg.sent().length, 5);
+});
+
+test('a card that cannot be refreshed does not stop the poll either', async (t) => {
+  const w = await world(t);
+  const bot = await w.primedBot();
+  const issue = w.pc.addIssue({ title: 'Has a card', status: 'in_review' });
+  const interaction = w.pc.addInteraction(issue.id, { kind: 'request_confirmation', payload: confirmPayload() });
+  const other = w.pc.addIssue({ title: 'Finishes', status: 'in_progress' });
+  await bot.pollOnce();
+  w.pc.resolveElsewhere(interaction.id, 'accepted');
+  w.pc.setStatus(other.id, 'done');
+  w.pc.failRequests('GET', new RegExp(`/api/issues/${issue.id}/interactions$`), 503);
+
+  await bot.pollOnce();
+  assert.ok(w.tg.findMessage('Done'));
+  assert.equal(bot.state.pendingCards().length, 1, 'the card stays pending and is checked again later');
+  w.pc.clearFailures();
+  await bot.pollOnce();
+  assert.equal(bot.state.pendingCards().length, 0);
+});
+
+test('a done message goes out without the quote when the comments cannot be read', async (t) => {
+  const w = await world(t);
+  const bot = await w.primedBot();
+  const issue = w.pc.addIssue({ title: 'Quiet finish', status: 'in_progress' });
+  await bot.pollOnce();
+  w.pc.addComment(issue.id, { body: 'A comment that cannot be fetched.' });
+  w.pc.setStatus(issue.id, 'done');
+  w.pc.failRequests('GET', /\/comments$/, 500);
+  await bot.pollOnce();
+  const message = w.tg.findMessage('Done');
+  assert.ok(message);
+  assert.ok(!message.text.includes('<blockquote>'));
+  assert.equal(w.tg.callsTo('sendMessage').length, 1);
+});
+
+test('a Paperclip 401 on a single item still ends the poll so the token alert fires', async (t) => {
+  const w = await world(t);
+  const bot = await w.primedBot();
+  const issue = w.pc.addIssue({ title: 'Needs an answer', status: 'in_review' });
+  w.pc.addInteraction(issue.id, { kind: 'request_confirmation', payload: confirmPayload() });
+  w.pc.failRequests('GET', /\/interactions$/, 401);
+  await assert.rejects(bot.pollOnce(), (err) => err.status === 401);
+  assert.equal(w.tg.callsTo('sendMessage').length, 0);
+});
+
+test('a failing failed-run alert is retried on the next poll', async (t) => {
+  const w = await world(t);
+  const bot = await w.primedBot();
+  w.pc.addFailedRun({ errorCode: 'adapter_failed' });
+  w.tg.failNext('sendMessage', 400, { ok: false, error_code: 400, description: 'Bad Request: chat not found' });
+  await bot.pollOnce();
+  assert.equal(w.tg.sent().length, 0);
+  await bot.pollOnce();
+  assert.equal(w.tg.sent().length, 1);
+  assert.match(w.tg.lastMessage().text, /Run failed/);
 });

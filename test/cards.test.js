@@ -337,3 +337,50 @@ test('cards are not sent twice by repeated polls', async (t) => {
   await bot.pollOnce();
   assert.equal(w.tg.callsTo('sendMessage').length, 1);
 });
+
+test('a reply to a decline-reason prompt never becomes a comment once the card is closed', async (t) => {
+  const payload = confirmPayload({ rejectRequiresReason: true });
+  const { w, bot, interaction, message } = await cardWorld(t, { kind: 'request_confirmation', payload });
+  await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Hold'));
+  const prompt = w.tg.sent().find((m) => m.markup?.force_reply);
+  assert.ok(prompt);
+
+  w.pc.resolveElsewhere(interaction.id, 'accepted');
+  await bot.pollOnce();
+  assert.match(w.tg.messages.get(message.message_id).text, /Confirmed in Paperclip/);
+
+  // A restarted bot keeps the link from the prompt to its card.
+  const restarted = w.makeBot();
+  await restarted.handleUpdate(w.tg.message('Too risky before the freeze', { replyTo: prompt.message_id }));
+  assert.equal(posts(w, '/comments').length, 0);
+  assert.equal(posts(w, '/reject').length, 0);
+  assert.equal(w.tg.lastMessage().text, 'This card was already answered or closed.');
+});
+
+test('a reason sent after the card was settled elsewhere is not posted as a comment either', async (t) => {
+  const payload = confirmPayload({ rejectRequiresReason: true });
+  const { w, bot, interaction, message } = await cardWorld(t, { kind: 'request_confirmation', payload });
+  await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Hold'));
+  const prompt = w.tg.sent().find((m) => m.markup?.force_reply);
+
+  w.pc.resolveElsewhere(interaction.id, 'accepted');
+  await bot.handleUpdate(w.tg.message('Too risky', { replyTo: prompt.message_id }));
+  assert.equal(posts(w, '/comments').length, 0);
+  assert.equal(w.tg.lastMessage().text, 'Already answered or closed');
+  assert.deepEqual(w.tg.buttons(message.message_id), []);
+
+  await bot.handleUpdate(w.tg.message('Too risky, really', { replyTo: prompt.message_id }));
+  assert.equal(posts(w, '/comments').length, 0);
+  assert.equal(w.tg.lastMessage().text, 'This card was already answered or closed.');
+});
+
+test('a reply to an old reason prompt whose card is gone is not posted as a comment', async (t) => {
+  const payload = confirmPayload({ rejectRequiresReason: true });
+  const { w, bot, message } = await cardWorld(t, { kind: 'request_confirmation', payload });
+  await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Hold'));
+  const prompt = w.tg.sent().find((m) => m.markup?.force_reply);
+  bot.state.cards.clear();
+  await bot.handleUpdate(w.tg.message('Too risky', { replyTo: prompt.message_id }));
+  assert.equal(posts(w, '/comments').length, 0);
+  assert.equal(w.tg.lastMessage().text, "I don't know which task this is");
+});

@@ -41,7 +41,7 @@ curl -s --config <(printf 'url = "https://api.telegram.org/bot%s/getUpdates"\n' 
   | jq '.result[].message.from.id' | sort -u
 ```
 
-The number is your user id. In a private chat the chat id is the same number. If the call answers with a conflict error, a webhook is set for this bot: use a fresh bot or remove the webhook first (the bot never removes it for you).
+The number is your user id. In a private chat the chat id is the same number. If the call answers with a conflict error, a webhook is set for this bot or another program is polling it: use a fresh bot or remove the webhook first (the bot never removes it for you).
 
 ### 4. Create a Paperclip board key
 
@@ -52,7 +52,7 @@ The key lets the bot read the attention feed and answer cards as you. Create it 
 test -s ~/.config/paperclip-telegram/paperclip-token && grep -q '^pcp_board_' ~/.config/paperclip-telegram/paperclip-token && echo saved
 ```
 
-If the last line does not print `saved`, the key was not created; remove the file and try again.
+If the last line does not print `saved`, the key was not created; remove the file and try again. If `paperclipai token board create` says you are not logged in, run `paperclipai auth login` first.
 
 ### 5. Write the config
 
@@ -105,6 +105,8 @@ systemctl --user restart paperclip-telegram
 
 If the unit stopped with status 78, it is a configuration problem and systemd does not restart it. Read the message in the journal, fix the file, and start it again with `systemctl --user start paperclip-telegram`.
 
+If the log shows `Telegram 409`, a webhook is set for the bot or another copy of it is polling; use a separate bot or remove the webhook.
+
 If Paperclip rejects the key (HTTP 401), the log says so and the bot sends one Telegram alert per hour at most. Create a new key (step 4) and restart.
 
 ## What you see and what the buttons do
@@ -129,8 +131,8 @@ When a card is answered, in the bot or in Paperclip, its message loses the butto
 | ✅ **Done** | A task changed to `done`, with the last agent comment (5 lines at most) and a link. |
 | 👀 **In review** | A task changed to `in_review`. Not sent when a card for the same task was just sent or is still waiting. |
 | ⚠️ **Run failed** | A run failed. One alert per run. Runs that end for routine reasons (cancelled, paused, and so on) are skipped. |
-| `+N more, see /status` | More than 10 cards were waiting when the bot first started. |
-| `N done, M in review while the bot was offline` | More than 10 tasks changed in one poll. |
+| `+N more, see /status` | More than 10 cards were waiting when the bot first started. The extra ones are not sent later; `/status` lists them. |
+| `N done, M in review since the last check, see /status` | More than 10 tasks changed in one poll (for example after the bot was stopped for a while). |
 
 On the very first start the bot sends the cards that are waiting (at most 10) and nothing else: older done and in-review tasks and old failed runs are not reported.
 

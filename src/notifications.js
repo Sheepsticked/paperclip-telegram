@@ -12,6 +12,19 @@ const NOTIFIED_STATUSES = new Set(['done', 'in_review']);
 
 const iso = (ms) => new Date(ms).toISOString();
 
+const isUnauthorized = (err) => err instanceof PaperclipError && err.status === 401;
+
+// Runs one item of a poll; a failure is logged and skipped so the rest still goes out, except a 401.
+async function guarded(bot, label, job) {
+  try {
+    return await job();
+  } catch (err) {
+    if (isUnauthorized(err)) throw err;
+    bot.log.warn(`could not process ${label}`, { error: err.message });
+    return undefined;
+  }
+}
+
 async function seedStatuses(bot) {
   const statuses = new Map();
   for (let offset = 0; ; offset += SEED_PAGE) {
@@ -46,16 +59,21 @@ async function sendFeedCard(bot, item, cache, sentIssueIds) {
   return true;
 }
 
+// Sends the cards that are new (at most `limit`) and returns the interaction ids left over.
 async function sendNewCards(bot, feedCards, cache, sentIssueIds, limit = Infinity) {
-  const fresh = feedCards.filter((item) => !bot.state.cardByInteraction(item.subject.id));
-  for (const item of fresh.slice(0, limit)) await sendFeedCard(bot, item, cache, sentIssueIds);
-  return fresh.length - Math.min(fresh.length, limit);
+  const { state } = bot;
+  const fresh = feedCards.filter((item) => !state.cardByInteraction(item.subject.id) && !state.skippedCards.includes(item.subject.id));
+  for (const item of fresh.slice(0, limit)) {
+    await guarded(bot, `card ${item.relatedIssue?.identifier ?? item.subject.id}`, () => sendFeedCard(bot, item, cache, sentIssueIds));
+  }
+  return fresh.slice(limit).map((item) => item.subject.id);
 }
 
 async function syncPendingCards(bot, feedCards, cache) {
   const inFeed = new Set(feedCards.map((item) => item.subject.id));
   for (const card of bot.state.pendingCards()) {
-    if (!inFeed.has(card.interactionId)) await refreshCard(bot, card, cache);
+    if (inFeed.has(card.interactionId)) continue;
+    await guarded(bot, `card ${card.identifier}`, () => refreshCard(bot, card, cache));
   }
 }
 
@@ -83,9 +101,11 @@ async function alertFailedRuns(bot, failedRuns) {
     const runId = item.subject.id;
     if (bot.state.alertedRuns.includes(runId)) continue;
     if (skip.has(item.subject.metadata?.errorCode)) continue;
-    await sendRunAlert(bot, item);
-    bot.state.markRunAlerted(runId);
-    bot.state.save();
+    await guarded(bot, `run ${runId}`, async () => {
+      await sendRunAlert(bot, item);
+      bot.state.markRunAlerted(runId);
+      bot.state.save();
+    });
   }
 }
 
@@ -110,9 +130,10 @@ async function lastAgentComment(bot, issueId) {
     const comments = await bot.pc.listComments(issueId, { limit: 10, order: 'desc' });
     return comments.find((comment) => comment.authorType === 'agent' || (!comment.authorType && comment.authorAgentId)) ?? null;
   } catch (err) {
-    // A rejected request means there is nothing to quote; a network or server fault is retried next poll.
-    if (err instanceof PaperclipError && err.status >= 400 && err.status < 500 && err.status !== 401) return null;
-    throw err;
+    // Without the comment the message still goes out, just without a quote.
+    if (isUnauthorized(err)) throw err;
+    bot.log.warn(`could not read the comments of ${issueId}`, { error: err.message });
+    return null;
   }
 }
 
@@ -143,7 +164,7 @@ async function reportStatusChanges(bot, sentIssueIds) {
 
   if (changes.length > CHANGE_SUMMARY_THRESHOLD) {
     const done = changes.filter((issue) => issue.status === 'done').length;
-    await bot.send(`${done} done, ${changes.length - done} in review while the bot was offline, see /status`);
+    await bot.send(`${done} done, ${changes.length - done} in review since the last check, see /status`);
     for (const issue of changes) state.statuses.set(issue.id, issue.status);
     return;
   }
@@ -176,10 +197,11 @@ export async function pollPaperclip(bot) {
 
   if (!state.initialSyncDone) {
     const rest = await sendNewCards(bot, feedCards, cache, sentIssueIds, INITIAL_CARD_LIMIT);
-    if (rest > 0) await bot.send(`+${rest} more, see /status`);
+    for (const interactionId of rest) state.skipCard(interactionId);
     for (const item of failedRuns) state.markRunAlerted(item.subject.id);
     state.initialSyncDone = true;
     state.save();
+    if (rest.length > 0) await guarded(bot, 'the first-start summary', () => bot.send(`+${rest.length} more, see /status`));
   } else {
     await sendNewCards(bot, feedCards, cache, sentIssueIds);
     await alertFailedRuns(bot, failedRuns);

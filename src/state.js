@@ -3,6 +3,7 @@ import path from 'node:path';
 
 const MAX_MESSAGES = 2000;
 const MAX_ALERTED_RUNS = 500;
+const MAX_SKIPPED_CARDS = 500;
 const RESOLVED_CARD_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Persistent bot state, saved atomically (temp file, then rename) with mode 600.
@@ -15,6 +16,7 @@ export class State {
     this.messages = new Map((data.messages ?? []).map(([id, issueId]) => [Number(id), issueId]));
     this.identifiers = new Map(Object.entries(data.identifiers ?? {}));
     this.alertedRuns = data.alertedRuns ?? [];
+    this.skippedCards = data.skippedCards ?? [];
     this.statuses = new Map(Object.entries(data.statuses ?? {}));
     this.baselineAt = data.baselineAt ?? null;
     this.initialSyncDone = data.initialSyncDone ?? false;
@@ -63,6 +65,13 @@ export class State {
     if (this.alertedRuns.length > MAX_ALERTED_RUNS) this.alertedRuns.splice(0, this.alertedRuns.length - MAX_ALERTED_RUNS);
   }
 
+  // Interactions left out of the first-start batch; they are never sent later.
+  skipCard(interactionId) {
+    if (this.skippedCards.includes(interactionId)) return;
+    this.skippedCards.push(interactionId);
+    if (this.skippedCards.length > MAX_SKIPPED_CARDS) this.skippedCards.splice(0, this.skippedCards.length - MAX_SKIPPED_CARDS);
+  }
+
   pendingCards() {
     return [...this.cards.values()].filter((card) => card.status === 'pending');
   }
@@ -89,6 +98,7 @@ export class State {
       messages: [...this.messages],
       identifiers: Object.fromEntries([...this.identifiers].filter(([issueId]) => referenced.has(issueId))),
       alertedRuns: this.alertedRuns,
+      skippedCards: this.skippedCards,
       statuses: Object.fromEntries(this.statuses),
       baselineAt: this.baselineAt,
       initialSyncDone: this.initialSyncDone,

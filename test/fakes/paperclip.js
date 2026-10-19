@@ -34,6 +34,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
   let clock = Date.now();
   let unauthorized = false;
   let dropConnections = false;
+  const failures = [];
 
   // Strictly increasing timestamps that stay close to the real clock.
   const tick = () => {
@@ -323,6 +324,12 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
         res.end(JSON.stringify(payload));
       };
       if (unauthorized || req.headers.authorization !== `Bearer ${token}`) return send(401, { error: 'Board authentication required' });
+      const failure = failures.find((f) => f.method === req.method && f.pattern.test(url.pathname));
+      if (failure) {
+        failure.times -= 1;
+        if (failure.times <= 0) failures.splice(failures.indexOf(failure), 1);
+        return send(failure.status, { error: 'Injected failure' });
+      }
       try {
         for (const r of routes) {
           if (r.method !== req.method) continue;
@@ -358,6 +365,11 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
     setDropConnections: (value) => {
       dropConnections = value;
     },
+    // Makes matching requests answer with `status` (for `times` calls) instead of reaching the route.
+    failRequests(method, pattern, status = 500, times = Infinity) {
+      failures.push({ method, pattern, status, times });
+    },
+    clearFailures: () => failures.splice(0),
     addIssue({ title, description = null, status = 'todo', assigneeAgentId = null, projectId = null, createdAt, updatedAt } = {}) {
       issueNumber += 1;
       const now = tick();

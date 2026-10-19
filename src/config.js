@@ -128,7 +128,8 @@ export function parseConfig(raw) {
 export function readTokenFile(file, label) {
   let fd;
   try {
-    fd = fs.openSync(file, 'r');
+    // O_NONBLOCK keeps a FIFO from blocking the open; the type is checked on the descriptor below.
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
   } catch (err) {
     const why = err.code === 'ENOENT' ? 'token file missing' : `token file cannot be read (${err.code ?? 'error'})`;
     return { problem: `${label}: ${why}: ${file}` };

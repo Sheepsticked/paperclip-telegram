@@ -206,7 +206,7 @@ test('a webhook conflict is logged clearly and the webhook is never deleted', as
   await waitFor(() => w.sleeps.length >= 3, { label: 'backoff' });
   await stop();
 
-  assert.ok(w.logs.err.some((line) => line.includes('a webhook is set for this bot; use a separate bot or remove the webhook')));
+  assert.ok(w.logs.err.some((line) => line.includes('Telegram 409: a webhook is set or another copy of the bot is running')));
   assert.equal(w.tg.callsTo('deleteWebhook').length, 0);
   assert.ok(w.sleeps.some((ms) => ms >= 2000), 'the retry delay grows');
 });

@@ -100,7 +100,6 @@ async function askForReason(bot, cq, card) {
   const promptId = await bot.send(`↩ ${escapeHtml(truncate(label, 160))}\nReply to this message with your reason.`, {
     replyTo: card.messageId,
     forceReply: true,
-    issue: { id: card.issueId, identifier: card.identifier },
   });
   card.reasonPromptMessageId = promptId;
   bot.state.save();

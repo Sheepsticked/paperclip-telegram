@@ -310,7 +310,6 @@ export function resolveCard(card, line, nowIso) {
   card.status = 'resolved';
   card.resolvedAt = nowIso;
   card.resolution = line;
-  card.reasonPromptMessageId = null;
 }
 
 // The closing line for a card whose interaction was settled elsewhere.
