@@ -1,0 +1,17 @@
+{
+  "name": "paperclip-telegram",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Telegram bot to follow and answer Paperclip agents from a phone",
+  "type": "module",
+  "bin": {
+    "paperclip-telegram": "bin/paperclip-telegram.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node bin/paperclip-telegram.js",
+    "test": "node --test"
+  }
+}

@@ -1,0 +1,17 @@
+[Unit]
+Description=Telegram bot for Paperclip
+Wants=network-online.target
+After=network-online.target paperclipai.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=@NODE@ @REPO_DIR@/bin/paperclip-telegram.js
+Restart=always
+RestartSec=10
+RestartPreventExitStatus=78
+StateDirectory=paperclip-telegram
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

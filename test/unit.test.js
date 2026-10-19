@@ -1,0 +1,263 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { buildCard, renderCard } from '../src/cards.js';
+import { DEFAULT_ROUTINE_RUN_ERROR_CODES, defaultStatePath, parseConfig, readTokenFile } from '../src/config.js';
+import { MESSAGE_LIMIT, chunkLines, escapeHtml, fitMessage, firstLine, issueUrl, cardUrl, runUrl, truncate, truncateLines } from '../src/format.js';
+import { createLogger } from '../src/log.js';
+import { PaperclipClient, PaperclipError } from '../src/paperclip.js';
+import { SerialQueue } from '../src/queue.js';
+import { State } from '../src/state.js';
+import { TelegramClient, TelegramError } from '../src/telegram.js';
+import { validateTelegramHtml } from './fakes/telegram.js';
+import { writeTokenFile } from './helpers.js';
+
+function tempDir(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paperclip-telegram-unit-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+const baseConfig = {
+  paperclipUrl: 'http://localhost:3100/',
+  uiBaseUrl: 'https://paperclip.example.com//',
+  companyId: 'company-1',
+  leadAgentId: 'agent-lead',
+  telegramUserId: 1001,
+  telegramTokenFile: '~/telegram-token',
+  paperclipTokenFile: '/tmp/paperclip-token',
+};
+
+test('escapeHtml escapes the three characters Telegram needs', () => {
+  assert.equal(escapeHtml('a < b && c > d'), 'a &lt; b &amp;&amp; c &gt; d');
+});
+
+test('truncate counts code points and never splits an emoji', () => {
+  assert.equal(truncate('abc', 5), 'abc');
+  assert.equal(truncate('abcdef', 4), 'abc…');
+  assert.equal(truncate('😀'.repeat(10), 5), `${'😀'.repeat(4)}…`);
+  assert.equal(truncate('abc', 1), '…');
+  assert.equal(truncate('abc', 0), '');
+  assert.equal(truncate(undefined, 5), '');
+});
+
+test('truncateLines keeps the first non-empty lines and caps the length', () => {
+  assert.equal(truncateLines('a\n\nb\nc', 5, 100), 'a\nb\nc');
+  assert.equal(truncateLines('1\n2\n3\n4', 3, 100), '1\n2\n3…');
+  assert.equal(Array.from(truncateLines('x'.repeat(50), 5, 10)).length, 10);
+  assert.equal(truncateLines('', 5, 10), '');
+  assert.equal(firstLine('\n  \n  second  \nthird'), 'second');
+});
+
+test('chunkLines never exceeds the limit and never cuts a line', () => {
+  const lines = Array.from({ length: 50 }, (_, i) => `line ${i} ${'x'.repeat(30)}`);
+  const chunks = chunkLines(lines, 200);
+  assert.ok(chunks.length > 1);
+  for (const chunk of chunks) assert.ok(chunk.length <= 200);
+  assert.equal(chunks.join('\n'), lines.join('\n'));
+  assert.deepEqual(chunkLines([], 100), []);
+});
+
+test('fitMessage picks the first level that fits and fails when none does', () => {
+  const levels = [{ n: 5000 }, { n: 100 }];
+  assert.equal(fitMessage((level) => 'a'.repeat(level.n), levels).length, 100);
+  assert.throws(() => fitMessage(() => 'a'.repeat(MESSAGE_LIMIT + 1), levels), /does not fit/);
+});
+
+test('links use the documented url shapes', () => {
+  assert.equal(issueUrl('https://ui.example.com', 'ABC-12'), 'https://ui.example.com/ABC/issues/ABC-12');
+  assert.equal(cardUrl('https://ui.example.com', 'ABC-12', 'i1'), 'https://ui.example.com/ABC/issues/ABC-12#interaction-i1');
+  assert.equal(runUrl('https://ui.example.com', 'ABC', 'agent', 'run'), 'https://ui.example.com/ABC/agents/agent/runs/run');
+});
+
+test('very long card text is cut before escaping, so the HTML stays valid and under the limit', () => {
+  const interaction = {
+    id: 'interaction-1',
+    kind: 'request_confirmation',
+    payload: {
+      prompt: '<&>'.repeat(5000),
+      detailsMarkdown: '&'.repeat(9000),
+      toolAction: { toolDisplayName: 'Run <script>', risk: 'high', previewMarkdown: '>'.repeat(5000) },
+    },
+  };
+  const card = buildCard({ interaction, issue: { id: 'issue-1', identifier: 'TST-1', title: '<'.repeat(500) }, key: '1' });
+  const { text } = renderCard(card, 'https://paperclip.example.com');
+  assert.ok(text.length <= MESSAGE_LIMIT, `length ${text.length}`);
+  assert.equal(validateTelegramHtml(text), null);
+  assert.match(text, /<a href="https:\/\/paperclip\.example\.com\/TST\/issues\/TST-1#interaction-interaction-1">Open in Paperclip<\/a>/);
+  assert.match(text, /…/);
+});
+
+test('a text of emoji at the cut point stays valid', () => {
+  const interaction = { id: 'i', kind: 'request_confirmation', payload: { prompt: '😀&'.repeat(3000) } };
+  const card = buildCard({ interaction, issue: { id: 'x', identifier: 'TST-2', title: 'Emoji' }, key: '2' });
+  const { text } = renderCard(card, 'https://paperclip.example.com');
+  assert.ok(text.length <= MESSAGE_LIMIT);
+  assert.equal(validateTelegramHtml(text), null);
+  assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(text), 'no lone high surrogate');
+});
+
+test('validateTelegramHtml rejects what Telegram rejects', () => {
+  assert.equal(validateTelegramHtml('<b>ok</b> &amp; <a href="https://x.example">l</a>'), null);
+  assert.notEqual(validateTelegramHtml('a < b'), null);
+  assert.notEqual(validateTelegramHtml('<b>open'), null);
+  assert.notEqual(validateTelegramHtml('a & b'), null);
+  assert.notEqual(validateTelegramHtml('<script>x</script>'), null);
+});
+
+test('parseConfig applies the documented defaults', () => {
+  const { config, problems } = parseConfig(baseConfig);
+  assert.deepEqual(problems, []);
+  assert.equal(config.telegramChatId, 1001);
+  assert.equal(config.telegramApiUrl, 'https://api.telegram.org');
+  assert.equal(config.pollSeconds, 15);
+  assert.equal(config.newTaskProjectId, null);
+  assert.equal(config.paperclipUrl, 'http://localhost:3100');
+  assert.equal(config.uiBaseUrl, 'https://paperclip.example.com');
+  assert.equal(config.telegramTokenFile, path.join(os.homedir(), 'telegram-token'));
+  assert.deepEqual(config.routineRunErrorCodes, DEFAULT_ROUTINE_RUN_ERROR_CODES);
+  for (const code of ['cancelled', 'agent_paused', 'budget_paused', 'workspace_busy', 'paused']) assert.ok(config.routineRunErrorCodes.includes(code));
+});
+
+test('parseConfig keeps explicit values and reports each invalid key', () => {
+  const ok = parseConfig({ ...baseConfig, telegramChatId: -100123, pollSeconds: 5, routineRunErrorCodes: ['x'], newTaskProjectId: 'p', telegramApiUrl: 'http://127.0.0.1:1/' });
+  assert.equal(ok.config.telegramChatId, -100123);
+  assert.equal(ok.config.pollSeconds, 5);
+  assert.deepEqual(ok.config.routineRunErrorCodes, ['x']);
+  assert.equal(ok.config.telegramApiUrl, 'http://127.0.0.1:1');
+
+  const bad = parseConfig({ ...baseConfig, telegramUserId: '1001', telegramChatId: 0, companyId: '', pollSeconds: 0, routineRunErrorCodes: 'cancelled' });
+  assert.equal(bad.config, null);
+  assert.equal(bad.problems.length, 5);
+  assert.equal(parseConfig(null).config, null);
+  assert.equal(parseConfig([]).config, null);
+});
+
+test('defaultStatePath prefers STATE_DIRECTORY and falls back to the home state dir', () => {
+  assert.equal(defaultStatePath({ STATE_DIRECTORY: '/run/state-dir' }), '/run/state-dir/state.json');
+  assert.equal(defaultStatePath({ STATE_DIRECTORY: '/a:/b' }), '/a/state.json');
+  assert.equal(defaultStatePath({}), path.join(os.homedir(), '.local', 'state', 'paperclip-telegram', 'state.json'));
+});
+
+test('readTokenFile trims, and refuses loose permissions without quoting the content', (t) => {
+  const dir = tempDir(t);
+  const file = writeTokenFile(path.join(dir, 'token'), 'abc-token-value');
+  assert.deepEqual(readTokenFile(file, 'label'), { token: 'abc-token-value' });
+
+  fs.chmodSync(file, 0o640);
+  const loose = readTokenFile(file, 'label');
+  assert.match(loose.problem, /must not be accessible by group or others/);
+  assert.ok(!loose.problem.includes('abc-token-value'));
+
+  fs.chmodSync(file, 0o604);
+  assert.match(readTokenFile(file, 'label').problem, /must not be accessible/);
+  assert.match(readTokenFile(path.join(dir, 'missing'), 'label').problem, /token file missing/);
+  assert.match(readTokenFile(dir, 'label').problem, /not a regular file/);
+});
+
+test('the logger masks known secrets and anything shaped like one', () => {
+  const out = [];
+  const err = [];
+  const log = createLogger({ secrets: ['my-secret-value'], out: { write: (s) => out.push(s) }, err: { write: (s) => err.push(s) } });
+  log.info('hello my-secret-value', { url: 'https://api.telegram.org/bot123456:ABCDEFGHIJKL/getUpdates', key: 'pcp_board_abcDEF123' });
+  log.error('line one\nline two');
+  log.warn('careful');
+  assert.equal(out.length, 1);
+  assert.equal(err.length, 2);
+  assert.equal(out[0], 'info hello [redacted] url=https://api.telegram.org/[redacted]/getUpdates key=[redacted]\n');
+  assert.equal(err[0], 'error line one line two\n');
+});
+
+test('Telegram errors never carry the request url or token', async () => {
+  const token = '123456:SECRET-token-value';
+  const client = new TelegramClient({ baseUrl: 'http://127.0.0.1:1', token });
+  await assert.rejects(client.sendMessage({ chat_id: 1, text: 'x' }), (err) => {
+    assert.ok(err instanceof TelegramError);
+    assert.equal(err.network, true);
+    assert.ok(!err.message.includes(token));
+    assert.ok(!JSON.stringify(err).includes(token));
+    assert.ok(!String(err.stack).includes(token));
+    return true;
+  });
+});
+
+test('Paperclip errors never carry the bearer token', async () => {
+  const token = 'pcp_board_SECRETVALUE';
+  const client = new PaperclipClient({ baseUrl: 'http://127.0.0.1:1', token });
+  await assert.rejects(client.listAgents('company-1'), (err) => {
+    assert.ok(err instanceof PaperclipError);
+    assert.equal(err.network, true);
+    assert.ok(!err.message.includes(token));
+    assert.ok(!String(err.stack).includes(token));
+    return true;
+  });
+});
+
+test('State saves atomically with private permissions and prunes old data', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'nested', 'state.json');
+  const state = new State(file);
+  state.offset = 42;
+  const key = state.nextCardKey();
+  state.cards.set(key, { key, interactionId: 'i1', issueId: 'x', status: 'pending', messageId: 1 });
+  state.cards.set('old', { key: 'old', interactionId: 'i2', issueId: 'x', status: 'resolved', resolvedAt: '2020-01-01T00:00:00.000Z' });
+  state.cards.set('new', { key: 'new', interactionId: 'i3', issueId: 'x', status: 'resolved', resolvedAt: new Date().toISOString() });
+  state.pruneCards(Date.now());
+  state.save();
+
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(path.dirname(file)).mode & 0o077, 0);
+  assert.deepEqual(fs.readdirSync(path.dirname(file)), ['state.json']);
+  const loaded = State.load(file);
+  assert.equal(loaded.offset, 42);
+  assert.deepEqual([...loaded.cards.keys()].sort(), ['1', 'new']);
+  assert.equal(loaded.cardByInteraction('i1').key, '1');
+  assert.equal(loaded.pendingCards().length, 1);
+});
+
+test('State keeps only the newest 2000 messages and 500 alerted runs', (t) => {
+  const state = new State(path.join(tempDir(t), 'state.json'));
+  for (let i = 0; i < 2100; i += 1) state.mapMessage(i, `issue-${i}`, `TST-${i}`);
+  assert.equal(state.messages.size, 2000);
+  assert.equal(state.issueForMessage(99), null);
+  assert.deepEqual(state.issueForMessage(2099), { id: 'issue-2099', identifier: 'TST-2099' });
+  for (let i = 0; i < 600; i += 1) state.markRunAlerted(`run-${i}`);
+  state.markRunAlerted('run-599');
+  assert.equal(state.alertedRuns.length, 500);
+  assert.ok(!state.alertedRuns.includes('run-0'));
+  assert.ok(state.alertedRuns.includes('run-599'));
+});
+
+test('a corrupt state file is set aside and the bot starts fresh', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'state.json');
+  fs.writeFileSync(file, '{ broken');
+  const warnings = [];
+  const state = State.load(file, { warn: (message) => warnings.push(message) });
+  assert.equal(state.offset, 0);
+  assert.ok(fs.existsSync(`${file}.corrupt`));
+  assert.equal(warnings.length, 1);
+  assert.equal(State.load(path.join(dir, 'missing.json')).offset, 0);
+});
+
+test('SerialQueue runs jobs one at a time, in order, and survives a failing job', async () => {
+  const queue = new SerialQueue();
+  const events = [];
+  const slow = queue.run(async () => {
+    events.push('a:start');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    events.push('a:end');
+  });
+  const failing = queue.run(async () => {
+    events.push('b');
+    throw new Error('boom');
+  });
+  const last = queue.run(async () => events.push('c'));
+  await slow;
+  await assert.rejects(failing, /boom/);
+  await last;
+  await queue.idle();
+  assert.deepEqual(events, ['a:start', 'a:end', 'b', 'c']);
+});
