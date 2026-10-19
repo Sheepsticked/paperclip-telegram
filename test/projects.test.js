@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { UI_BASE_URL, startWorld } from './helpers.js';
+import { UI_BASE_URL, outcomePattern, startWorld } from './helpers.js';
 
 async function setup(t, options) {
   const w = await startWorld(options);
@@ -15,6 +15,12 @@ const styledRows = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? 
 const issueCalls = (w) => w.pc.requests.filter((r) => r.method === 'GET' && r.path.endsWith('/issues'));
 const creates = (w) => w.pc.requests.filter((r) => r.method === 'POST' && r.path.endsWith('/issues'));
 const tap = (w, bot, message, label) => bot.handleUpdate(w.tg.tapButton(message.message_id, label));
+const OFFER = 'Create a task from this?';
+// The offer message once the task exists: its original text, then the outcome that links the new task.
+const created = (w, forWho, before = OFFER) => {
+  const { identifier } = [...w.pc.issues.values()].at(-1);
+  return outcomePattern('Created', `<a href="${UI_BASE_URL}/TST/issues/${identifier}">${identifier}</a> ${forWho}`, { before: `${before}\n\n` });
+};
 
 // Three projects with open tasks (the last one touched is the most recent), one with only a finished task, one archived.
 function threeProjects(w) {
@@ -183,7 +189,7 @@ test('/new without #project asks which project, then creates with the chosen one
     { title: 'Write the docs', description: 'Write the docs\nAll of them.', projectId: gamma.id, assigneeAgentId: 'agent-lead' },
   );
   assert.equal(creates(w)[0].body.idempotencyKey, `telegram-update-${update.update_id}`);
-  assert.equal(w.tg.messages.get(question.message_id).text, 'Created for Lead in Gamma');
+  assert.match(w.tg.messages.get(question.message_id).text, created(w, 'for Lead in Gamma', 'Which project?'));
   assert.deepEqual(rowsOf(w, question.message_id), []);
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Created');
   const view = w.tg.lastMessage();
@@ -201,22 +207,24 @@ test('No project creates the task without a project', async (t) => {
   const { w, bot } = await setup(t);
   threeProjects(w);
   await bot.handleUpdate(w.tg.message('/new Loose task'));
-  await tap(w, bot, w.tg.lastMessage(), 'No project');
+  const question = w.tg.lastMessage();
+  await tap(w, bot, question, 'No project');
   assert.equal(creates(w).length, 1);
   assert.equal('projectId' in creates(w)[0].body, false);
-  assert.equal(w.tg.messages.get(w.tg.findMessage('Created for').message_id).text, 'Created for Lead');
+  assert.match(w.tg.messages.get(question.message_id).text, created(w, 'for Lead', 'Which project?'));
 });
 
 test('/new @agent without #project keeps the agent through the project question', async (t) => {
   const { w, bot } = await setup(t);
   const { beta } = threeProjects(w);
   await bot.handleUpdate(w.tg.message('/new @dev Fix the bug'));
-  assert.equal(w.tg.lastMessage().text, 'Which project?');
-  await tap(w, bot, w.tg.lastMessage(), 'Beta');
+  const question = w.tg.lastMessage();
+  assert.equal(question.text, 'Which project?');
+  await tap(w, bot, question, 'Beta');
   assert.equal(creates(w)[0].body.assigneeAgentId, 'agent-1');
   assert.equal(creates(w)[0].body.projectId, beta.id);
   assert.equal(creates(w)[0].body.title, 'Fix the bug');
-  assert.equal(w.tg.findMessage('Created for Dev in Beta').text, 'Created for Dev in Beta');
+  assert.match(w.tg.messages.get(question.message_id).text, created(w, 'for Dev in Beta', 'Which project?'));
 });
 
 test('/new #project skips the question', async (t) => {
@@ -265,7 +273,7 @@ test('cancelling the project question creates nothing', async (t) => {
   const question = w.tg.lastMessage();
   await tap(w, bot, question, 'Cancel');
   assert.equal(creates(w).length, 0);
-  assert.equal(w.tg.messages.get(question.message_id).text, 'Cancelled.');
+  assert.match(w.tg.messages.get(question.message_id).text, outcomePattern('Cancelled', null, { before: 'Which project?\n\n' }));
   assert.equal(bot.state.offers.size, 0);
 });
 
@@ -300,7 +308,7 @@ test('plain text goes agent choice, then project, then create', async (t) => {
   await tap(w, bot, offer, 'Other agent');
   await tap(w, bot, offer, 'Dev');
   assert.equal(creates(w).length, 0);
-  assert.equal(w.tg.messages.get(offer.message_id).text, 'Which project?');
+  assert.equal(w.tg.messages.get(offer.message_id).text, `${OFFER}\n\nWhich project?`);
   assert.deepEqual(rowsOf(w, offer.message_id).at(-1), ['No project', 'Cancel']);
 
   await tap(w, bot, offer, 'Beta');
@@ -308,7 +316,7 @@ test('plain text goes agent choice, then project, then create', async (t) => {
   assert.equal(creates(w)[0].body.assigneeAgentId, 'agent-1');
   assert.equal(creates(w)[0].body.projectId, beta.id);
   assert.equal(creates(w)[0].body.title, 'Plan the migration');
-  assert.equal(w.tg.messages.get(offer.message_id).text, 'Created for Dev in Beta');
+  assert.match(w.tg.messages.get(offer.message_id).text, created(w, 'for Dev in Beta'));
 });
 
 test('For Lead goes straight to the project question and a project is optional', async (t) => {
@@ -317,7 +325,7 @@ test('For Lead goes straight to the project question and a project is optional',
   await bot.handleUpdate(w.tg.message('Another idea'));
   const offer = w.tg.lastMessage();
   await tap(w, bot, offer, 'For Lead');
-  assert.equal(w.tg.messages.get(offer.message_id).text, 'Which project?');
+  assert.equal(w.tg.messages.get(offer.message_id).text, `${OFFER}\n\nWhich project?`);
   await tap(w, bot, offer, 'No project');
   assert.equal(creates(w).length, 1);
   assert.equal('projectId' in creates(w)[0].body, false);
@@ -342,7 +350,7 @@ test('a failed creation keeps the project question so the tap can be repeated', 
   assert.equal(w.tg.messages.get(question.message_id).text, 'Which project?');
   assert.equal(bot.state.offers.size, 1);
   await tap(w, bot, question, 'Alpha');
-  assert.equal(w.tg.messages.get(question.message_id).text, 'Created for Lead in Alpha');
+  assert.match(w.tg.messages.get(question.message_id).text, created(w, 'for Lead in Alpha', 'Which project?'));
 });
 
 test('project question buttons from another user change nothing and every callback fits 64 bytes', async (t) => {

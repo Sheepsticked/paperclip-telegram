@@ -1,10 +1,16 @@
-import { ALERT_LIMIT, button, cardUrl, escapeHtml, fitMessage, headline, openRows, truncate } from './format.js';
+import { ALERT_LIMIT, button, cardUrl, escapeHtml, headline, openRows, truncate } from './format.js';
+import { fitSettled, makeOutcome, outcomeBlock } from './outcome.js';
 import { RICH_ALERT_LIMIT, escapeRich, richBody, richJoin, richText } from './rich.js';
 
 export const MAX_CHECKBOX_OPTIONS = 30;
 export const MAX_FORM_QUESTIONS = 20;
 const MAX_BUTTONS = 90;
 const ALERT_MAX = 190;
+const REASON_MAX = 200;
+const LABELS_MAX = 120;
+// Button labels that only say the outcome again, so the outcome line leaves them out.
+const ACCEPT_REPEATS = new Set(['confirm', 'confirmed', 'yes', 'ok']);
+const DECLINE_REPEATS = new Set(['decline', 'declined', 'reject', 'rejected', 'no']);
 
 // Progressively smaller text budgets used until the message fits the Telegram limit.
 const LEVELS = [
@@ -85,7 +91,7 @@ export function buildCard({ interaction, issue, key }) {
     messageId: null,
     own: false,
     resolvedAt: null,
-    resolution: null,
+    outcome: null,
     policy: interaction.effectiveResolverPolicy ?? null,
     cardTitle: text(interaction.title),
     prompt: text(payload.prompt) ?? text(interaction.summary),
@@ -195,7 +201,8 @@ function composeText(card, uiBaseUrl, level, rich = false) {
     }
     if (card.reasonPromptMessageId && card.status === 'pending') lines.push('', 'Waiting for the decline reason (reply to the prompt below).');
   }
-  if (card.resolution) lines.push('', esc(card.resolution));
+  const outcome = outcomeBlock(card, rich);
+  if (outcome) lines.push('', outcome);
   return rich ? richJoin(lines) : lines.join('\n');
 }
 
@@ -238,8 +245,8 @@ function keyboardFor(card) {
 
 // `rich` is the same card as Markdown, or null when the card has no Markdown to render.
 export function renderCard(card, uiBaseUrl) {
-  const html = fitMessage((level) => composeText(card, uiBaseUrl, level), LEVELS, ALERT_LIMIT);
-  const rich = hasMarkdown(card) ? fitMessage((level) => composeText(card, uiBaseUrl, level, true), LEVELS, RICH_ALERT_LIMIT) : null;
+  const html = fitSettled((item, level) => composeText(item, uiBaseUrl, level), LEVELS, ALERT_LIMIT, card);
+  const rich = hasMarkdown(card) ? fitSettled((item, level) => composeText(item, uiBaseUrl, level, true), LEVELS, RICH_ALERT_LIMIT, card) : null;
   return { text: html, rich, keyboard: keyboardFor(card) };
 }
 
@@ -314,16 +321,77 @@ export function formRespondBody(card) {
   return { body: { answers } };
 }
 
-export function resolveCard(card, line, nowIso) {
+export function resolveCard(card, outcome) {
   card.status = 'resolved';
-  card.resolvedAt = nowIso;
-  card.resolution = line;
+  card.resolvedAt = outcome.at;
+  card.outcome = outcome;
 }
 
-// The closing line for a card whose interaction was settled elsewhere.
-export function lineForInteraction(interaction) {
-  if (interaction.status === 'accepted') return 'Confirmed in Paperclip';
-  if (interaction.status === 'rejected') return 'Declined in Paperclip';
-  if (interaction.status === 'answered') return 'Answered in Paperclip';
-  return 'Closed in Paperclip';
+const normalLabel = (label) => label.trim().toLowerCase().replace(/[.!]+$/, '');
+// The pressed button's label as a detail, unless it only says the outcome again.
+const labelDetail = (label, repeats) => (repeats.has(normalLabel(label)) ? null : truncate(label, LABELS_MAX));
+const joinLabels = (labels) => truncate(labels.join(', '), LABELS_MAX);
+
+// The outcome of an accept tap: the chosen options of a checkbox card, else the accept label.
+export function confirmedOutcome(card, nowMs) {
+  const picked = card.mode === 'checkbox' ? card.options.filter((_, i) => card.selected[i]).map((option) => option.label) : [];
+  return makeOutcome('Confirmed', picked.length > 0 ? joinLabels(picked) : labelDetail(card.confirm.acceptLabel, ACCEPT_REPEATS), nowMs);
+}
+
+// The outcome of a decline: the reason when there is one, else the decline label.
+export function declinedOutcome(card, reason, nowMs) {
+  const why = text(reason);
+  return makeOutcome('Declined', why ? truncate(why, REASON_MAX) : labelDetail(card.confirm.rejectLabel, DECLINE_REPEATS), nowMs);
+}
+
+// The outcome of a form that was sent: the labels of the picked options; written answers are not shown.
+export function answeredOutcome(card, nowMs) {
+  const labels = card.questions.flatMap((q, i) => (q.mode === 'text' ? [] : card.answers[i].sel.map((oi) => q.options[oi]?.label).filter(Boolean)));
+  return makeOutcome('Answered', joinLabels(labels), nowMs);
+}
+
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+// The labels, in the payload's order, of the options with these ids.
+const labelsOf = (options, ids) => options.filter((option) => ids.has(option.id)).map((option) => option.label);
+
+// Why a card ended without an answer, from the result of its interaction.
+function closedDetail(interaction) {
+  const result = isObject(interaction?.result) ? interaction.result : {};
+  const why = result.outcome ?? result.expirationReason;
+  if (why === 'superseded_by_comment') return 'replaced by a comment';
+  if (why === 'issue_closed') return 'task closed';
+  return interaction?.status === 'expired' ? 'expired' : null;
+}
+
+// When the interaction was settled: the time Paperclip recorded, else the time the bot noticed (never later than it).
+function settledAt(interaction, nowMs) {
+  const ms = Date.parse(interaction?.resolvedAt);
+  return Number.isFinite(ms) ? Math.min(ms, nowMs) : nowMs;
+}
+
+// The outcome for a card whose interaction was settled elsewhere. The answer comes from the interaction's result and
+// the option labels from its payload.
+export function interactionOutcome(interaction, nowMs) {
+  const at = settledAt(interaction, nowMs);
+  const result = isObject(interaction?.result) ? interaction.result : {};
+  const payload = interaction?.payload ?? {};
+  if (interaction?.status === 'accepted') {
+    const ids = new Set(Array.isArray(result.selectedOptionIds) ? result.selectedOptionIds : []);
+    return makeOutcome('Confirmed in Paperclip', joinLabels(labelsOf(cleanOptions(payload.options), ids)), at);
+  }
+  if (interaction?.status === 'rejected') {
+    const why = text(result.reason);
+    return makeOutcome('Declined in Paperclip', why ? truncate(why, REASON_MAX) : null, at);
+  }
+  if (interaction?.status === 'answered') {
+    const questions = normalizeQuestions(payload) ?? [];
+    const answers = Array.isArray(result.answers) ? result.answers : [];
+    const labels = questions.flatMap((q) => {
+      const answer = answers.find((entry) => entry?.questionId === q.id);
+      return answer && Array.isArray(answer.optionIds) ? labelsOf(q.options, new Set(answer.optionIds)) : [];
+    });
+    return makeOutcome('Answered in Paperclip', joinLabels(labels), at);
+  }
+  return makeOutcome('Closed', closedDetail(interaction), at);
 }

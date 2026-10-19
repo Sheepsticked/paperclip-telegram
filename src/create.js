@@ -1,6 +1,7 @@
 import { FileProblem, attachFile } from './files.js';
 import { followIssue } from './follow.js';
 import { button, escapeHtml, firstLine, headline, issueUrl, taskButton, truncate } from './format.js';
+import { makeOutcome, outcomeBlock } from './outcome.js';
 import { PaperclipError } from './paperclip.js';
 import { ID_PREFIX, byPrefix } from './pick.js';
 import { orderedProjects } from './projects.js';
@@ -12,6 +13,8 @@ const NEW_TITLE_LIMIT = 100;
 const NAME_LIST_LIMIT = 30;
 const OFFER_AGENT_LIMIT = 40;
 const PROJECT_PAGE = 8;
+const OFFER_PROMPT = 'Create a task from this?';
+const PROJECT_QUESTION = 'Which project?';
 
 export const NEW_USAGE = 'Usage: /new [@agent] [#project] &lt;text&gt;\nThe first line becomes the title, the whole text the description.';
 
@@ -123,9 +126,9 @@ async function leadName(bot) {
 // A plain text message, or a file with a caption: ask before creating a task from it.
 export async function offerTask(bot, update, { text, file = null } = {}) {
   const msg = update.message;
-  const key = bot.state.addOffer(text ?? msg.text.trim(), msg.message_id, update.update_id, bot.now(), threadOf(bot, msg), { file });
+  const key = bot.state.addOffer(text ?? msg.text.trim(), msg.message_id, update.update_id, bot.now(), threadOf(bot, msg), { file, prompt: OFFER_PROMPT });
   bot.state.save();
-  await bot.send('Create a task from this?', { ...where(bot, msg), keyboard: offerKeyboard(key, await leadName(bot)) });
+  await bot.send(OFFER_PROMPT, { ...where(bot, msg), keyboard: offerKeyboard(key, await leadName(bot)) });
 }
 
 // The project question is skipped when the config names a project or there is none to pick.
@@ -154,9 +157,9 @@ async function projectQuestion(bot, key, page) {
 export async function askProjectForNew(bot, update, { text, agent }) {
   if (!(await shouldAskProject(bot))) return false;
   const msg = update.message;
-  const key = bot.state.addOffer(text, msg.message_id, update.update_id, bot.now(), threadOf(bot, msg), { agentId: agent?.id ?? null });
+  const key = bot.state.addOffer(text, msg.message_id, update.update_id, bot.now(), threadOf(bot, msg), { agentId: agent?.id ?? null, prompt: PROJECT_QUESTION });
   bot.state.save();
-  await bot.send('Which project?', { ...where(bot, msg), keyboard: await projectQuestion(bot, key, 0) });
+  await bot.send(PROJECT_QUESTION, { ...where(bot, msg), keyboard: await projectQuestion(bot, key, 0) });
   return true;
 }
 
@@ -177,13 +180,39 @@ async function attachOfferFile(bot, issue, file) {
   }
 }
 
+// Offer messages settled in this run. A tap queued before the settle still shows the buttons, so the buttons do not
+// tell a settled offer from an expired one.
+const settledMessages = new WeakMap();
+const MAX_SETTLED = 200;
+
+function markSettled(bot, messageId) {
+  if (!settledMessages.has(bot)) settledMessages.set(bot, new Set());
+  const ids = settledMessages.get(bot);
+  ids.add(messageId);
+  if (ids.size > MAX_SETTLED) ids.delete(ids.values().next().value);
+}
+
+// The text an offer message was sent with: kept on the offer, else the first block of the message as it is now.
+function promptOf(offer, message) {
+  if (offer?.prompt) return offer.prompt;
+  const first = typeof message?.text === 'string' ? message.text.split('\n\n')[0].trim() : '';
+  return first || OFFER_PROMPT;
+}
+
+// A settled offer message: its own text, the outcome last, and a line below it when there is one.
+function settledText(prompt, outcome, below = null) {
+  return `${[escapeHtml(prompt), '', outcomeBlock({ outcome })].join('\n')}${below ? `\n${below}` : ''}`;
+}
+
 async function createFromOffer(bot, cq, key, offer, agent, project) {
   const issue = await createTask(bot, { updateId: offer.updateId, text: offer.text, agent, project, replyTo: offer.messageId, thread: offer.thread ?? null });
   bot.state.offers.delete(key);
   bot.state.save();
-  const lines = [`Created for ${escapeHtml(agent ? agent.name : await leadName(bot))}${project ? ` in ${escapeHtml(truncate(project.name, 60))}` : ''}`];
-  if (offer.file) lines.push(await attachOfferFile(bot, issue, offer.file));
-  await bot.edit(cq.message.message_id, lines.join('\n'), []);
+  markSettled(bot, cq.message.message_id);
+  const forWho = `for ${agent ? agent.name : await leadName(bot)}${project ? ` in ${truncate(project.name, 60)}` : ''}`;
+  const ref = issue.identifier ? { label: issue.identifier, url: issueUrl(bot.config.uiBaseUrl, issue.identifier) } : null;
+  const below = offer.file ? await attachOfferFile(bot, issue, offer.file) : null;
+  await bot.edit(cq.message.message_id, settledText(promptOf(offer, cq.message), makeOutcome('Created', forWho, bot.now(), ref), below), []);
   return bot.answer(cq.id, 'Created');
 }
 
@@ -192,7 +221,7 @@ async function afterAgent(bot, cq, key, offer, agent) {
   offer.agentId = agent?.id ?? null;
   bot.state.save();
   if (!(await shouldAskProject(bot))) return createFromOffer(bot, cq, key, offer, agent, null);
-  await bot.edit(cq.message.message_id, 'Which project?', await projectQuestion(bot, key, 0));
+  await bot.edit(cq.message.message_id, `${escapeHtml(promptOf(offer, cq.message))}\n\n${PROJECT_QUESTION}`, await projectQuestion(bot, key, 0));
   return bot.answer(cq.id);
 }
 
@@ -201,7 +230,9 @@ export async function handleOfferCallback(bot, cq) {
   const offer = bot.state.getOffer(key, bot.now());
   if (!offer) {
     await bot.answer(cq.id, 'This offer has expired');
-    return bot.edit(cq.message.message_id, 'This offer has expired.', []);
+    // A settled message keeps its outcome.
+    if (settledMessages.get(bot)?.has(cq.message?.message_id) || !cq.message?.reply_markup?.inline_keyboard?.length) return undefined;
+    return bot.edit(cq.message.message_id, settledText(promptOf(null, cq.message), makeOutcome('Expired', null, bot.now())), []);
   }
   const messageId = cq.message.message_id;
   try {
@@ -209,7 +240,8 @@ export async function handleOfferCallback(bot, cq) {
     if (op === 'x') {
       bot.state.offers.delete(key);
       bot.state.save();
-      await bot.edit(messageId, 'Cancelled.', []);
+      markSettled(bot, messageId);
+      await bot.edit(messageId, settledText(promptOf(offer, cq.message), makeOutcome('Cancelled', null, bot.now())), []);
       return await bot.answer(cq.id);
     }
     if (op === 'b') {

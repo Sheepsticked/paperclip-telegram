@@ -1,6 +1,7 @@
 import { reportFailure } from './actions.js';
-import { ALERT_LIMIT, MESSAGE_LIMIT, button, escapeHtml, fitMessage, flat, headline, issueUrl, kindWord, link, openRows, truncate, truncateLines } from './format.js';
+import { ALERT_LIMIT, MESSAGE_LIMIT, button, escapeHtml, flat, headline, issueUrl, kindWord, link, openRows, truncate, truncateLines } from './format.js';
 import { guarded } from './guard.js';
+import { fitSettled, makeOutcome, outcomeBlock } from './outcome.js';
 import { PaperclipError } from './paperclip.js';
 import { RICH_ALERT_LIMIT, RICH_LIMIT, escapeRich, richBody, richJoin } from './rich.js';
 import { reportActionFailure } from './tasks.js';
@@ -30,6 +31,8 @@ const BODY_KEEP = 4000;
 const VALUE_MAX = 200;
 const CONFIRM_LABEL = 'Tap again to confirm';
 const RECENT_MS = 2 * 60 * 1000;
+// The outcome of an item that was settled somewhere else or left the feed.
+const RESOLVED_ELSEWHERE = 'Resolved in Paperclip';
 
 // Progressively smaller text budgets used until the message fits the Telegram limit.
 const LEVELS = [
@@ -77,7 +80,7 @@ function skeleton(bot, item) {
     options: [],
     needsInput: false,
     status: 'open',
-    resolution: null,
+    outcome: null,
     resolvedAt: null,
     messageIds: [],
     own: false,
@@ -181,8 +184,9 @@ function compose(record, ctx, level, rich = false) {
     if (record.kind === 'approval' && !record.inlineResolvable) lines.push('', 'Answer this one in Paperclip');
     if (record.notePromptMessageId) lines.push('', 'Waiting for the note (reply to the prompt below).');
   }
-  if (record.resolution) lines.push('', esc(record.resolution));
   if (openLine) lines.push(...(lines.length > 1 ? ['', openLine] : [openLine]));
+  const outcome = outcomeBlock(record, rich);
+  if (outcome) lines.push('', outcome);
   return rich ? richJoin(lines) : lines.join('\n');
 }
 
@@ -213,8 +217,8 @@ function renderInbox(bot, record, messageId = null) {
   const armed = messageId ? bot.armedOps(messageId) : new Set();
   const context = { own: record.own, uiBaseUrl: bot.config.uiBaseUrl };
   const alert = needsOwner(record);
-  const text = fitMessage((level) => compose(record, context, level), LEVELS, alert ? ALERT_LIMIT : MESSAGE_LIMIT);
-  const rich = record.kind === 'decision' && record.body ? fitMessage((level) => compose(record, context, level, true), LEVELS, alert ? RICH_ALERT_LIMIT : RICH_LIMIT) : null;
+  const text = fitSettled((item, level) => compose(item, context, level), LEVELS, alert ? ALERT_LIMIT : MESSAGE_LIMIT, record);
+  const rich = record.kind === 'decision' && record.body ? fitSettled((item, level) => compose(item, context, level, true), LEVELS, alert ? RICH_ALERT_LIMIT : RICH_LIMIT, record) : null;
   return { text, rich, keyboard: keyboardFor(record, armed) };
 }
 
@@ -250,10 +254,11 @@ async function sendRecord(bot, record, { thread, alert = false } = {}) {
   record.messageIds.push(await bot.send(html, { keyboard, thread, alert, rich }));
 }
 
-export async function resolveRecord(bot, record, line) {
+// Settles the item with an outcome of this kind (and detail) at the current time.
+export async function resolveRecord(bot, record, kind, detail = null) {
   record.status = 'resolved';
-  record.resolution = line;
-  record.resolvedAt = new Date(bot.now()).toISOString();
+  record.outcome = makeOutcome(kind, detail, bot.now());
+  record.resolvedAt = record.outcome.at;
   record.notePromptMessageId = null;
   for (const messageId of record.messageIds) bot.disarm(messageId);
   bot.state.save();
@@ -286,7 +291,7 @@ export async function syncInbox(bot, items, complete) {
   const present = new Set(inboxItems(items).map((item) => item.dedupKey));
   for (const record of state.openInbox()) {
     if (present.has(record.dedupKey)) continue;
-    await guarded(bot, `inbox item ${record.key}`, () => resolveRecord(bot, record, 'Resolved'));
+    await guarded(bot, `inbox item ${record.key}`, () => resolveRecord(bot, record, RESOLVED_ELSEWHERE));
   }
   state.skippedInbox = state.skippedInbox.filter((dedupKey) => present.has(dedupKey));
   state.save();
@@ -343,23 +348,24 @@ function alreadyResolved(record, err) {
   return record.kind === 'approval' && err.status === 422 && /pending/i.test(err.detail ?? '');
 }
 
-async function act(bot, cq, record, call, line) {
+// Runs the Paperclip call and settles the item; the tap is answered with the kind and detail.
+async function act(bot, cq, record, call, kind, detail = null) {
   try {
     await call();
   } catch (err) {
     if (err instanceof PaperclipError && alreadyResolved(record, err)) {
-      await resolveRecord(bot, record, 'Resolved');
+      await resolveRecord(bot, record, RESOLVED_ELSEWHERE);
       return bot.answer(cq.id, 'Already resolved');
     }
     return reportActionFailure(bot, cq, err);
   }
-  await resolveRecord(bot, record, line);
-  return bot.answer(cq.id, line);
+  await resolveRecord(bot, record, kind, detail);
+  return bot.answer(cq.id, detail ? `${kind}: ${detail}` : kind);
 }
 
 const REVIEW_ACTIONS = {
-  a: { action: 'approve', line: 'Approved' },
-  b: { action: 'send_back', line: 'Sent back' },
+  a: { action: 'approve', kind: 'Approved' },
+  b: { action: 'send_back', kind: 'Sent back' },
 };
 
 async function askForNote(bot, cq, record) {
@@ -376,7 +382,7 @@ async function askForNote(bot, cq, record) {
 
 async function resend(bot, cq, record) {
   if (!(await hydrate(bot, record))) {
-    await resolveRecord(bot, record, 'Resolved');
+    await resolveRecord(bot, record, RESOLVED_ELSEWHERE);
     return bot.answer(cq.id, 'Already resolved');
   }
   await sendRecord(bot, record, { thread: threadOf(bot, cq.message) });
@@ -403,7 +409,7 @@ export async function handleInboxCallback(bot, cq) {
       const option = record.options[Number(arg)];
       if (option.destructive && !(await confirmTap(bot, cq, record, `o${arg}`))) return undefined;
       const body = { optionId: option.id, idempotencyKey: `telegram-decision-${record.refId}` };
-      return await act(bot, cq, record, () => bot.pc.decide(record.refId, body), `Decided: ${truncate(option.label, 80)}`);
+      return await act(bot, cq, record, () => bot.pc.decide(record.refId, body), 'Decided', truncate(option.label, 80));
     }
     if (op === 'x' && record.kind === 'decision' && !record.needsInput) return await act(bot, cq, record, () => bot.pc.dismissDecision(record.refId), 'Dismissed');
     if (op === 's' && record.kind === 'review' && record.stalled && record.issue) {
@@ -411,7 +417,7 @@ export async function handleInboxCallback(bot, cq) {
       const choice = REVIEW_ACTIONS[arg];
       // Approve and Send back move the task, so they need a second tap like Done.
       if (choice && !(await confirmTap(bot, cq, record, `s${arg}`))) return undefined;
-      if (choice) return await act(bot, cq, record, () => bot.pc.stalledReviewDecision(record.issue.id, { action: choice.action }), choice.line);
+      if (choice) return await act(bot, cq, record, () => bot.pc.stalledReviewDecision(record.issue.id, { action: choice.action }), choice.kind);
     }
   } catch (err) {
     return reportActionFailure(bot, cq, err);
@@ -425,7 +431,7 @@ export async function handleNoteReply(bot, record, msg) {
     await bot.pc.stalledReviewDecision(record.issue.id, { action: 'request_changes', note: msg.text.trim() });
   } catch (err) {
     await reportFailure(bot, err, msg);
-    if (err instanceof PaperclipError && alreadyResolved(record, err)) await resolveRecord(bot, record, 'Resolved');
+    if (err instanceof PaperclipError && alreadyResolved(record, err)) await resolveRecord(bot, record, RESOLVED_ELSEWHERE);
     return;
   }
   await resolveRecord(bot, record, 'Changes requested');

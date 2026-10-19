@@ -1,13 +1,52 @@
 import http from 'node:http';
 import { findEmoji } from '../style.js';
 
-const ALLOWED_TAGS = new Set(['b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'a', 'code', 'pre', 'blockquote', 'tg-spoiler']);
+const ALLOWED_TAGS = new Set(['b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'a', 'code', 'pre', 'blockquote', 'tg-spoiler', 'tg-time']);
 const ENTITY = /^&(amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);/;
 const ICON_COLORS = [7322096, 16766590, 13338331, 9367192, 16749490, 16478047];
 const REACTIONS = ['\u{1F44D}', '\u{1F44E}', '\u2764', '\u{1F525}', '\u{1F389}'];
 const FULL_RIGHTS = { can_manage_topics: true, can_pin_messages: true, can_delete_messages: true };
 const BOT_DOWNLOAD_LIMIT = 20 * 1024 * 1024;
 const BUTTON_STYLES = ['danger', 'success', 'primary'];
+
+// A date-time entity needs a `unix` time (whole seconds); its optional format is `r` or `w?[dD]?[tT]?`.
+const TIME_FORMAT = /^(?:r|w?[dD]?[tT]?)$/;
+
+// The problem with the `unix` and `format` of a date-time entity, or null when both are fine.
+function timeProblem(unix, format) {
+  if (unix === undefined || !/^\d{1,15}$/.test(unix)) return 'Date-time entity needs a valid "unix" time';
+  if (format !== undefined && !TIME_FORMAT.test(format)) return `Date-time entity has an invalid "format" ${format}`;
+  return null;
+}
+
+// The attributes of a `tg-time` tag checked as above; any attribute but unix and format is refused.
+function timeTagProblem(attrs) {
+  const found = {};
+  for (const [, name, value] of attrs.matchAll(/([\w-]+)="([^"]*)"/g)) found[name] = value;
+  const unknown = Object.keys(found).find((name) => name !== 'unix' && name !== 'format');
+  return unknown ? `Unsupported attribute "${unknown}" in the tag "tg-time"` : timeProblem(found.unix, found.format);
+}
+
+// The problem with the query of a `tg://time` link, or null.
+function timeLinkProblem(query) {
+  const params = new URLSearchParams(query);
+  return timeProblem(params.get('unix') ?? undefined, params.get('format') ?? undefined);
+}
+
+// The date-time entities of a classic HTML text or a rich Markdown text, as { unix, format, text } in order.
+export function timeEntities(source) {
+  const found = [];
+  for (const match of source.matchAll(/<tg-time([^<>]*)>([^<]*)<\/tg-time>|(?<!\\)!\[([^\]]*)\]\(tg:\/\/time\?([^)]*)\)/g)) {
+    if (match[4] === undefined) {
+      const attrs = Object.fromEntries([...match[1].matchAll(/([\w-]+)="([^"]*)"/g)].map(([, name, value]) => [name, value]));
+      found.push({ unix: Number(attrs.unix), format: attrs.format ?? '', text: match[2] });
+    } else {
+      const params = new URLSearchParams(match[4]);
+      found.push({ unix: Number(params.get('unix')), format: params.get('format') ?? '', text: match[3] });
+    }
+  }
+  return found;
+}
 
 // Mirrors Telegram's HTML parse mode: known tags only, balanced, with every & < > escaped.
 // Stricter than Telegram on one point: the only attribute a blockquote may carry is "expandable".
@@ -29,6 +68,10 @@ export function validateTelegramHtml(text) {
       } else {
         if (name === 'a' && !/\shref="[^"]*"/.test(attrs)) return 'Link without href';
         if (name === 'blockquote' && attrs.trim() !== '' && attrs.trim() !== 'expandable') return `Unsupported attribute "${attrs.trim()}" in the tag "blockquote" at byte offset ${i}`;
+        if (name === 'tg-time') {
+          const problem = timeTagProblem(attrs);
+          if (problem) return `${problem} at byte offset ${i}`;
+        }
         stack.push(name);
       }
       i += whole.length - 1;
@@ -70,7 +113,7 @@ export function mentionEntities(html) {
   return entities;
 }
 
-const RICH_TAGS = new Set(['b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'a', 'code', 'details', 'summary']);
+const RICH_TAGS = new Set(['b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'a', 'code', 'details', 'summary', 'tg-time']);
 const RICH_ENTITY = /^&(amp|lt|gt|quot|apos|nbsp|hellip|mdash|ndash|lsquo|rsquo|ldquo|rdquo|#\d+|#x[0-9a-fA-F]+);/;
 const RICH_CHAR_LIMIT = 32768;
 const RICH_BLOCK_LIMIT = 500;
@@ -142,7 +185,14 @@ export function validateRichMarkdown(markdown) {
   if (lines === null) return "code block is not closed";
   if (lines.filter((line) => line.trim()).length > RICH_BLOCK_LIMIT) return 'rich message has too many blocks';
   const stack = [];
-  for (const line of lines) {
+  for (const raw of lines) {
+    // A date-time image stands for its text; one without a valid unix time is refused.
+    let line = raw;
+    for (const match of raw.matchAll(/(?<!\\)!\[([^\]]*)\]\(tg:\/\/time\?([^)]*)\)/g)) {
+      const problem = timeLinkProblem(match[2]);
+      if (problem) return problem;
+      line = line.replace(match[0], match[1]);
+    }
     if (/(?<!\\)!\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])/.test(line)) return 'media blocks are not allowed here';
     for (let i = 0; i < line.length; i += 1) {
       const rest = line.slice(i);
@@ -159,6 +209,10 @@ export function validateRichMarkdown(markdown) {
           if (stack.pop() !== name) return `Unmatched end tag at byte offset ${i}`;
         } else {
           if (name === 'a' && !/\shref="[^"]*"/.test(attrs)) return 'Link without href';
+          if (name === 'tg-time') {
+            const problem = timeTagProblem(attrs);
+            if (problem) return problem;
+          }
           stack.push(name);
         }
         i += whole.length - 1;
@@ -729,9 +783,11 @@ export async function startFakeTelegram({
       const sent = messages.get(messageId);
       const inTopic = sent?.thread ? { message_thread_id: sent.thread, is_topic_message: true } : {};
       const type = chatOf === chatId ? chat.type : 'private';
+      // Like Telegram, the message of a tap carries its current text and its buttons.
+      const shown = sent ? { ...(sent.rich ? {} : { text: sent.text }), ...(sent.markup ? { reply_markup: sent.markup } : {}) } : {};
       return {
         update_id: nextUpdateId++,
-        callback_query: { id: `cb-${nextUpdateId}`, from: { id: from, is_bot: false }, message: { message_id: messageId, chat: { id: chatOf, type }, ...inTopic }, data },
+        callback_query: { id: `cb-${nextUpdateId}`, from: { id: from, is_bot: false }, message: { message_id: messageId, chat: { id: chatOf, type }, ...inTopic, ...shown }, data },
       };
     },
     tapButton(messageId, labelPart, options) {

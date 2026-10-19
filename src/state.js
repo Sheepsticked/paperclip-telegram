@@ -103,6 +103,7 @@ function loadOffers(saved) {
       thread: offer.thread ?? null,
       file: offer.file ?? null,
       agentId: stringOrNull(offer.agentId),
+      prompt: stringOrNull(offer.prompt),
     });
   }
   return offers;
@@ -394,11 +395,12 @@ export class State {
     return this.following.delete(issueId);
   }
 
-  // `file` is a Telegram file waiting to be attached to the new task; `agentId` is the agent picked so far.
-  addOffer(text, messageId, updateId, nowMs, thread = null, { file = null, agentId = null } = {}) {
+  // `file` is a Telegram file waiting to be attached to the new task; `agentId` is the agent picked so far;
+  // `prompt` is the text of the offer message.
+  addOffer(text, messageId, updateId, nowMs, thread = null, { file = null, agentId = null, prompt = null } = {}) {
     this.offerCounter += 1;
     const key = this.offerCounter.toString(36);
-    this.offers.set(key, { text, messageId, updateId, at: nowMs, thread, file, agentId });
+    this.offers.set(key, { text, messageId, updateId, at: nowMs, thread, file, agentId, prompt });
     while (this.offers.size > MAX_OFFERS) this.offers.delete(this.offers.keys().next().value);
     return key;
   }

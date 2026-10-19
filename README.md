@@ -145,7 +145,7 @@ A card is sent when an agent asks you something in a task thread. Line 1 is `Que
 | Questions (up to 20 questions) | One button per option, with the question number in front (`1 · Yes`) when there is more than one question. A form with a single choice question is submitted by tapping the option. Other forms have a green **Submit** button. For a text question, reply to the card message with your answer. Questions that may stay empty say `(optional)`; the others must be answered first. An `Answer:` line shows once a question has an answer. |
 | Item verdicts, task suggestions, connection requests, any other kind, or a card too large | Text and the link only. Answer it in Paperclip. |
 
-When a card is answered, in the bot or in Paperclip, its message loses the buttons and gets a closing line (`Confirmed`, `Declined`, `Answered`, or `... in Paperclip`). Tapping an old button gives a short note ("Already answered or closed") instead of failing. If Paperclip cannot be reached the tap answers "Paperclip unreachable, try again" and the card stays open.
+When a card is answered, in the bot or in Paperclip, its message keeps its text, loses the buttons and ends with an outcome line (see [Settled messages](#settled-messages)). Tapping an old button gives a short note ("Already answered or closed") instead of failing. If Paperclip cannot be reached the tap answers "Paperclip unreachable, try again" and the card stays open.
 
 ### Inbox items
 
@@ -158,7 +158,19 @@ Everything else in the attention feed that waits for you gets one message: the k
 | Review | A review that Paperclip marks as stalled (nobody is set to move it on). | **Approve**, **Request changes** and **Send back**. Approve and Send back each need a second tap within 30 seconds. Request changes asks you to reply to a prompt; your reply is the note. A review that is not stalled is text and **Open task**, and it is left out when a card, an approval message or an in-review message about the same task was sent, as long as the task stays in review. |
 | Blocked, Recovery, Join request | Text and the reason. | **Open task** when there is a task; answer it in Paperclip. |
 
-When an item leaves the feed (answered here or in Paperclip, or dismissed in Paperclip), its message is edited to end with `Resolved` and loses its buttons. A tap on an old button answers "Already resolved". An item about a task in a topic goes to that topic; the others go to the main chat.
+When an item leaves the feed (answered here or in Paperclip, or dismissed in Paperclip), its message keeps its text, loses its buttons and ends with an outcome line (see [Settled messages](#settled-messages)). A tap on an old button answers "Already resolved". An item about a task in a topic goes to that topic; the others go to the main chat.
+
+### Settled messages
+
+When the bot settles a message in place (a card is answered or closed, an inbox item is resolved, a task offer is created, cancelled or expires), it edits the message instead of sending a new one: the text stays as it was, the buttons go, and the last block is a highlighted line that says what happened, with which answer, and when. The line is a quote in a plain message and marked text in a rich message. Its parts, separated by `·`:
+
+| Part | Content |
+| --- | --- |
+| Kind (bold) | Card: `Confirmed`, `Declined` or `Answered`; with `in Paperclip` added when it was settled there; `Closed` when the card ended without an answer. Inbox item: `Approved`, `Rejected`, `Decided`, `Dismissed`, `Changes requested`, `Sent back`, or `Resolved in Paperclip` when it was settled elsewhere. Offer: `Created`, `Cancelled` or `Expired`. |
+| Detail | The accept or decline label, unless it only repeats the kind (`Confirm`, `Yes`, `OK`, `Decline`, `No`); the decline reason (200 characters at most); the picked answers, joined with commas (120 characters at most; a written answer is not shown); for a card closed without an answer, why (`replaced by a comment`, `expired`, `task closed`); for a decision, the chosen option; for a created task, its id as a link, then who it is for and the project. |
+| Time | When it was settled (for a card settled in Paperclip, the time Paperclip recorded), as a Telegram date-time entity that clients show relative to now ("2 minutes ago"). Clients that do not know the entity show the UTC time. |
+
+A settled message keeps the text it had; when a very long card has no room left for the whole line, the detail is dropped first. Live views (the task view, the board, lists, pickers, settings and a button waiting for its second tap) have no outcome line. A message saved by an older version with a plain closing line shows that line highlighted, without a time.
 
 ### Updates
 

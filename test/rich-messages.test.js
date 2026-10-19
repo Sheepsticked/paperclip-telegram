@@ -7,7 +7,7 @@ import { followIssue } from '../src/follow.js';
 import { State } from '../src/state.js';
 import { mentionProblems, mentioned } from './alerts.js';
 import { validateRichMarkdown } from './fakes/telegram.js';
-import { UI_BASE_URL, confirmPayload, startWorld } from './helpers.js';
+import { UI_BASE_URL, confirmPayload, outcomePattern, startWorld } from './helpers.js';
 
 const GROUP_ID = -1001234567890;
 const ISSUE_URL = `${UI_BASE_URL}/TST/issues/TST-1`;
@@ -530,7 +530,8 @@ test('a card that is answered is edited as a rich message with its closing line'
   assert.equal(edit.params.text, undefined);
   const after = w.tg.messages.get(card.message_id);
   assert.equal(after.rich, true);
-  assert.ok(after.text.endsWith('Deploy **now**?\n\n> Some details\n\nConfirmed'), after.text);
+  assert.match(after.text, outcomePattern('Confirmed', 'Deploy', { rich: true }));
+  assert.ok(after.text.includes('Deploy **now**?\n\n> Some details\n\n==<b>Confirmed</b>'), after.text);
   assert.deepEqual(rowsOf(w, card.message_id), []);
   assert.equal(validateRichMarkdown(after.text), null);
 });
@@ -576,7 +577,7 @@ test('an inbox decision is resolved with a rich edit', async (t) => {
   const after = w.tg.messages.get(message.message_id);
   assert.equal(after.rich, true);
   assert.ok(w.tg.callsTo('editMessageText').every((call) => call.params.rich_message && call.params.text === undefined));
-  assert.ok(after.text.endsWith('\n\nDecided: SQLite'), after.text);
+  assert.match(after.text, outcomePattern('Decided', 'SQLite', { rich: true }));
   assert.deepEqual(rowsOf(w, message.message_id), []);
 });
 

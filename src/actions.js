@@ -1,10 +1,13 @@
 import {
+  answeredOutcome,
   buildCard,
   checkboxAcceptBody,
   chooseOption,
+  confirmedOutcome,
+  declinedOutcome,
   formRespondBody,
+  interactionOutcome,
   isInstantForm,
-  lineForInteraction,
   openTextQuestion,
   parseCallback,
   renderCard,
@@ -13,6 +16,7 @@ import {
   toggleCheckbox,
 } from './cards.js';
 import { escapeHtml, truncate } from './format.js';
+import { makeOutcome } from './outcome.js';
 import { PaperclipError } from './paperclip.js';
 import { threadOf, where } from './thread.js';
 
@@ -37,8 +41,8 @@ export async function editCardMessage(bot, card) {
   }
 }
 
-export async function closeCard(bot, card, line) {
-  resolveCard(card, line, new Date(bot.now()).toISOString());
+export async function closeCard(bot, card, outcome) {
+  resolveCard(card, outcome);
   bot.state.save();
   await editCardMessage(bot, card);
 }
@@ -73,7 +77,7 @@ export async function refreshCard(bot, card, cache = new Map()) {
   }
   const current = list.find((interaction) => interaction.id === card.interactionId);
   if (current?.status === 'pending') return false;
-  await closeCard(bot, card, current ? lineForInteraction(current) : 'Closed in Paperclip');
+  await closeCard(bot, card, interactionOutcome(current, bot.now()));
   return true;
 }
 
@@ -82,12 +86,13 @@ async function syncClosed(bot, card) {
   try {
     if (await refreshCard(bot, card)) return;
   } catch {
-    // The 409 already proves the card is settled, so fall through to a generic closing line.
+    // The 409 already proves the card is settled, so fall through to a plain Closed outcome.
   }
-  if (card.status === 'pending') await closeCard(bot, card, 'Closed in Paperclip');
+  if (card.status === 'pending') await closeCard(bot, card, makeOutcome('Closed', null, bot.now()));
 }
 
-async function settle(bot, cq, card, call, line, undo) {
+// Runs the Paperclip call; on success the card is settled with the outcome `outcomeAt(nowMs)` and the tap answered with its kind.
+async function settle(bot, cq, card, call, outcomeAt, undo) {
   try {
     await call();
   } catch (err) {
@@ -98,8 +103,9 @@ async function settle(bot, cq, card, call, line, undo) {
     await bot.answer(cq.id, failure.text, failure.kind === 'error');
     return;
   }
-  await closeCard(bot, card, line);
-  await bot.answer(cq.id, line);
+  const outcome = outcomeAt(bot.now());
+  await closeCard(bot, card, outcome);
+  await bot.answer(cq.id, outcome.kind);
 }
 
 async function askForReason(bot, cq, card) {
@@ -129,15 +135,15 @@ export async function handleCallback(bot, cq) {
   const accept = (body) => () => bot.pc.accept(card.issueId, card.interactionId, body);
   const reject = (body) => () => bot.pc.reject(card.issueId, card.interactionId, body);
 
-  if (op === 'a' && card.mode === 'confirm') return settle(bot, cq, card, accept({}), 'Confirmed');
+  if (op === 'a' && card.mode === 'confirm') return settle(bot, cq, card, accept({}), (now) => confirmedOutcome(card, now));
   if (op === 'a' && card.mode === 'checkbox') {
     const result = checkboxAcceptBody(card);
     if (result.alert) return bot.answer(cq.id, result.alert, true);
-    return settle(bot, cq, card, accept(result.body), 'Confirmed');
+    return settle(bot, cq, card, accept(result.body), (now) => confirmedOutcome(card, now));
   }
   if (op === 'd' && (card.mode === 'confirm' || card.mode === 'checkbox')) {
     if (card.confirm.requiresReason) return askForReason(bot, cq, card);
-    return settle(bot, cq, card, reject({}), 'Declined');
+    return settle(bot, cq, card, reject({}), (now) => declinedOutcome(card, null, now));
   }
   if (op === 't' && card.mode === 'checkbox') {
     const result = toggleCheckbox(card, args[0]);
@@ -160,12 +166,12 @@ export async function handleCallback(bot, cq) {
     const undo = () => {
       card.answers[qIndex].sel = [];
     };
-    return settle(bot, cq, card, () => bot.pc.respond(card.issueId, card.interactionId, body.body), 'Answered', undo);
+    return settle(bot, cq, card, () => bot.pc.respond(card.issueId, card.interactionId, body.body), (now) => answeredOutcome(card, now), undo);
   }
   if (op === 's' && card.mode === 'form') {
     const body = formRespondBody(card);
     if (body.alert) return bot.answer(cq.id, body.alert, true);
-    return settle(bot, cq, card, () => bot.pc.respond(card.issueId, card.interactionId, body.body), 'Answered');
+    return settle(bot, cq, card, () => bot.pc.respond(card.issueId, card.interactionId, body.body), (now) => answeredOutcome(card, now));
   }
   return bot.answer(cq.id, 'Unknown action');
 }
@@ -207,7 +213,7 @@ export async function handleReasonReply(bot, card, msg) {
     if (failure.kind === 'closed') await syncClosed(bot, card);
     return;
   }
-  await closeCard(bot, card, `Declined: ${truncate(reason, 200)}`);
+  await closeCard(bot, card, declinedOutcome(card, reason, bot.now()));
 }
 
 export async function handleTextAnswer(bot, card, msg) {
@@ -226,5 +232,5 @@ export async function handleTextAnswer(bot, card, msg) {
     if (failure.kind === 'closed') await syncClosed(bot, card);
     return;
   }
-  await closeCard(bot, card, 'Answered');
+  await closeCard(bot, card, answeredOutcome(card, bot.now()));
 }

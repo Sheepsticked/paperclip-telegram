@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { fileOf } from '../src/files.js';
-import { TELEGRAM_TOKEN, startWorld } from './helpers.js';
+import { TELEGRAM_TOKEN, UI_BASE_URL, outcomePattern, startWorld } from './helpers.js';
 
 const GROUP_ID = -1001234567890;
 
@@ -17,6 +17,9 @@ const uploads = (w) => w.pc.requests.filter((r) => r.method === 'POST' && r.path
 const comments = (w) => w.pc.requests.filter((r) => r.method === 'POST' && r.path.endsWith('/comments'));
 const creates = (w) => w.pc.requests.filter((r) => r.method === 'POST' && r.path.endsWith('/issues'));
 const tap = (w, bot, message, label) => bot.handleUpdate(w.tg.tapButton(message.message_id, label));
+// The offer message of the first task once it is created: the outcome with the task link, then the line under it.
+const createdOffer = (forWho, below) =>
+  outcomePattern('Created', `<a href="${UI_BASE_URL}/TST/issues/TST-1">TST-1</a> ${forWho}`, { before: 'Create a task from this?\n\n', below });
 
 async function openTask(w, bot, issue) {
   await bot.handleUpdate(w.tg.message(`/task ${issue.identifier}`));
@@ -135,7 +138,7 @@ test('a captioned photo offers a task, and the task gets the photo after it is c
   assert.ok(uploads(w)[0].path.includes(issue.id));
   assert.equal(w.pc.attachments[0].data.toString(), 'SCREENSHOT');
   assert.deepEqual(comments(w)[0].body, { body: `Attachment: photo-${update.message.message_id}.jpg`, attachmentIds: [w.pc.attachments[0].id] });
-  assert.equal(w.tg.messages.get(offer.message_id).text, `Created for Lead\nAttached: photo-${update.message.message_id}.jpg`);
+  assert.match(w.tg.messages.get(offer.message_id).text, createdOffer('for Lead', `\nAttached: photo-${update.message.message_id}.jpg`));
   assert.deepEqual(rowsOf(w, offer.message_id), []);
 });
 
@@ -150,7 +153,7 @@ test('the offer with a file goes through the agent choice and survives a restart
   await restarted.handleUpdate(w.tg.tapButton(offer.message_id, 'Dev'));
   assert.equal(creates(w)[0].body.assigneeAgentId, 'agent-1');
   assert.deepEqual(uploads(w)[0].body.multipart, [{ name: 'file', filename: 'spec.pdf', type: 'application/pdf', size: 4 }]);
-  assert.match(w.tg.messages.get(offer.message_id).text, /^Created for Dev\nAttached: spec\.pdf$/);
+  assert.match(w.tg.messages.get(offer.message_id).text, createdOffer('for Dev', '\nAttached: spec.pdf'));
 });
 
 test('cancelling the offer drops the file with it', async (t) => {
@@ -172,7 +175,7 @@ test('a task that was created is kept when its file cannot be attached', async (
   w.tg.failDownloads(500);
   await tap(w, bot, offer, 'For Lead');
   assert.equal(creates(w).length, 1);
-  assert.equal(w.tg.messages.get(offer.message_id).text, 'Created for Lead\nThe file could not be attached: Could not download the file from Telegram.');
+  assert.match(w.tg.messages.get(offer.message_id).text, createdOffer('for Lead', '\nThe file could not be attached: Could not download the file from Telegram.'));
   assert.equal(bot.state.offers.size, 0);
 });
 
@@ -205,9 +208,10 @@ test('a file over the 20 MB limit that comes with a caption is declined when the
   const { w, bot } = await setup(t);
   const big = w.tg.addFile({ name: 'movie.mp4', data: 'x', size: 25 * 1024 * 1024 });
   await bot.handleUpdate(w.tg.documentUpdate(big, { caption: 'Watch this' }));
-  await tap(w, bot, w.tg.lastMessage(), 'For Lead');
+  const offer = w.tg.lastMessage();
+  await tap(w, bot, offer, 'For Lead');
   assert.equal(creates(w).length, 1);
-  assert.match(w.tg.findMessage('Created for Lead').text, /\nThe file could not be attached: That file is over the 20 MB limit for bots\.$/);
+  assert.match(w.tg.messages.get(offer.message_id).text, createdOffer('for Lead', '\nThe file could not be attached: That file is over the 20 MB limit for bots.'));
 });
 
 test('a file Paperclip refuses is reported with the server text and no comment is posted', async (t) => {

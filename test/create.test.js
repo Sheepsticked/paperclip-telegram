@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LEAD_AGENT_ID, UI_BASE_URL, startWorld } from './helpers.js';
+import { LEAD_AGENT_ID, UI_BASE_URL, outcomePattern, startWorld } from './helpers.js';
 
 async function setup(t, options) {
   const w = await startWorld(options);
@@ -13,6 +13,7 @@ const creates = (w) => w.pc.requests.filter((r) => r.method === 'POST' && r.path
 const rowsOf = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => b.text));
 const HOUR = 60 * 60 * 1000;
 const TASK_LINK = `<a href="${UI_BASE_URL}/TST/issues/TST-1">TST-1</a>`;
+const OFFER = 'Create a task from this?\n\n';
 
 // The rows a task view shows after More, for checking the Follow / Unfollow button.
 async function rowsAfterMore(w, bot, message) {
@@ -158,7 +159,7 @@ test('For Lead creates the task from the original message and replies with the t
   assert.ok(view.text.startsWith(`<b>${TASK_LINK}</b> Fix the login page\nTo do · Lead`));
   assert.ok(!view.text.includes('Open in Paperclip'));
   assert.equal(view.replyTo, update.message.message_id);
-  assert.equal(w.tg.messages.get(offer.message_id).text, 'Created for Lead');
+  assert.match(w.tg.messages.get(offer.message_id).text, outcomePattern('Created', `${TASK_LINK} for Lead`, { before: OFFER }));
   assert.deepEqual(rowsOf(w, offer.message_id), []);
   assert.equal(bot.state.offers.size, 0);
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Created');
@@ -184,7 +185,7 @@ test('Other agent shows a picker, Back returns, and the chosen agent gets the ta
   await bot.handleUpdate(w.tg.tapButton(offer.message_id, 'Other agent'));
   await bot.handleUpdate(w.tg.tapButton(offer.message_id, 'Dev'));
   assert.equal(creates(w)[0].body.assigneeAgentId, 'agent-1');
-  assert.equal(w.tg.messages.get(offer.message_id).text, 'Created for Dev');
+  assert.match(w.tg.messages.get(offer.message_id).text, outcomePattern('Created', `${TASK_LINK} for Dev`, { before: OFFER }));
 });
 
 test('the cancel button drops the offer', async (t) => {
@@ -192,7 +193,7 @@ test('the cancel button drops the offer', async (t) => {
   await bot.handleUpdate(w.tg.message('Never mind this'));
   const offer = w.tg.lastMessage();
   await bot.handleUpdate(w.tg.tapButton(offer.message_id, 'Cancel'));
-  assert.equal(w.tg.messages.get(offer.message_id).text, 'Cancelled.');
+  assert.match(w.tg.messages.get(offer.message_id).text, outcomePattern('Cancelled', null, { before: OFFER }));
   assert.equal(bot.state.offers.size, 0);
   assert.equal(creates(w).length, 0);
 });
@@ -210,7 +211,7 @@ test('an offer expires after 24 hours and the poll prunes it', async (t) => {
   saved.at -= 2 * HOUR;
   await bot.handleUpdate(w.tg.tapButton(offer.message_id, 'For Lead'));
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'This offer has expired');
-  assert.equal(w.tg.messages.get(offer.message_id).text, 'This offer has expired.');
+  assert.match(w.tg.messages.get(offer.message_id).text, outcomePattern('Expired', null, { before: OFFER }));
   assert.equal(creates(w).length, 0);
 
   bot.state.offers.set(key, saved);

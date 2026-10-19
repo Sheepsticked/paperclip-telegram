@@ -5,7 +5,7 @@ import { ALERT_LIMIT, MENTION_ROOM, MESSAGE_LIMIT, withMention } from '../src/fo
 import { PaperclipError } from '../src/paperclip.js';
 import { mentionProblems, mentioned, unmentioned } from './alerts.js';
 import { mentionEntities } from './fakes/telegram.js';
-import { UI_BASE_URL, startWorld } from './helpers.js';
+import { UI_BASE_URL, outcomePattern, startWorld } from './helpers.js';
 
 const GROUP_ID = -1001234567890;
 const GROUP = { telegram: { chatId: GROUP_ID }, config: { topics: 'off' } };
@@ -105,7 +105,7 @@ test('an inbox item without a task or a title keeps its link on a last line', as
 
   join.close();
   await bot.pollOnce();
-  assert.equal(w.tg.messages.get(message.message_id).text, `<b>Join request</b>\nJoin request is pending approval.\n\nResolved\n\n${link}`);
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Resolved in Paperclip', null, { before: `<b>Join request</b>\nJoin request is pending approval.\n\n${link}\n\n` }));
 });
 
 test('the token alert is a bold word and an instruction, and the summary starts with a bold count', async (t) => {

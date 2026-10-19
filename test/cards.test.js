@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mentioned, unmentioned } from './alerts.js';
-import { choiceQuestion, confirmPayload, questionsPayload, startWorld, textQuestion, UI_BASE_URL } from './helpers.js';
+import { choiceQuestion, confirmPayload, outcomePattern, questionsPayload, startWorld, textQuestion, UI_BASE_URL } from './helpers.js';
 
 // One issue with one pending card, already sent to the fake chat.
 async function cardWorld(t, { kind, payload, title = 'Ship v2' }) {
@@ -49,7 +49,7 @@ test('confirmation accept: calls accept, drops the keyboard and closes the card'
   assert.deepEqual(accepts[0].body, {});
   assert.equal(w.pc.interactions.get(interaction.id).status, 'accepted');
   assert.deepEqual(w.tg.buttons(message.message_id), []);
-  assert.match(w.tg.messages.get(message.message_id).text, /^Confirmed$/m);
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Confirmed', 'Deploy'));
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Confirmed');
 });
 
@@ -58,7 +58,7 @@ test('confirmation decline without a required reason rejects at once', async (t)
   await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Hold'));
   assert.deepEqual(posts(w, '/reject')[0].body, {});
   assert.equal(w.pc.interactions.get(interaction.id).status, 'rejected');
-  assert.match(w.tg.messages.get(message.message_id).text, /^Declined$/m);
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Declined', 'Hold'));
 });
 
 test('decline with a required reason asks for it and sends the reply as the reason', async (t) => {
@@ -84,7 +84,7 @@ test('decline with a required reason asks for it and sends the reply as the reas
   assert.equal(w.pc.interactions.get(interaction.id).status, 'rejected');
   assert.equal(posts(w, '/comments').length, 0, 'the reason is not also posted as a comment');
   assert.deepEqual(w.tg.buttons(message.message_id), []);
-  assert.match(w.tg.messages.get(message.message_id).text, /^Declined: Too risky before the freeze$/m);
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Declined', 'Too risky before the freeze'));
   assert.ok(issue);
 });
 
@@ -100,7 +100,7 @@ test('single-question form submits on tap and sends no otherText', async (t) => 
   assert.equal('otherText' in responds[0].body.answers[0], false);
   assert.equal(w.pc.interactions.get(interaction.id).status, 'answered');
   assert.deepEqual(w.tg.buttons(message.message_id), []);
-  assert.match(w.tg.messages.get(message.message_id).text, /^Answered$/m);
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Answered', 'Production'));
 });
 
 test('single text question: the reply is submitted as otherText', async (t) => {
@@ -273,7 +273,7 @@ test('a card resolved in Paperclip loses its buttons on the next poll', async (t
   w.pc.resolveElsewhere(interaction.id, 'accepted');
   await bot.pollOnce();
   assert.deepEqual(w.tg.buttons(message.message_id), []);
-  assert.match(w.tg.messages.get(message.message_id).text, /Confirmed in Paperclip/);
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Confirmed in Paperclip'));
 
   const edits = w.tg.callsTo('editMessageText').length;
   await bot.pollOnce();
@@ -285,7 +285,7 @@ test('a card on an issue that was closed is shown as closed', async (t) => {
   w.pc.setStatus(issue.id, 'cancelled');
   await bot.pollOnce();
   assert.deepEqual(w.tg.buttons(message.message_id), []);
-  assert.match(w.tg.messages.get(message.message_id).text, /Closed in Paperclip/);
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Closed', 'task closed'));
 });
 
 test('a stale tap gets the 409 answer and the message is refreshed', async (t) => {
@@ -295,7 +295,7 @@ test('a stale tap gets the 409 answer and the message is refreshed', async (t) =
   await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Deploy'));
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Already answered or closed');
   assert.deepEqual(w.tg.buttons(message.message_id), []);
-  assert.match(w.tg.messages.get(message.message_id).text, /Declined in Paperclip/);
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Declined in Paperclip'));
 
   // Tapping the old keyboard again is answered from local state without another call.
   const accepts = posts(w, '/accept').length;
@@ -365,7 +365,7 @@ test('a reply to a decline-reason prompt never becomes a comment once the card i
 
   w.pc.resolveElsewhere(interaction.id, 'accepted');
   await bot.pollOnce();
-  assert.match(w.tg.messages.get(message.message_id).text, /Confirmed in Paperclip/);
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Confirmed in Paperclip'));
 
   // A restarted bot keeps the link from the prompt to its card.
   const restarted = w.makeBot();

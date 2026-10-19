@@ -9,6 +9,9 @@ const GROUP_ID = -1001234567890;
 const TASK_URL = `${UI_BASE_URL}/TST/issues/TST-1`;
 const TITLE = 'Build the bot';
 const logText = (w) => w.allLogText();
+// A settled card's last block with its clock-dependent time put as placeholders.
+const SETTLED = '<blockquote><b>Confirmed</b> · Deploy · <tg-time unix="T" format="r">HH:MM UTC</tg-time></blockquote>';
+const fixedTime = (text) => text.replace(/unix="\d+"/, 'unix="T"').replace(/>\d\d:\d\d UTC</, '>HH:MM UTC<');
 const rowsOf = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => `${b.text}${b.style ? ` [${b.style}]` : ''}`));
 
 // An open task with a description; the bot has seen it once, so later changes are news.
@@ -59,11 +62,11 @@ test('replay in a forum group: each thing is said once, the topic is closed and 
   const thread = bot.state.topics.get(issue.id).thread;
   const messages = w.tg.inTopic(thread);
   assert.deepEqual(
-    messages.map((m) => m.text),
+    messages.map((m) => fixedTime(m.text)),
     [
       `<b><a href="${TASK_URL}">TST-1</a></b> ${TITLE}\nIn review · Dev · updated just now\n<blockquote>Phone remote for agents.</blockquote>`,
       '<b>In review</b>\n<blockquote>Ready for review: the bot has the new layout.</blockquote>',
-      '<b>Question</b>\nDeploy the change?\n\nConfirmed',
+      `<b>Question</b>\nDeploy the change?\n\n${SETTLED}`,
       '<b>Dev</b>\n<blockquote>Merge is waiting for your answer.</blockquote>',
       '<b>Dev</b>\n<blockquote>Done. The change is merged.</blockquote>',
       mentioned('Done', w.tg.userId),
@@ -103,10 +106,10 @@ test('replay in General with topics off: line 1 names and links the task, every 
   const head = `<a href="${TASK_URL}">TST-1</a> ${TITLE}`;
   const messages = w.tg.sent().slice(1);
   assert.deepEqual(
-    messages.map((m) => m.text),
+    messages.map((m) => fixedTime(m.text)),
     [
       `<b>In review</b> · ${head}\n<blockquote>Ready for review: the bot has the new layout.</blockquote>`,
-      `<b>Question</b> · <a href="${TASK_URL}#interaction-${w.pc.interactions.keys().next().value}">TST-1</a> ${TITLE}\nDeploy the change?\n\nConfirmed`,
+      `<b>Question</b> · <a href="${TASK_URL}#interaction-${w.pc.interactions.keys().next().value}">TST-1</a> ${TITLE}\nDeploy the change?\n\n${SETTLED}`,
       `<b>Dev</b> · ${head}\n<blockquote>Merge is waiting for your answer.</blockquote>`,
       `<b>Dev</b> · ${head}\n<blockquote>Done. The change is merged.</blockquote>`,
       `<b>Done</b> · ${head}`,

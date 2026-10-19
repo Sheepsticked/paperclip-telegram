@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { validateTelegramHtml } from './fakes/telegram.js';
 import { mentioned } from './alerts.js';
-import { UI_BASE_URL, confirmPayload, startWorld, waitFor } from './helpers.js';
+import { UI_BASE_URL, confirmPayload, outcomePattern, startWorld, waitFor } from './helpers.js';
 
 async function setup(t, options, botOptions) {
   const w = await startWorld(options);
@@ -89,7 +89,7 @@ test('Approve needs a second tap, then posts an empty body and edits the message
   assert.equal(w.pc.approvals.get(approval.id).status, 'approved');
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Approved');
   assert.deepEqual(rowsOf(w, message.message_id), []);
-  assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nApproved'));
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Approved'));
 });
 
 test('Reject needs a second tap, then posts an empty body', async (t) => {
@@ -112,7 +112,7 @@ test('Reject needs a second tap, then posts an empty body', async (t) => {
   assert.equal(posts(w, '/reject')[0].path, `/api/approvals/${approval.id}/reject`);
   assert.deepEqual(posts(w, '/reject')[0].body, {});
   assert.equal(w.pc.approvals.get(approval.id).status, 'rejected');
-  assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nRejected'));
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Rejected'));
   assert.deepEqual(rowsOf(w, message.message_id), []);
 });
 
@@ -175,7 +175,7 @@ test('a decision shows its body and one button per option, and a tap decides it'
   assert.equal(decides[0].path, `/api/decisions/${decision.id}/decide`);
   assert.deepEqual(decides[0].body, { optionId: 'lite', idempotencyKey: `telegram-decision-${decision.id}` });
   assert.equal(w.pc.decisions.get(decision.id).chosenOptionId, 'lite');
-  assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nDecided: SQLite'));
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Decided', 'SQLite'));
   assert.deepEqual(rowsOf(w, message.message_id), []);
 });
 
@@ -238,7 +238,7 @@ test('Dismiss on a decision posts an empty body', async (t) => {
   assert.equal(posts(w, '/dismiss').length, 1);
   assert.equal(posts(w, '/dismiss')[0].path, `/api/decisions/${decision.id}/dismiss`);
   assert.deepEqual(posts(w, '/dismiss')[0].body, {});
-  assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nDismissed'));
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Dismissed'));
   assert.deepEqual(rowsOf(w, message.message_id), []);
 });
 
@@ -289,7 +289,7 @@ test('Approve on a stalled review posts the approve action', async (t) => {
   assert.equal(calls[0].path, `/api/issues/${issue.id}/stalled-review-decision`);
   assert.deepEqual(calls[0].body, { action: 'approve' });
   assert.equal(w.pc.issues.get(issue.id).status, 'done');
-  assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nApproved'));
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Approved'));
   assert.deepEqual(rowsOf(w, message.message_id), []);
 });
 
@@ -302,7 +302,7 @@ test('Send back on a stalled review posts the send_back action', async (t) => {
   await tap(w, bot, message, 'Tap again to confirm');
   assert.deepEqual(posts(w, '/stalled-review-decision')[0].body, { action: 'send_back' });
   assert.equal(w.pc.issues.get(issue.id).status, 'todo');
-  assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nSent back'));
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Sent back'));
 });
 
 test('Request changes asks for a note and the reply becomes the note', async (t) => {
@@ -327,7 +327,7 @@ test('Request changes asks for a note and the reply becomes the note', async (t)
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].body, { action: 'request_changes', note: 'Please add a test for the edge case' });
   assert.equal(w.pc.issues.get(issue.id).status, 'todo');
-  assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nChanges requested'));
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Changes requested'));
   assert.ok(!w.tg.messages.get(message.message_id).text.includes('Waiting for the note'));
   assert.deepEqual(rowsOf(w, message.message_id), []);
   assert.equal(w.pc.comments.filter((c) => c.body === 'Please add a test for the edge case').length, 1);
@@ -352,7 +352,7 @@ test('a review that is no longer stalled is reported as resolved', async (t) => 
   w.pc.setStatus(issue.id, 'done');
   await tap(w, bot, message, 'Tap again to confirm');
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Already resolved');
-  assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nResolved'));
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Resolved in Paperclip'));
   assert.deepEqual(rowsOf(w, message.message_id), []);
 });
 
@@ -486,7 +486,7 @@ test('an item that leaves the feed is edited to Resolved and loses its buttons',
   join.close();
   await bot.pollOnce();
   for (const sent of [message, joinMessage]) {
-    assert.ok(w.tg.messages.get(sent.message_id).text.endsWith('\n\nResolved'));
+    assert.match(w.tg.messages.get(sent.message_id).text, outcomePattern('Resolved in Paperclip'));
     assert.deepEqual(rowsOf(w, sent.message_id), []);
   }
   const edits = w.tg.callsTo('editMessageText').length;
@@ -508,7 +508,7 @@ test('an item answered in Paperclip makes the tap say Already resolved', async (
   await tap(w, bot, message, 'Approve');
   await tap(w, bot, message, 'Tap again to confirm');
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Already resolved');
-  assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nResolved'));
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Resolved in Paperclip'));
   assert.deepEqual(rowsOf(w, message.message_id), []);
 });
 
@@ -521,7 +521,7 @@ test('a decision decided elsewhere makes the option tap say Already resolved', a
   w.pc.decisions.get(decision.id).status = 'decided';
   await tap(w, bot, message, 'Go ahead');
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Already resolved');
-  assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nResolved'));
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Resolved in Paperclip'));
 });
 
 test('an item dismissed in Paperclip counts as left the feed', async (t) => {
@@ -532,7 +532,7 @@ test('an item dismissed in Paperclip counts as left the feed', async (t) => {
   const message = startsWith(w, '<b>Recovery</b>');
   w.pc.dismissAttention([...bot.state.inbox.values()][0].dedupKey);
   await bot.pollOnce();
-  assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nResolved'));
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Resolved in Paperclip'));
 });
 
 test('a walk of the feed that did not finish resolves nothing', async (t) => {
@@ -550,7 +550,7 @@ test('a walk of the feed that did not finish resolves nothing', async (t) => {
 
   bot.pc.attentionFeed = walk;
   await bot.pollOnce();
-  assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nResolved'));
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Resolved in Paperclip'));
 });
 
 test('a failed read of the feed resolves nothing and the next poll catches up', async (t) => {
@@ -563,7 +563,7 @@ test('a failed read of the feed resolves nothing and the next poll catches up', 
   await assert.rejects(bot.pollOnce());
   assert.ok(!w.tg.messages.get(message.message_id).text.includes('Resolved'));
   await bot.pollOnce();
-  assert.ok(w.tg.messages.get(message.message_id).text.endsWith('\n\nResolved'));
+  assert.match(w.tg.messages.get(message.message_id).text, outcomePattern('Resolved in Paperclip'));
 });
 
 test('inbox items arrive while muted and with every toggle off', async (t) => {
@@ -743,7 +743,7 @@ test('an inbox item about a task goes into that task topic, and one without a ta
   await tap(w, bot, approval, 'Approve');
   await tap(w, bot, approval, 'Tap again to confirm');
   assert.equal(posts(w, '/approve').length, 1);
-  assert.ok(w.tg.messages.get(approval.message_id).text.endsWith('\n\nApproved'));
+  assert.match(w.tg.messages.get(approval.message_id).text, outcomePattern('Approved'));
 });
 
 test('the note prompt of a stalled review is asked inside the topic of its task', async (t) => {
