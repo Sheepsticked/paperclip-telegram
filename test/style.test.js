@@ -19,13 +19,13 @@ function filesUnder(dir, keep) {
 }
 
 test('findEmoji flags pictographs and keeps the few plain symbols the bot may use', () => {
-  for (const text of ['\u{1F600}', '✅ Done', '⚠️ Run failed', '\u{1F514} Follow', '\u{1F1E9}\u{1F1EA}', '1️⃣', '❤']) {
+  for (const text of ['\u{1F600}', '✅ Done', '⚠️ Run failed', '\u{1F514} Follow', '\u{1F1E9}\u{1F1EA}', '1️⃣', '❤', '☑ Done messages', '☐ Running']) {
     assert.ok(findEmoji(text).length > 0, JSON.stringify(text));
   }
-  for (const text of ['☑ Done messages', '☐ Running', '◀ Back', '▶', 'TST-1 · Title', 'plain text, quotes ’ and dashes — …']) {
+  for (const text of ['✓ Yes, merge', 'Done messages · On', '◀ Back', '▶', 'TST-1 · Title', 'plain text, quotes ’ and dashes — …']) {
     assert.deepEqual(findEmoji(text), [], JSON.stringify(text));
   }
-  assert.deepEqual(ALLOWED_SYMBOLS, ['☑', '☐', '◀', '▶', '·']);
+  assert.deepEqual(ALLOWED_SYMBOLS, ['✓', '◀', '▶', '·']);
 });
 
 test('the fake Telegram records every visible string, so one emoji anywhere is caught', async (t) => {
@@ -50,7 +50,7 @@ test('the fake Telegram does not flag the thumbs-up reaction or the allowed symb
   const response = await fetch(`${tg.url}/bot${tg.token}/sendMessage`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ chat_id: 1001, text: '☑ Done messages · ☐ Running', reply_markup: { inline_keyboard: [[{ text: '◀ Back', callback_data: 'x' }]] } }),
+    body: JSON.stringify({ chat_id: 1001, text: '✓ Done messages · On', reply_markup: { inline_keyboard: [[{ text: '◀ Back', callback_data: 'x' }]] } }),
   });
   assert.equal(response.status, 200);
   assert.deepEqual(tg.emojiFindings(), []);

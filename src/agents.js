@@ -70,7 +70,7 @@ function renderAgent(bot, view, armed) {
   const id = agent.id;
   const controls = [];
   if (agent.status === 'paused') controls.push(button('Resume', `G:u:${id}`));
-  else if (!NO_CONTROLS.has(agent.status)) controls.push(button(armed.has('p') ? CONFIRM_LABEL : 'Pause (stops its current run)', `G:p:${id}`));
+  else if (!NO_CONTROLS.has(agent.status)) controls.push(button(armed.has('p') ? CONFIRM_LABEL : 'Pause (stops its current run)', `G:p:${id}`, 'danger'));
   if (agent.status !== 'paused' && !NO_CONTROLS.has(agent.status)) controls.push(button('Run now', `G:n:${id}`));
   controls.push(button('Refresh', `G:r:${id}`));
   return { text: lines.join('\n'), keyboard: [controls, ...tasks.map((issue) => taskRow(issue))] };

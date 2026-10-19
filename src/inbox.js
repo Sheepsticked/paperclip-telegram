@@ -1,5 +1,5 @@
 import { reportFailure } from './actions.js';
-import { button, escapeHtml, fitMessage, flat, headline, issueUrl, link, taskButton, truncate, truncateLines } from './format.js';
+import { button, escapeHtml, fitMessage, flat, headline, issueUrl, kindWord, openRows, truncate, truncateLines } from './format.js';
 import { guarded } from './guard.js';
 import { PaperclipError } from './paperclip.js';
 import { reportActionFailure } from './tasks.js';
@@ -149,12 +149,13 @@ function recordUrl(record, uiBaseUrl) {
 
 function compose(record, ctx, level) {
   const { issue } = record;
+  const url = recordUrl(record, ctx.uiBaseUrl);
   const lines = [];
   if (issue) {
-    lines.push(headline(HEAD[record.kind], issue, { own: ctx.own, titleMax: level.title }));
+    lines.push(headline(HEAD[record.kind], issue, { own: ctx.own, titleMax: level.title, url }));
     if (record.title && record.title !== issue.title) lines.push(`<b>${escapeHtml(truncate(record.title, 200))}</b>`);
   } else {
-    lines.push(`<b>${HEAD[record.kind]}</b>${record.title ? ` · ${escapeHtml(truncate(record.title, level.title))}` : ''}`);
+    lines.push(`${kindWord(HEAD[record.kind], url)}${record.title ? ` · ${escapeHtml(truncate(record.title, level.title))}` : ''}`);
   }
   if (record.whyNow && level.why > 0) lines.push(escapeHtml(truncate(record.whyNow, level.why)));
   if (level.body > 0) {
@@ -173,8 +174,6 @@ function compose(record, ctx, level) {
     if (record.kind === 'approval' && !record.inlineResolvable) lines.push('', 'Answer this one in Paperclip');
     if (record.notePromptMessageId) lines.push('', 'Waiting for the note (reply to the prompt below).');
   }
-  const url = recordUrl(record, ctx.uiBaseUrl);
-  if (url) lines.push('', link(url, 'Open in Paperclip'));
   if (record.resolution) lines.push('', escapeHtml(record.resolution));
   return lines.join('\n');
 }
@@ -185,7 +184,7 @@ function keyboardFor(record, armed) {
   const label = (op, name) => (armed.has(op) ? CONFIRM_LABEL : name);
   const rows = [];
   if (record.kind === 'approval' && record.inlineResolvable) {
-    rows.push([button(label('a', 'Approve'), `I:a:${k}`), button(label('r', 'Reject'), `I:r:${k}`)]);
+    rows.push([button(label('a', 'Approve'), `I:a:${k}`, 'success'), button(label('r', 'Reject'), `I:r:${k}`, 'danger')]);
   }
   // Dismissing decides an option too, which the server refuses while a required input is empty.
   if (record.kind === 'decision' && !record.needsInput) {
@@ -193,10 +192,10 @@ function keyboardFor(record, armed) {
     rows.push([button('Dismiss', `I:x:${k}`)]);
   }
   if (record.kind === 'review' && record.stalled && record.issue) {
-    rows.push([button(label('sa', 'Approve'), `I:s:${k}:a`), button('Request changes', `I:s:${k}:c`), button(label('sb', 'Send back'), `I:s:${k}:b`)]);
+    rows.push([button(label('sa', 'Approve'), `I:s:${k}:a`, 'success'), button('Request changes', `I:s:${k}:c`), button(label('sb', 'Send back'), `I:s:${k}:b`)]);
   }
   const taskId = record.issue?.id ?? record.issueId;
-  if (taskId) rows.push([taskButton(taskId)]);
+  if (taskId) rows.push(...openRows(taskId, record.own));
   return rows;
 }
 

@@ -6,7 +6,7 @@ import test from 'node:test';
 import { buildCard, renderCard } from '../src/cards.js';
 import { DEFAULT_ROUTINE_RUN_ERROR_CODES, defaultStatePath, parseConfig, readTokenFile } from '../src/config.js';
 import { isBoardComment } from '../src/comments.js';
-import { MESSAGE_LIMIT, ago, button, chunkLines, escapeHtml, fitMessage, firstLine, issueUrl, cardUrl, runUrl, truncate, truncateLines } from '../src/format.js';
+import { MESSAGE_LIMIT, QUOTE_LEVELS, QUOTE_MAX, ago, button, chunkLines, escapeHtml, fitMessage, firstLine, headline, issueUrl, cardUrl, openRows, quote, runUrl, truncate, truncateLines } from '../src/format.js';
 import { createLogger } from '../src/log.js';
 import { PaperclipClient, PaperclipError } from '../src/paperclip.js';
 import { SerialQueue } from '../src/queue.js';
@@ -89,7 +89,8 @@ test('very long card text is cut before escaping, so the HTML stays valid and un
   const { text } = renderCard(card, 'https://paperclip.example.com');
   assert.ok(text.length <= MESSAGE_LIMIT, `length ${text.length}`);
   assert.equal(validateTelegramHtml(text), null);
-  assert.match(text, /<a href="https:\/\/paperclip\.example\.com\/TST\/issues\/TST-1#interaction-interaction-1">Open in Paperclip<\/a>/);
+  assert.ok(text.startsWith('<b>Question</b> · <a href="https://paperclip.example.com/TST/issues/TST-1#interaction-interaction-1">TST-1</a> '), 'line 1 links the card');
+  assert.ok(!text.includes('Open in Paperclip'));
   assert.match(text, /…/);
 });
 
@@ -297,7 +298,7 @@ test('parseConfig defaults topics to auto and accepts only auto or off', () => {
 test('State keeps topics and the issue to root cache across a save, capped at 2000 roots', (t) => {
   const file = path.join(tempDir(t), 'state.json');
   const state = new State(file);
-  state.topics.set('root-1', { thread: 77, identifier: 'TST-1', title: 'A task', closed: 'done' });
+  state.topics.set('root-1', { thread: 77, identifier: 'TST-1', title: 'A task', closed: 'done', suffixed: false });
   for (let i = 0; i < 2100; i += 1) state.noteRoot(`issue-${i}`, 'root-1');
   assert.equal(state.roots.size, 2000);
   assert.ok(!state.roots.has('issue-0'));
@@ -305,7 +306,7 @@ test('State keeps topics and the issue to root cache across a save, capped at 20
   state.save();
 
   const loaded = State.load(file);
-  assert.deepEqual(loaded.topics.get('root-1'), { thread: 77, identifier: 'TST-1', title: 'A task', closed: 'done' });
+  assert.deepEqual(loaded.topics.get('root-1'), { thread: 77, identifier: 'TST-1', title: 'A task', closed: 'done', suffixed: false });
   assert.equal(loaded.roots.size, 2000);
   assert.equal(loaded.rootForThread(77), 'root-1');
   assert.equal(loaded.rootForThread(78), null);
@@ -322,8 +323,68 @@ test('State drops malformed topic entries from a hand-edited file', (t) => {
   const state = State.load(file);
   assert.deepEqual([...state.topics.keys()], ['good']);
   assert.equal(state.topics.get('good').closed, null);
+  assert.equal(state.topics.get('good').suffixed, false);
   assert.deepEqual([...state.roots], [['a', 'good']]);
   assert.equal(State.load(path.join(tempDir(t), 'none.json')).topics.size, 0);
+});
+
+test('a closed topic from an old state file is taken to carry the status suffix', (t) => {
+  const file = path.join(tempDir(t), 'state.json');
+  const entry = (extra) => ({ thread: 1, identifier: 'TST-1', title: 'T', ...extra });
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      topics: {
+        open: entry({ closed: null }),
+        closedOld: entry({ closed: 'done' }),
+        closedNew: entry({ closed: 'cancelled', suffixed: false }),
+        flagged: entry({ closed: null, suffixed: true }),
+        junk: entry({ closed: null, suffixed: 'yes' }),
+      },
+    }),
+  );
+  const { topics } = State.load(file);
+  const flags = Object.fromEntries([...topics].map(([id, topic]) => [id, topic.suffixed]));
+  assert.deepEqual(flags, { open: false, closedOld: true, closedNew: false, flagged: true, junk: false });
+});
+
+test('State keeps the shown comments in order, newest 500, across a save', (t) => {
+  const file = path.join(tempDir(t), 'state.json');
+  const state = new State(file);
+  state.noteShown(null);
+  state.noteShown('');
+  state.noteShown('a');
+  state.noteShown('b');
+  state.noteShown('a');
+  assert.deepEqual([...state.shownComments], ['b', 'a'], 'a comment shown again moves to the newest place');
+  assert.equal(state.hasShown('a'), true);
+  assert.equal(state.hasShown('zzz'), false);
+  state.save();
+  assert.deepEqual([...State.load(file).shownComments], ['b', 'a']);
+
+  for (let i = 0; i < 600; i += 1) state.noteShown(`c-${i}`);
+  assert.equal(state.shownComments.size, 500);
+  assert.equal(state.hasShown('a'), false);
+  assert.equal(state.hasShown('c-99'), false);
+  assert.equal(state.hasShown('c-100'), true);
+});
+
+test('State loads the shown comments from a hand-edited file and an old file has none', (t) => {
+  const dir = tempDir(t);
+  assert.equal(State.load(path.join(dir, 'none.json')).shownComments.size, 0);
+  const old = path.join(dir, 'old.json');
+  fs.writeFileSync(old, JSON.stringify({ version: 2 }));
+  assert.equal(State.load(old).shownComments.size, 0);
+
+  const edited = path.join(dir, 'edited.json');
+  const many = Array.from({ length: 700 }, (_, i) => `c-${i}`);
+  fs.writeFileSync(edited, JSON.stringify({ shownComments: ['x', 5, null, ...many] }));
+  const loaded = State.load(edited);
+  assert.equal(loaded.shownComments.size, 500);
+  assert.equal(loaded.hasShown('x'), false, 'the oldest go first');
+  assert.equal(loaded.hasShown('c-699'), true);
+  fs.writeFileSync(edited, JSON.stringify({ shownComments: 'nope' }));
+  assert.equal(State.load(edited).shownComments.size, 0);
 });
 
 // A fetch stand-in that answers each call from `replies` (a status and a JSON body) and records the calls.
@@ -498,10 +559,12 @@ test('State takes the configured chat and drops what depends on the old chat whe
   state.skipInbox('join:1');
   state.noteReviewSent('issue-1');
   state.follow('issue-1', { identifier: 'TST-1', title: 'T', status: 'todo', lastSeenCommentId: 'c', lastSeenAt: '2030-01-01T00:00:00Z', retry: 0 });
+  state.noteShown('comment-1');
   state.inboxSyncDone = true;
 
   assert.equal(state.adoptChat(10), false, 'a state without a chat only takes it');
   assert.equal(state.messages.size, 1);
+  assert.equal(state.hasShown('comment-1'), true);
   assert.equal(state.adoptChat(10), false);
   assert.equal(state.inboxSyncDone, true);
   state.save();
@@ -509,7 +572,7 @@ test('State takes the configured chat and drops what depends on the old chat whe
 
   assert.equal(state.adoptChat(-100), true);
   assert.equal(state.chatId, -100);
-  for (const dropped of [state.messages, state.identifiers, state.cards, state.inbox, state.offers, state.topics]) assert.equal(dropped.size, 0);
+  for (const dropped of [state.messages, state.identifiers, state.cards, state.inbox, state.offers, state.topics, state.shownComments]) assert.equal(dropped.size, 0);
   assert.equal(state.inboxSyncDone, false);
   assert.equal(state.cardResync, true);
   assert.equal(state.offset, 42);
@@ -549,6 +612,66 @@ test('button refuses callback data over 64 bytes and cuts long labels', () => {
   assert.throws(() => button('Go', 'x'.repeat(65)), /callback data over 64 bytes/);
   assert.doesNotThrow(() => button('Go', 'x'.repeat(64)));
   assert.equal(Array.from(button('L'.repeat(200), 'a').text).length, 60);
+});
+
+test('button carries a colour only when one is given, and only one of the three Telegram allows', () => {
+  for (const style of ['primary', 'success', 'danger']) assert.deepEqual(button('Go', 'a', style), { text: 'Go', callback_data: 'a', style });
+  assert.equal('style' in button('Go', 'a'), false, 'no style key without a colour');
+  assert.equal('style' in button('Go', 'a', undefined), false);
+  for (const bad of ['default', 'red', 'Primary', '']) assert.throws(() => button('Go', 'a', bad), /unknown button style/, bad);
+});
+
+test('openRows is the Open task button, and nothing inside the own topic', () => {
+  assert.deepEqual(openRows('i1', false), [[{ text: 'Open task', callback_data: 'T:v:i1' }]]);
+  assert.deepEqual(openRows('i1', true), []);
+});
+
+test('headline names the kind, links the id and drops the title in the own topic', () => {
+  const issue = { identifier: 'TST-1', title: 'A <b> task' };
+  const url = 'https://ui.example.com/TST/issues/TST-1';
+  assert.equal(headline('Done', issue), '<b>Done</b> · TST-1 A &lt;b&gt; task');
+  assert.equal(headline('Done', issue, { url }), `<b>Done</b> · <a href="${url}">TST-1</a> A &lt;b&gt; task`);
+  assert.equal(headline('Done', issue, { own: true, url }), '<b>Done</b>');
+  assert.equal(headline('Dev', { identifier: 'TST-1' }, { url }), `<b>Dev</b> · <a href="${url}">TST-1</a>`, 'no title, no trailing space');
+  assert.equal(headline('A & B', issue, { own: true }), '<b>A &amp; B</b>', 'any kind is allowed and escaped');
+  assert.equal(headline('Done', { identifier: 'TST-1', title: 'T'.repeat(300) }, { titleMax: 10 }), `<b>Done</b> · TST-1 ${'T'.repeat(9)}…`);
+
+  const run = 'https://ui.example.com/TST/agents/a/runs/r';
+  assert.equal(headline('Run failed', issue, { url, kindUrl: run }), `<b><a href="${run}">Run failed</a></b> · TST-1 A &lt;b&gt; task`, 'the kind link replaces the id link');
+  assert.equal(headline('Run failed', issue, { own: true, kindUrl: run }), `<b><a href="${run}">Run failed</a></b>`);
+});
+
+test('quote puts escaped text in a block quote and folds a long one', () => {
+  assert.equal(quote('Hello <b> & you'), '<blockquote>Hello &lt;b&gt; &amp; you</blockquote>');
+  for (const empty of ['', '  \n \n', null, undefined]) assert.equal(quote(empty), '');
+  assert.equal(quote('text', 0), '', 'a budget of zero leaves no quote');
+  assert.equal(quote('a  \r\nb'), '<blockquote>a\nb</blockquote>', 'line ends are tidied');
+  assert.equal(quote('a\n\n\n\nb'), '<blockquote>a\n\nb</blockquote>', 'blank lines collapse to one');
+
+  assert.equal(quote('a\nb\nc'), '<blockquote>a\nb\nc</blockquote>', 'three lines stay open');
+  assert.equal(quote('a\nb\nc\nd'), '<blockquote expandable>a\nb\nc\nd</blockquote>', 'four lines fold');
+  assert.equal(quote('a\n\nb\n\nc'), '<blockquote>a\n\nb\n\nc</blockquote>', 'blank lines do not count');
+  assert.equal(quote('x'.repeat(300)), `<blockquote>${'x'.repeat(300)}</blockquote>`);
+  assert.equal(quote('x'.repeat(301)), `<blockquote expandable>${'x'.repeat(301)}</blockquote>`);
+  assert.equal(quote('é'.repeat(300)).startsWith('<blockquote>'), true, 'characters are counted, not bytes');
+
+  assert.equal(quote('y'.repeat(500), 200), `<blockquote>${'y'.repeat(199)}…</blockquote>`);
+  assert.equal(quote('y'.repeat(5000)), `<blockquote expandable>${'y'.repeat(QUOTE_MAX - 1)}…</blockquote>`);
+  for (const sample of [quote('a\nb\nc\nd'), quote('<&>'.repeat(200)), quote('plain')]) assert.equal(validateTelegramHtml(sample), null);
+});
+
+test('a quote is cut level by level until the whole message fits', () => {
+  assert.deepEqual(QUOTE_LEVELS, [...QUOTE_LEVELS].sort((a, b) => b - a));
+  assert.equal(QUOTE_LEVELS[0], QUOTE_MAX);
+  assert.equal(QUOTE_LEVELS.at(-1), 0);
+  const head = headline('Dev', { identifier: 'TST-1', title: 'Title' });
+  const build = (body) => (max) => [head, quote(body, max)].filter(Boolean).join('\n');
+  assert.equal(fitMessage(build('short'), QUOTE_LEVELS), `${head}\n<blockquote>short</blockquote>`);
+  const long = fitMessage(build('<'.repeat(6000)), QUOTE_LEVELS);
+  assert.ok(long.length <= MESSAGE_LIMIT && long.includes('…'));
+  assert.equal(validateTelegramHtml(long), null);
+  const tight = fitMessage((max) => [head, 'x'.repeat(4000), quote('word '.repeat(100), max)].filter(Boolean).join('\n'), QUOTE_LEVELS);
+  assert.equal(tight, `${head}\n${'x'.repeat(4000)}`, 'the quote is the first thing to go');
 });
 
 test('ago names minutes, hours and days', () => {

@@ -27,8 +27,12 @@ test('/new creates a task for the lead agent with the documented body', async (t
     idempotencyKey: `telegram-update-${update.update_id}`,
   });
   const reply = w.tg.lastMessage();
-  assert.match(reply.text, /^<b>Created<\/b> · TST-1 Fix the login page$/m);
-  assert.ok(reply.text.includes(`<a href="${UI_BASE_URL}/TST/issues/TST-1">Open in Paperclip</a>`));
+  assert.equal(
+    reply.text,
+    `<b><a href="${UI_BASE_URL}/TST/issues/TST-1">TST-1</a></b> Fix the login page\nTo do · Lead · updated just now\n` +
+      '<blockquote>Fix the login page\nUsers see a blank screen after the redirect.</blockquote>',
+  );
+  assert.ok(!reply.text.includes('Open in Paperclip'));
   assert.equal(reply.replyTo, update.message.message_id);
   assert.equal(w.pc.issues.size, 1);
 });
@@ -57,7 +61,7 @@ test('/new delivered twice creates one task', async (t) => {
   await bot.handleUpdate(update);
   await bot.handleUpdate(update);
   assert.equal(w.pc.issues.size, 1);
-  assert.match(w.tg.lastMessage().text, /^<b>Task<\/b> · TST-1 Only once\nAlready exists\n/);
+  assert.match(w.tg.lastMessage().text, new RegExp(`^<b><a href="${UI_BASE_URL}/TST/issues/TST-1">TST-1</a></b> Only once\\nAlready exists\\n`));
 });
 
 test('/new accepts the command with a bot name suffix', async (t) => {
@@ -83,7 +87,7 @@ test('a reply to the /new confirmation becomes a comment on the new task', async
   const [comment] = posts(w, '/comments');
   assert.deepEqual(comment.body, { body: 'Please include a rollback plan' });
   assert.match(comment.path, new RegExp(`/api/issues/${[...w.pc.issues.keys()][0]}/comments$`));
-  assert.match(w.tg.lastMessage().text, /^<b>Comment<\/b> · TST-1\nPosted\n<a href="[^"]+">Open in Paperclip<\/a>$/);
+  assert.equal(w.tg.lastMessage().text, `<b>Comment posted</b> · <a href="${UI_BASE_URL}/TST/issues/TST-1">TST-1</a>`);
 });
 
 test('a reply to a done message becomes a comment on that task', async (t) => {

@@ -1,6 +1,6 @@
 import { FileProblem, attachFile } from './files.js';
 import { followIssue } from './follow.js';
-import { button, escapeHtml, firstLine, headline, issueUrl, link, taskButton, truncate } from './format.js';
+import { button, escapeHtml, firstLine, headline, issueUrl, taskButton, truncate } from './format.js';
 import { PaperclipError } from './paperclip.js';
 import { ID_PREFIX, byPrefix } from './pick.js';
 import { orderedProjects } from './projects.js';
@@ -68,7 +68,7 @@ async function openTopic(bot, issue, thread) {
   await bot.topicsReady();
   if (!bot.topics.on) return { here: false, separate: false };
   if (thread !== null && !bot.state.rootForThread(thread) && (await linkTopic(bot, thread, issue))) return { here: true, separate: false };
-  const target = await topicTarget(bot, issue, { kind: 'Created' });
+  const target = await topicTarget(bot, issue);
   return { here: false, separate: target.thread !== null };
 }
 
@@ -95,8 +95,7 @@ export async function createTask(bot, { updateId, text, agent = null, project = 
   if (placed.here) return issue;
   // A short confirmation is enough when the full view is in the task's own topic; it is also the fallback.
   const confirm = () => {
-    const url = issueUrl(bot.config.uiBaseUrl, issue.identifier);
-    const html = `${headline(issue.deduplicated ? 'Task' : 'Created', issue)}\n${link(url, 'Open in Paperclip')}`;
+    const html = headline(issue.deduplicated ? 'Task' : 'Created', issue, { url: issueUrl(bot.config.uiBaseUrl, issue.identifier) });
     return bot.send(html, { replyTo, thread, keyboard: [[taskButton(issue.id)]], issue: { id: issue.id, identifier: issue.identifier } });
   };
   if (placed.separate) {
@@ -104,8 +103,7 @@ export async function createTask(bot, { updateId, text, agent = null, project = 
     return issue;
   }
   try {
-    const view = issue.deduplicated ? { kind: 'Task', note: 'Already exists' } : { kind: 'Created' };
-    await sendTaskView(bot, issue.id, { ...view, replyTo, thread });
+    await sendTaskView(bot, issue.id, { note: issue.deduplicated ? 'Already exists' : null, replyTo, thread });
   } catch (err) {
     // The task exists, so the confirmation still goes out in a short form.
     bot.log.warn('could not read the new task', { error: err.message });

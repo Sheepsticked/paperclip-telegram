@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { startWorld } from './helpers.js';
+import { UI_BASE_URL, startWorld } from './helpers.js';
 
 async function setup(t, options) {
   const w = await startWorld(options);
@@ -10,6 +10,8 @@ async function setup(t, options) {
 }
 
 const rowsOf = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => b.text));
+// Rows with the colour of each button after its label: "Running [primary]".
+const styledRows = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => (b.style ? `${b.text} [${b.style}]` : b.text)));
 const issueCalls = (w) => w.pc.requests.filter((r) => r.method === 'GET' && r.path.endsWith('/issues'));
 const creates = (w) => w.pc.requests.filter((r) => r.method === 'POST' && r.path.endsWith('/issues'));
 const tap = (w, bot, message, label) => bot.handleUpdate(w.tg.tapButton(message.message_id, label));
@@ -67,10 +69,10 @@ test('a project button opens the open tasks of that project with an All projects
 
   const view = w.tg.lastMessage();
   assert.equal(view.text, '<b>Open tasks</b> · All open · Alpha · page 1');
-  assert.deepEqual(rowsOf(w, view.message_id), [
+  assert.deepEqual(styledRows(w, view.message_id), [
     ['TST-2 · Alpha two'],
     ['TST-1 · Alpha one'],
-    ['☑ All open', '☐ Running', '☐ Review', '☐ Blocked'],
+    ['All open [primary]', 'Running', 'Review', 'Blocked'],
     ['All projects'],
   ]);
   const query = new URLSearchParams(issueCalls(w).at(-1).query);
@@ -88,14 +90,15 @@ test('the filter row keeps the project and All projects drops it', async (t) => 
   await tap(w, bot, view, 'Running');
   assert.equal(w.tg.messages.get(view.message_id).text, '<b>Open tasks</b> · Running · Alpha · page 1');
   assert.deepEqual(rowsOf(w, view.message_id).slice(0, 1), [['TST-2 · Alpha two']]);
+  assert.deepEqual(styledRows(w, view.message_id).slice(1), [['All open', 'Running [primary]', 'Review', 'Blocked'], ['All projects']], 'the active filter is blue inside a project');
   assert.equal(new URLSearchParams(issueCalls(w).at(-1).query).get('projectId'), alpha.id);
-  assert.ok(rowsOf(w, view.message_id).flat().includes('All projects'));
 
   await tap(w, bot, view, 'All projects');
   assert.equal(w.tg.messages.get(view.message_id).text, '<b>Open tasks</b> · Running · page 1');
   assert.equal(new URLSearchParams(issueCalls(w).at(-1).query).get('projectId'), null);
   assert.ok(!rowsOf(w, view.message_id).flat().includes('All projects'));
   assert.ok(rowsOf(w, view.message_id).flat().length > 3, 'tasks of other projects are listed again');
+  assert.ok(styledRows(w, view.message_id).at(-1).includes('Running [primary]'), 'the filter stays active');
 });
 
 test('paging inside a project keeps the project', async (t) => {
@@ -182,7 +185,14 @@ test('/new without #project asks which project, then creates with the chosen one
   assert.equal(w.tg.messages.get(question.message_id).text, 'Created for Lead in Gamma');
   assert.deepEqual(rowsOf(w, question.message_id), []);
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Created');
-  assert.ok(w.tg.findMessage('<b>Created</b> · TST-'));
+  const view = w.tg.lastMessage();
+  const { identifier } = [...w.pc.issues.values()].at(-1);
+  assert.equal(
+    view.text,
+    `<b><a href="${UI_BASE_URL}/TST/issues/${identifier}">${identifier}</a></b> Write the docs\nTo do · Lead · Gamma · updated just now\n<blockquote>Write the docs\nAll of them.</blockquote>`,
+    'the new task is shown as a task view',
+  );
+  assert.deepEqual(rowsOf(w, view.message_id), [['Done', 'More']]);
   assert.equal(bot.state.offers.size, 0);
 });
 

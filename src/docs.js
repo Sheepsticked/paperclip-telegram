@@ -56,7 +56,7 @@ export async function sendDocument(bot, cq, issueId, prefix) {
   const { parts, truncated } = splitDocument(doc.title || summary.key, String(doc.body ?? '').trim() || '(empty)');
   if (truncated) {
     const url = issueUrl(bot.config.uiBaseUrl, issue.identifier);
-    parts[parts.length - 1] += `\n\nThe document continues in Paperclip\n${link(url, 'Open in Paperclip')}`;
+    parts[parts.length - 1] += `\n\nThe document ${link(url, 'continues in Paperclip')}`;
   }
   const thread = threadOf(bot, cq.message);
   for (const html of parts) await bot.send(html, { thread, issue: { id: issue.id, identifier: issue.identifier } });

@@ -19,6 +19,12 @@ async function openTask(w, bot, issue) {
   return w.tg.lastMessage();
 }
 
+// Docs sits on the second keyboard of the task view.
+async function openDocs(w, bot, view) {
+  await tap(w, bot, view, 'More');
+  await tap(w, bot, view, 'Docs');
+}
+
 // Messages sent after `count` messages existed.
 const sentSince = (w, count) => w.tg.sent().slice(count);
 
@@ -29,9 +35,12 @@ test('a task with documents shows a Docs button, and one without does not', asyn
   w.pc.addDocument(documented.id, { key: 'plan', title: 'Plan', body: 'Step one' });
 
   const without = await openTask(w, bot, plain);
+  await tap(w, bot, without, 'More');
   assert.ok(!rowsOf(w, without.message_id).flat().includes('Docs'));
   const view = await openTask(w, bot, documented);
-  assert.deepEqual(rowsOf(w, view.message_id)[3], ['Follow', 'Docs']);
+  assert.ok(!rowsOf(w, view.message_id).flat().includes('Docs'), 'the first keyboard has no Docs');
+  await tap(w, bot, view, 'More');
+  assert.deepEqual(rowsOf(w, view.message_id), [['Assign', 'Project'], ['Cancel task'], ['Docs', 'Follow'], ['Comment'], ['Refresh', '◀ Back']]);
 });
 
 test('Docs turns the buttons into a list of documents with Back', async (t) => {
@@ -42,11 +51,13 @@ test('Docs turns the buttons into a list of documents with Back', async (t) => {
   const view = await openTask(w, bot, issue);
   const text = w.tg.messages.get(view.message_id).text;
 
-  await tap(w, bot, view, 'Docs');
+  await openDocs(w, bot, view);
   assert.deepEqual(rowsOf(w, view.message_id), [['Plan · plan'], ['notes · notes'], ['◀ Back']]);
   assert.equal(w.tg.messages.get(view.message_id).text, text, 'only the buttons change');
 
   await tap(w, bot, view, 'Back');
+  assert.deepEqual(rowsOf(w, view.message_id), [['Done', 'More']], 'Back returns to the first keyboard');
+  await tap(w, bot, view, 'More');
   assert.ok(rowsOf(w, view.message_id).flat().includes('Docs'));
   assert.ok(rowsOf(w, view.message_id).flat().includes('Refresh'));
 });
@@ -56,7 +67,7 @@ test('a document is sent as plain escaped text', async (t) => {
   const issue = w.pc.addIssue({ title: 'With documents', status: 'todo' });
   w.pc.addDocument(issue.id, { key: 'plan', title: 'Plan & <scope>', body: '# Heading\n\n- item <b>one</b> & two\n\n```\ncode\n```' });
   const view = await openTask(w, bot, issue);
-  await tap(w, bot, view, 'Docs');
+  await openDocs(w, bot, view);
 
   const before = w.tg.sent().length;
   await tap(w, bot, view, 'Plan');
@@ -74,7 +85,7 @@ test('a long document is split into at most three messages and ends with a link'
   const body = Array.from({ length: 600 }, (_, i) => `Line ${i} with <tags> & more text to fill the space`).join('\n');
   w.pc.addDocument(issue.id, { key: 'spec', title: 'Spec', body });
   const view = await openTask(w, bot, issue);
-  await tap(w, bot, view, 'Docs');
+  await openDocs(w, bot, view);
 
   const before = w.tg.sent().length;
   await tap(w, bot, view, 'Spec');
@@ -85,7 +96,7 @@ test('a long document is split into at most three messages and ends with a link'
     assert.equal(validateTelegramHtml(message.text), null);
   }
   assert.ok(messages[0].text.startsWith('<b>Spec</b>\nLine 0 '));
-  assert.ok(messages[2].text.endsWith(`The document continues in Paperclip\n<a href="${UI_BASE_URL}/TST/issues/TST-1">Open in Paperclip</a>`));
+  assert.ok(messages[2].text.endsWith(`The document <a href="${UI_BASE_URL}/TST/issues/TST-1">continues in Paperclip</a>`));
   assert.ok(!messages[0].text.includes('continues in Paperclip'));
 });
 
@@ -95,7 +106,7 @@ test('a document of two messages has no closing note', async (t) => {
   const body = Array.from({ length: 100 }, (_, i) => `Line ${i} ${'x'.repeat(50)}`).join('\n');
   w.pc.addDocument(issue.id, { key: 'spec', title: 'Spec', body });
   const view = await openTask(w, bot, issue);
-  await tap(w, bot, view, 'Docs');
+  await openDocs(w, bot, view);
   const before = w.tg.sent().length;
   await tap(w, bot, view, 'Spec');
   const messages = sentSince(w, before);
@@ -109,7 +120,7 @@ test('a very long single line is cut into valid pieces without splitting an enti
   const issue = w.pc.addIssue({ title: 'One line', status: 'todo' });
   w.pc.addDocument(issue.id, { key: 'blob', title: 'Blob', body: '&'.repeat(30_000) });
   const view = await openTask(w, bot, issue);
-  await tap(w, bot, view, 'Docs');
+  await openDocs(w, bot, view);
   const before = w.tg.sent().length;
   await tap(w, bot, view, 'Blob');
   const messages = sentSince(w, before);
@@ -126,7 +137,7 @@ test('an empty document says so', async (t) => {
   const issue = w.pc.addIssue({ title: 'Empty', status: 'todo' });
   w.pc.addDocument(issue.id, { key: 'plan', title: 'Plan', body: '' });
   const view = await openTask(w, bot, issue);
-  await tap(w, bot, view, 'Docs');
+  await openDocs(w, bot, view);
   await tap(w, bot, view, 'Plan');
   assert.equal(w.tg.lastMessage().text, '<b>Plan</b>\n(empty)');
 });
@@ -146,7 +157,7 @@ test('a document that was deleted meanwhile is answered', async (t) => {
   const issue = w.pc.addIssue({ title: 'Gone', status: 'todo' });
   w.pc.addDocument(issue.id, { key: 'plan', title: 'Plan', body: 'x' });
   const view = await openTask(w, bot, issue);
-  await tap(w, bot, view, 'Docs');
+  await openDocs(w, bot, view);
   w.pc.documents.splice(0);
   const before = w.tg.sent().length;
   await tap(w, bot, view, 'Plan');
@@ -159,9 +170,12 @@ test('Docs on a task whose documents are gone shows the task again', async (t) =
   const issue = w.pc.addIssue({ title: 'Gone', status: 'todo' });
   w.pc.addDocument(issue.id, { key: 'plan', title: 'Plan', body: 'x' });
   const view = await openTask(w, bot, issue);
+  await tap(w, bot, view, 'More');
   w.pc.documents.splice(0);
   await tap(w, bot, view, 'Docs');
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'No documents');
+  assert.deepEqual(rowsOf(w, view.message_id), [['Done', 'More']], 'the task is shown again');
+  await tap(w, bot, view, 'More');
   assert.ok(!rowsOf(w, view.message_id).flat().includes('Docs'));
 });
 
@@ -170,6 +184,7 @@ test('document buttons from another user change nothing and every callback fits 
   const issue = w.pc.addIssue({ title: 'Docs', status: 'todo' });
   w.pc.addDocument(issue.id, { key: 'plan', title: 'Plan', body: 'x' });
   const view = await openTask(w, bot, issue);
+  await tap(w, bot, view, 'More');
   const requests = w.pc.requests.length;
   await tap(w, bot, view, 'Docs', { from: 2002 });
   assert.equal(w.pc.requests.length, requests);

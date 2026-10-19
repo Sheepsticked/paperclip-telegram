@@ -36,7 +36,7 @@ export function renderSettings(bot) {
   const lines = ['<b>Settings</b>'];
   lines.push(state.isMuted(bot.now()) ? `Muted until ${untilText(state.muteUntil)}` : 'Notifications are on');
   lines.push('Cards that need an answer are always sent.');
-  const keyboard = TOGGLES.map(([key, label]) => [button(`${state.settings[key] ? '☑' : '☐'} ${label}`, `S:t:${key}`)]);
+  const keyboard = TOGGLES.map(([key, label]) => [state.settings[key] ? button(`${label} · On`, `S:t:${key}`, 'success') : button(`${label} · Off`, `S:t:${key}`)]);
   keyboard.push([
     ...MUTE_HOURS.map((hours) => button(`Mute ${hours} h`, `S:m:${hours}`)),
     button('Unmute', 'S:u'),

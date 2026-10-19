@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ICON_COLORS, iconColor, topicName } from '../src/topics.js';
-import { startWorld } from './helpers.js';
+import { UI_BASE_URL, confirmPayload, startWorld } from './helpers.js';
 
 const GROUP_ID = -1001234567890;
+const TASK_URL = `${UI_BASE_URL}/TST/issues/TST-1`;
+const TASK_LINK = `<a href="${TASK_URL}">TST-1</a>`;
 const NO_PIN = { can_manage_topics: true, can_pin_messages: false };
 const THREAD_GONE = { ok: false, error_code: 400, description: 'Bad Request: message thread not found' };
 
@@ -124,18 +126,20 @@ test('the first message about a task creates its topic with a name, a colour and
   assert.equal(topic.name, 'TST-1 Plan the launch');
   assert.equal(topic.icon_color, iconColor(project.id));
   const [view, notice] = w.tg.inTopic(thread);
-  assert.equal(view.text.split('\n')[0], '<b>Task</b> · TST-1', 'the task view names only the id inside its own topic');
-  assert.deepEqual(rowsOf(w, view.message_id).at(-1), ['Unfollow'], 'the view already shows that the task is followed');
+  assert.equal(view.text.split('\n')[0], `<b>${TASK_LINK}</b> Plan the launch`, 'the view names and links the task');
+  assert.deepEqual(rowsOf(w, view.message_id), [['Done', 'More']]);
   assert.deepEqual(view.pinned, { silent: true });
-  assert.match(notice.text, /^<b>In review<\/b> · TST-1$/m);
+  assert.equal(notice.text, '<b>In review</b>', 'inside its own topic the notice is the kind word alone');
   assert.equal(w.tg.callsTo('createForumTopic').length, 1);
-  assert.deepEqual(bot.state.topics.get(issue.id), { thread, identifier: 'TST-1', title: 'Plan the launch', closed: null });
+  assert.deepEqual(bot.state.topics.get(issue.id), { thread, identifier: 'TST-1', title: 'Plan the launch', closed: null, suffixed: false });
   assert.ok(bot.state.isFollowing(issue.id), 'a task with a topic is followed');
 
   w.pc.addComment(issue.id, { body: 'Agent update' });
   await bot.pollOnce();
   assert.equal(w.tg.callsTo('createForumTopic').length, 1, 'the topic is reused');
-  assert.match(w.tg.inTopic(thread).at(-1).text, /^<b>Comment<\/b> · TST-1$/m);
+  const comment = w.tg.inTopic(thread).at(-1);
+  assert.equal(comment.text, '<b>Dev</b>\n<blockquote>Agent update</blockquote>');
+  assert.deepEqual(rowsOf(w, comment.message_id), []);
 });
 
 test('the topic mapping survives a restart', async (t) => {
@@ -146,7 +150,7 @@ test('the topic mapping survives a restart', async (t) => {
   assert.equal(restarted.state.rootForThread(thread), issue.id);
 });
 
-test('a subtask event goes to the topic of its top-level task, with its own id and title', async (t) => {
+test('a subtask event goes to the topic of its top-level task, with its linked id, its title and an Open task button', async (t) => {
   const { w, bot } = await setup(t);
   const parent = w.pc.addIssue({ title: 'Big job', status: 'in_progress' });
   const child = w.pc.addIssue({ title: 'Small step', status: 'in_progress', parentId: parent.id });
@@ -159,7 +163,9 @@ test('a subtask event goes to the topic of its top-level task, with its own id a
   assert.deepEqual([...bot.state.topics.keys()], [parent.id]);
   const thread = bot.state.topics.get(parent.id).thread;
   const notice = w.tg.inTopic(thread).find((m) => m.text.includes('In review'));
-  assert.match(notice.text, /^<b>In review<\/b> · TST-3 Tiny step$/m);
+  assert.equal(notice.text, `<b>In review</b> · <a href="${UI_BASE_URL}/TST/issues/TST-3">TST-3</a> Tiny step`);
+  assert.deepEqual(rowsOf(w, notice.message_id), [['Open task']]);
+  assert.equal(w.tg.buttons(notice.message_id)[0].callback_data, `T:v:${grandchild.id}`);
   assert.equal(bot.state.issueForMessage(notice.message_id).id, grandchild.id);
 });
 
@@ -229,32 +235,61 @@ test('/task without an argument in a topic shows that topic\'s task', async (t) 
   await bot.handleUpdate(w.tg.message('/task', { thread }));
   const view = w.tg.lastMessage();
   assert.equal(view.thread, thread);
-  assert.match(view.text, /^<b>Task<\/b> · TST-1$/m);
+  assert.equal(view.text.split('\n')[0], `<b>${TASK_LINK}</b> Plan the launch`);
   assert.equal(bot.state.issueForMessage(view.message_id).id, issue.id);
 });
 
-test('buttons on the pinned view work in place and keep the title out of the topic', async (t) => {
+test('buttons on the pinned view work in place', async (t) => {
   const { w, bot } = await setup(t);
   const { issue, thread } = await taskWithTopic(w, bot);
   const view = w.tg.inTopic(thread).find((m) => m.pinned);
 
+  await bot.handleUpdate(w.tg.tapButton(view.message_id, 'More'));
   await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Refresh'));
-  assert.equal(w.tg.messages.get(view.message_id).text.split('\n')[0], '<b>Task</b> · TST-1');
-
-  await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Comment'));
-  const prompt = w.tg.lastMessage();
-  assert.equal(prompt.thread, thread, 'the comment prompt is in the topic');
-  const answer = w.tg.message('From the prompt', { thread, replyTo: prompt.message_id });
-  await bot.handleUpdate(answer);
-  assert.match(posts(w, '/comments')[0].path, new RegExp(`/api/issues/${issue.id}/comments$`));
-  assert.equal(w.tg.reactions.at(-1).messageId, answer.message.message_id);
+  assert.equal(w.tg.messages.get(view.message_id).text.split('\n')[0], `<b>${TASK_LINK}</b> Plan the launch`);
+  assert.deepEqual(rowsOf(w, view.message_id), [['Done', 'More']], 'Refresh goes back to the first keyboard');
 
   await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Done'));
-  await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Tap again'));
+  await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Tap again to confirm'));
   assert.equal(w.pc.issues.get(issue.id).status, 'done');
   await bot.pollOnce();
-  assert.equal(w.tg.topics.get(thread).name, 'TST-1 Plan the launch (done)');
+  assert.equal(w.tg.topics.get(thread).name, 'TST-1 Plan the launch', 'the topic keeps its name');
   assert.equal(w.tg.topics.get(thread).closed, true);
+});
+
+test('the More keyboard of the pinned view has neither Comment nor Follow', async (t) => {
+  const { w, bot } = await setup(t);
+  const { thread } = await taskWithTopic(w, bot);
+  const view = w.tg.inTopic(thread).find((m) => m.pinned);
+  await bot.handleUpdate(w.tg.tapButton(view.message_id, 'More'));
+
+  const rows = rowsOf(w, view.message_id);
+  assert.deepEqual(rows, [['Assign', 'Project'], ['To do', 'Cancel task'], ['Refresh', '◀ Back']]);
+  const labels = rows.flat();
+  for (const label of ['Comment', 'Follow', 'Unfollow']) assert.ok(!labels.includes(label), label);
+});
+
+test('messages in the task\'s own topic have no buttons, and a card keeps only its answers', async (t) => {
+  const { w, bot } = await setup(t);
+  const { issue, thread } = await taskWithTopic(w, bot);
+  const known = w.tg.inTopic(thread).length;
+  w.pc.addInteraction(issue.id, { kind: 'request_confirmation', payload: confirmPayload() });
+  w.pc.addComment(issue.id, { body: 'Question sent.' });
+  w.pc.addFailedRun({ issueId: issue.id, errorCode: 'adapter_failed', error: 'Crashed' });
+  await bot.pollOnce();
+  // The card loses its buttons when the task is done, so its keyboard is read first.
+  const rowsBefore = w.tg.inTopic(thread).slice(known).map((m) => rowsOf(w, m.message_id));
+  w.pc.setStatus(issue.id, 'done');
+  await bot.pollOnce();
+
+  const added = w.tg.inTopic(thread).slice(known);
+  assert.deepEqual(
+    added.map((m) => m.text.split('\n')[0]).map((line) => line.replace(/<a [^>]*>|<\/a>/g, '')),
+    ['<b>Question</b>', '<b>Run failed</b>', '<b>Dev</b>', '<b>Done</b>'],
+  );
+  assert.deepEqual(rowsBefore, [[['Deploy', 'Hold']], [], []]);
+  assert.deepEqual(rowsOf(w, added.at(-1).message_id), []);
+  assert.equal(w.tg.sent().filter((m) => m.thread !== thread).length, 0, 'nothing went to General');
 });
 
 test('command replies, lists and settings go to General', async (t) => {
@@ -282,7 +317,7 @@ test('a plain message in an unknown topic offers a task; creating it links and r
   assert.equal(bot.state.topics.get(issue.id).thread, thread);
   assert.equal(w.tg.callsTo('createForumTopic').length, 0, 'no second topic was made');
   const view = w.tg.inTopic(thread).find((m) => m.pinned);
-  assert.match(view.text, new RegExp(`^<b>Created</b> · ${issue.identifier}$`, 'm'));
+  assert.equal(view.text.split('\n')[0], `<b><a href="${UI_BASE_URL}/TST/issues/${issue.identifier}">${issue.identifier}</a></b> Build a paper robot`);
   assert.ok(bot.state.isFollowing(issue.id));
 
   await bot.handleUpdate(w.tg.message('Add a tail', { thread }));
@@ -310,17 +345,18 @@ test('/new in General makes a task with its own topic', async (t) => {
   assert.ok(w.tg.inTopic(thread).some((m) => m.pinned));
   const confirmation = w.tg.lastMessage();
   assert.equal(confirmation.thread, null, 'General gets a short confirmation');
-  assert.match(confirmation.text, new RegExp(`^<b>Created</b> · ${issue.identifier} Write the docs$`, 'm'));
+  assert.equal(confirmation.text, `<b>Created</b> · <a href="${UI_BASE_URL}/TST/issues/${issue.identifier}">${issue.identifier}</a> Write the docs`);
+  assert.deepEqual(rowsOf(w, confirmation.message_id), [['Open task']]);
 });
 
-test('a finished task renames and closes its topic, and reopening restores it', async (t) => {
+test('a finished task closes its topic without renaming it, and reopening changes nothing else', async (t) => {
   const { w, bot } = await setup(t);
   const { issue, thread } = await taskWithTopic(w, bot);
   const topic = w.tg.topics.get(thread);
 
   w.pc.setStatus(issue.id, 'done');
   await bot.pollOnce();
-  assert.equal(topic.name, 'TST-1 Plan the launch (done)');
+  assert.equal(topic.name, 'TST-1 Plan the launch');
   assert.equal(topic.closed, true);
   assert.equal(bot.state.topics.get(issue.id).closed, 'done');
 
@@ -332,8 +368,10 @@ test('a finished task renames and closes its topic, and reopening restores it', 
 
   w.pc.setStatus(issue.id, 'cancelled');
   await bot.pollOnce();
-  assert.equal(topic.name, 'TST-1 Plan the launch (cancelled)');
+  assert.equal(topic.name, 'TST-1 Plan the launch');
   assert.equal(topic.closed, true);
+  assert.equal(bot.state.topics.get(issue.id).closed, 'cancelled');
+  assert.equal(w.tg.callsTo('editForumTopic').length, 0, 'the topic is never renamed');
   assert.equal(w.tg.topics.size, 1);
 });
 
@@ -419,7 +457,7 @@ test('a failing root lookup sends to General, caches nothing and warns once an h
   assert.equal(notices.length, 2, 'both messages went out');
   assert.ok(Date.parse(bot.state.lastPollAt) > Date.parse(before), 'the poll finished');
   assert.equal(notices.find((m) => m.text.includes('TST-3')).thread, null, 'the broken root sent to General');
-  assert.ok(notices.find((m) => m.text.includes('TST-2')).thread !== null, 'the other task kept its topic');
+  assert.equal(notices.find((m) => !m.text.includes('TST-3')).thread, bot.state.topics.get(second.id).thread, 'the other task kept its topic');
   assert.equal(bot.state.topics.has(child.id), false, 'the root was not cached');
   assert.equal(logText(w).split('could not find the topic of a task').length - 1, 1, 'one warning');
 });
@@ -438,7 +476,7 @@ test('when a topic cannot be created the message goes to General, with one warni
   assert.equal(notices.length, 2);
   for (const notice of notices) {
     assert.equal(notice.thread, null);
-    assert.match(notice.text, /^<b>In review<\/b> · TST-\d (First|Second) job$/m, 'outside a topic the title stays');
+    assert.match(notice.text, /^<b>In review<\/b> · <a href="[^"]+">TST-\d<\/a> (First|Second) job$/m, 'outside a topic the title stays');
   }
   assert.equal(bot.state.topics.size, 0);
   assert.equal(logText(w).split('could not create a topic').length - 1, 1);
@@ -457,7 +495,7 @@ test('with topics off in the config everything stays in one chat', async (t) => 
     assert.equal(w.tg.callsTo(name).length, 0, name);
   }
   for (const message of w.tg.sent()) assert.equal(message.thread, null);
-  assert.match(w.tg.findMessage('In review').text, /^<b>In review<\/b> · TST-1 Plan the launch$/m);
+  assert.equal(w.tg.findMessage('In review').text, `<b>In review</b> · ${TASK_LINK} Plan the launch`);
   assert.equal(bot.state.topics.size, 0);
 });
 
@@ -470,7 +508,7 @@ test('in a private chat the topic calls are never made', async (t) => {
   w.pc.setStatus(issue.id, 'done');
   await bot.pollOnce();
   assert.match(logText(w), /^info topics off: not a forum$/m);
-  assert.match(w.tg.findMessage('Done').text, /^<b>Done<\/b> · TST-1 Plan the launch$/m);
+  assert.equal(w.tg.findMessage('Done').text, `<b>Done</b> · ${TASK_LINK} Plan the launch`);
   assert.equal(w.tg.callsTo('createForumTopic').length, 0);
   assert.deepEqual(w.tg.reactions, []);
 });
@@ -485,14 +523,14 @@ test('a card for a subtask is sent into the topic of its top-level task', async 
   const thread = bot.state.topics.get(parent.id).thread;
   const card = w.tg.inTopic(thread).find((m) => m.text.includes('Ship it?'));
   assert.ok(card, 'the card is in the parent topic');
-  assert.match(card.text, /^<b>Approval<\/b> · TST-2 Small step$/m);
+  assert.match(card.text, new RegExp(`^<b>Question</b> · <a href="[^"]+#interaction-[^"]+">TST-2</a> Small step$`, 'm'));
+  assert.deepEqual(rowsOf(w, card.message_id).at(-1), ['Open task'], 'a card for a subtask is not in its own topic');
 });
 
-test('topic names are cut to Telegram\'s limit, suffix included', () => {
+test('topic names are cut to Telegram\'s limit', () => {
   const long = 'x'.repeat(300);
   assert.equal(topicName('TST-1', long).length, 128);
-  assert.ok(topicName('TST-1', long, ' (cancelled)').endsWith(' (cancelled)'));
-  assert.equal(topicName('TST-1', long, ' (cancelled)').length, 128);
+  assert.ok(topicName('TST-1', long).endsWith('…'));
   assert.equal(topicName('TST-1', 'A  title\nwith   gaps'), 'TST-1 A title with gaps');
   assert.equal(topicName('TST-1', ''), 'TST-1');
 });

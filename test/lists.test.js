@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { validateTelegramHtml } from './fakes/telegram.js';
-import { startWorld } from './helpers.js';
+import { UI_BASE_URL, startWorld } from './helpers.js';
 
 async function setup(t, options) {
   const w = await startWorld(options);
@@ -11,6 +11,8 @@ async function setup(t, options) {
 }
 
 const rowsOf = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => b.text));
+// Rows with the colour of each button after its label: "Running [primary]".
+const styledRows = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => (b.style ? `${b.text} [${b.style}]` : b.text)));
 const issueListRequests = (w) => w.pc.requests.filter((r) => r.method === 'GET' && /\/issues$/.test(r.path));
 
 function addOpenTasks(w, count, status = 'todo') {
@@ -34,7 +36,7 @@ test('/tasks lists open tasks, newest update first, ten per page', async (t) => 
   assert.deepEqual(rows[0], ['TST-25 · Task number 25']);
   assert.deepEqual(rows[9], ['TST-16 · Task number 16']);
   assert.deepEqual(rows[10], ['▶']);
-  assert.deepEqual(rows[11], ['☑ All open', '☐ Running', '☐ Review', '☐ Blocked']);
+  assert.deepEqual(styledRows(w, list.message_id)[11], ['All open [primary]', 'Running', 'Review', 'Blocked']);
   assert.deepEqual(w.tg.buttons(list.message_id)[0].callback_data, `T:v:${tasks[24].id}`);
   assert.equal(validateTelegramHtml(list.text), null);
 
@@ -65,13 +67,15 @@ test('paging and filtering edit the list message in place', async (t) => {
 
   await bot.handleUpdate(w.tg.tapButton(list.message_id, 'Running'));
   assert.match(w.tg.messages.get(list.message_id).text, /Open tasks<\/b> · Running · page 1$/);
-  assert.deepEqual(rowsOf(w, list.message_id), [['TST-26 · Busy one'], ['☐ All open', '☑ Running', '☐ Review', '☐ Blocked']]);
+  assert.deepEqual(styledRows(w, list.message_id), [['TST-26 · Busy one'], ['All open', 'Running [primary]', 'Review', 'Blocked']]);
   assert.match(issueListRequests(w).at(-1).query, /status=in_progress(&|$)/);
 
   await bot.handleUpdate(w.tg.tapButton(list.message_id, 'Review'));
   assert.deepEqual(rowsOf(w, list.message_id)[0], ['TST-27 · Waiting one']);
+  assert.deepEqual(styledRows(w, list.message_id)[1], ['All open', 'Running', 'Review [primary]', 'Blocked']);
   await bot.handleUpdate(w.tg.tapButton(list.message_id, 'Blocked'));
   assert.deepEqual(rowsOf(w, list.message_id)[0], ['TST-28 · Stuck one']);
+  assert.deepEqual(styledRows(w, list.message_id)[1], ['All open', 'Running', 'Review', 'Blocked [primary]']);
   assert.equal(w.tg.sent().length, sent, 'no new message was sent');
 });
 
@@ -80,7 +84,7 @@ test('an empty list says so and keeps the filter row', async (t) => {
   await bot.handleUpdate(w.tg.message('/tasks'));
   const list = w.tg.lastMessage();
   assert.match(list.text, /Nothing here\.$/);
-  assert.deepEqual(rowsOf(w, list.message_id), [['☑ All open', '☐ Running', '☐ Review', '☐ Blocked']]);
+  assert.deepEqual(styledRows(w, list.message_id), [['All open [primary]', 'Running', 'Review', 'Blocked']]);
 });
 
 test('list buttons open the task view', async (t) => {
@@ -91,7 +95,7 @@ test('list buttons open the task view', async (t) => {
   await bot.handleUpdate(w.tg.tapButton(list.message_id, 'Open me'));
   const view = w.tg.lastMessage();
   assert.notEqual(view.message_id, list.message_id);
-  assert.match(view.text, /^<b>Task<\/b> · TST-1 Open me$/m);
+  assert.equal(view.text.split('\n')[0], `<b><a href="${UI_BASE_URL}/TST/issues/TST-1">TST-1</a></b> Open me`);
 });
 
 test('long titles are cut to fit a button and the callback data stays small', async (t) => {
@@ -158,7 +162,7 @@ test('/status buttons open the task', async (t) => {
   await bot.handleUpdate(w.tg.message('/status'));
   const running = w.tg.sent()[0];
   await bot.handleUpdate(w.tg.tapButton(running.message_id, 'Running work'));
-  assert.match(w.tg.lastMessage().text, /^<b>Task<\/b> · TST-1 Running work$/m);
+  assert.equal(w.tg.lastMessage().text.split('\n')[0], `<b><a href="${UI_BASE_URL}/TST/issues/TST-1">TST-1</a></b> Running work`);
 });
 
 test('/following lists followed tasks as buttons', async (t) => {
@@ -170,7 +174,9 @@ test('/following lists followed tasks as buttons', async (t) => {
   const second = w.pc.addIssue({ title: 'Second followed', status: 'todo' });
   for (const issue of [first, second]) {
     await bot.handleUpdate(w.tg.message(`/task ${issue.identifier}`));
-    await bot.handleUpdate(w.tg.tapButton(w.tg.lastMessage().message_id, 'Follow'));
+    const view = w.tg.lastMessage();
+    await bot.handleUpdate(w.tg.tapButton(view.message_id, 'More'));
+    await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Follow'));
   }
   await bot.handleUpdate(w.tg.message('/following'));
   const list = w.tg.lastMessage();

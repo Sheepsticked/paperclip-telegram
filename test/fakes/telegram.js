@@ -7,8 +7,10 @@ const ICON_COLORS = [7322096, 16766590, 13338331, 9367192, 16749490, 16478047];
 const REACTIONS = ['\u{1F44D}', '\u{1F44E}', '\u2764', '\u{1F525}', '\u{1F389}'];
 const FULL_RIGHTS = { can_manage_topics: true, can_pin_messages: true };
 const BOT_DOWNLOAD_LIMIT = 20 * 1024 * 1024;
+const BUTTON_STYLES = ['danger', 'success', 'primary'];
 
 // Mirrors Telegram's HTML parse mode: known tags only, balanced, with every & < > escaped.
+// Stricter than Telegram on one point: the only attribute a blockquote may carry is "expandable".
 export function validateTelegramHtml(text) {
   const stack = [];
   for (let i = 0; i < text.length; i += 1) {
@@ -26,6 +28,7 @@ export function validateTelegramHtml(text) {
         if (stack.pop() !== name) return `Unmatched end tag at byte offset ${i}`;
       } else {
         if (name === 'a' && !/\shref="[^"]*"/.test(attrs)) return 'Link without href';
+        if (name === 'blockquote' && attrs.trim() !== '' && attrs.trim() !== 'expandable') return `Unsupported attribute "${attrs.trim()}" in the tag "blockquote" at byte offset ${i}`;
         stack.push(name);
       }
       i += whole.length - 1;
@@ -90,13 +93,14 @@ export async function startFakeTelegram({
     if (typeof text === 'string' && text.length > 0) written.push({ kind, text });
   };
 
-  // Telegram refuses callback data of 0 or more than 64 bytes, and more than 100 buttons.
+  // Telegram refuses callback data of 0 or more than 64 bytes, more than 100 buttons and a style other than the three colours.
   function checkMarkup(res, markup) {
     const buttons = (markup?.inline_keyboard ?? []).flat();
     for (const b of buttons) note('button', b.text);
     note('placeholder', markup?.input_field_placeholder);
     if (buttons.length > 100) return error(res, 400, 'Bad Request: reply markup is too long'), false;
     for (const b of buttons) {
+      if (b.style !== undefined && !BUTTON_STYLES.includes(b.style)) return error(res, 400, "Bad Request: Can't parse InlineKeyboardButton: Invalid button style specified"), false;
       const size = Buffer.byteLength(b.callback_data ?? '');
       if (b.callback_data !== undefined && (size === 0 || size > 64)) return error(res, 400, 'Bad Request: BUTTON_DATA_INVALID'), false;
       if (typeof b.text !== 'string' || b.text.length === 0) return error(res, 400, 'Bad Request: text buttons are unallowed in the inline keyboard'), false;
@@ -429,6 +433,11 @@ export async function startFakeTelegram({
       };
       userMessages.set(messageId, update.message);
       return update;
+    },
+    // The service message Telegram sends to the bot when the bot creates a topic.
+    topicCreated(threadId, { from = botId } = {}) {
+      const name = topics.get(threadId)?.name ?? 'Topic';
+      return api.message(undefined, { from, bot: true, chat: chatId, extra: { message_thread_id: threadId, is_topic_message: true, forum_topic_created: { name, icon_color: ICON_COLORS[0] } } });
     },
     // A file the owner can send. `size` overrides the size Telegram reports (to test the bot limit without a huge body).
     addFile({ name = 'notes.txt', data = 'file content', size, kind = 'document' } = {}) {

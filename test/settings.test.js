@@ -12,7 +12,8 @@ async function setup(t, options) {
   return { w, bot };
 }
 
-const rowsOf = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => b.text));
+// Rows with the colour of each button after its label: "Done messages · On [success]".
+const styledRows = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => (b.style ? `${b.text} [${b.style}]` : b.text)));
 const HOUR = 60 * 60 * 1000;
 const texts = (w) => w.tg.sent().map((m) => m.text);
 
@@ -28,12 +29,12 @@ test('/settings shows every toggle, the mute buttons and the always-sent note', 
   const view = w.tg.lastMessage();
   assert.equal(view.replyTo, update.message.message_id);
   assert.equal(view.text, '<b>Settings</b>\nNotifications are on\nCards that need an answer are always sent.');
-  assert.deepEqual(rowsOf(w, view.message_id), [
-    ['☑ Done messages'],
-    ['☑ In-review messages'],
-    ['☑ Failed-run alerts'],
-    ['☑ Followed comments'],
-    ['☑ Follow new tasks'],
+  assert.deepEqual(styledRows(w, view.message_id), [
+    ['Done messages · On [success]'],
+    ['In-review messages · On [success]'],
+    ['Failed-run alerts · On [success]'],
+    ['Followed comments · On [success]'],
+    ['Follow new tasks · On [success]'],
     ['Mute 1 h', 'Mute 8 h', 'Unmute'],
   ]);
   assert.equal(validateTelegramHtml(view.text), null);
@@ -45,13 +46,13 @@ test('a toggle flips in place, is saved, and the answer names the new value', as
   const sent = w.tg.sent().length;
 
   await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Done messages'));
-  assert.equal(rowsOf(w, view.message_id)[0][0], '☐ Done messages');
+  assert.deepEqual(styledRows(w, view.message_id)[0], ['Done messages · Off'], 'an off toggle has no colour');
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Done messages: off');
   assert.equal(w.tg.sent().length, sent);
   assert.equal(JSON.parse(fs.readFileSync(w.statePath, 'utf8')).settings.done, false);
 
   await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Done messages'));
-  assert.equal(rowsOf(w, view.message_id)[0][0], '☑ Done messages');
+  assert.deepEqual(styledRows(w, view.message_id)[0], ['Done messages · On [success]']);
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Done messages: on');
 
   const restarted = w.makeBot();

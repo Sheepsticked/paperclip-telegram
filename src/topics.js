@@ -22,10 +22,10 @@ export function iconColor(projectId) {
   return ICON_COLORS[hash % ICON_COLORS.length];
 }
 
-// "ID Title", cut so the name plus `suffix` stays within Telegram's limit.
-export function topicName(identifier, title, suffix = '') {
+// "ID Title", cut to Telegram's limit.
+export function topicName(identifier, title) {
   const flat = String(title ?? '').replace(/\s+/g, ' ').trim();
-  return truncate(flat ? `${identifier} ${flat}` : identifier, NAME_MAX - suffix.length) + suffix;
+  return truncate(flat ? `${identifier} ${flat}` : identifier, NAME_MAX);
 }
 
 function warnTopics(bot, message, detail) {
@@ -71,7 +71,8 @@ async function quiet(call) {
   }
 }
 
-// Closes and renames the topic of a finished task, or reopens it when the task is open again.
+// Closes the topic of a finished task, or reopens it when the task is open again.
+// A name that still carries an old status suffix is restored on reopening.
 export async function applyStatus(bot, rootId, status) {
   const topic = bot.state.topics.get(rootId);
   if (!topic) return;
@@ -80,11 +81,11 @@ export async function applyStatus(bot, rootId, status) {
   const ids = { chat_id: bot.config.telegramChatId, message_thread_id: topic.thread };
   try {
     if (want) {
-      await quiet(() => bot.tg.editForumTopic({ ...ids, name: topicName(topic.identifier, topic.title, ` (${want})`) }));
       await quiet(() => bot.tg.closeForumTopic(ids));
     } else {
       await quiet(() => bot.tg.reopenForumTopic(ids));
-      await quiet(() => bot.tg.editForumTopic({ ...ids, name: topicName(topic.identifier, topic.title) }));
+      if (topic.suffixed) await quiet(() => bot.tg.editForumTopic({ ...ids, name: topicName(topic.identifier, topic.title) }));
+      topic.suffixed = false;
     }
   } catch (err) {
     if (!threadGone(err)) throw err;
@@ -109,10 +110,10 @@ async function autoFollow(bot, issue) {
 }
 
 // Posts the task view as the first message of a new topic and pins it.
-async function fillTopic(bot, view, thread, kind) {
+async function fillTopic(bot, view, thread) {
   const { issue } = view;
   await autoFollow(bot, issue);
-  const { messageId } = await sendLoadedView(bot, view, { kind, thread });
+  const { messageId } = await sendLoadedView(bot, view, { thread });
   if (bot.topics.canPin) {
     try {
       await bot.tg.pinChatMessage({ chat_id: bot.config.telegramChatId, message_id: messageId, disable_notification: true });
@@ -123,7 +124,7 @@ async function fillTopic(bot, view, thread, kind) {
   await applyStatus(bot, issue.id, issue.status);
 }
 
-async function createTopic(bot, rootId, kind) {
+async function createTopic(bot, rootId) {
   const view = await loadTask(bot, rootId);
   const { issue } = view;
   let created;
@@ -139,16 +140,16 @@ async function createTopic(bot, rootId, kind) {
     return null;
   }
   const thread = created.message_thread_id;
-  bot.state.topics.set(rootId, { thread, identifier: issue.identifier, title: issue.title, closed: null });
+  bot.state.topics.set(rootId, { thread, identifier: issue.identifier, title: issue.title, closed: null, suffixed: false });
   bot.state.noteRoot(rootId, rootId);
   bot.state.save();
-  await guarded(bot, `the topic of ${issue.identifier}`, () => fillTopic(bot, view, thread, kind));
+  await guarded(bot, `the topic of ${issue.identifier}`, () => fillTopic(bot, view, thread));
   return thread;
 }
 
 // Where a message about `issue` goes: its top-level task's topic (made on first use), or the main chat.
 // A failure to find or make the topic (anything but a rejected token) sends this message to the main chat.
-export async function topicTarget(bot, issue, { kind = 'Task' } = {}) {
+export async function topicTarget(bot, issue) {
   await bot.topicsReady();
   if (!bot.topics.on) return NO_TOPIC;
   let rootId;
@@ -164,7 +165,7 @@ export async function topicTarget(bot, issue, { kind = 'Task' } = {}) {
   let thread = topic?.thread ?? null;
   if (!topic) {
     try {
-      thread = await createTopic(bot, rootId, kind);
+      thread = await createTopic(bot, rootId);
     } catch (err) {
       if (isUnauthorized(err) || err.aborted) throw err;
       warnTopics(bot, 'could not make the topic of a task, using the main chat', { error: err.message });
@@ -175,7 +176,7 @@ export async function topicTarget(bot, issue, { kind = 'Task' } = {}) {
 
 // Makes a topic the owner started the topic of a new task: renames it and posts the pinned view.
 export async function linkTopic(bot, thread, issue) {
-  const entry = { thread, identifier: issue.identifier, title: issue.title, closed: null };
+  const entry = { thread, identifier: issue.identifier, title: issue.title, closed: null, suffixed: false };
   bot.state.topics.set(issue.id, entry);
   bot.state.noteRoot(issue.id, issue.id);
   bot.state.save();
@@ -191,7 +192,7 @@ export async function linkTopic(bot, thread, issue) {
     if (!(err instanceof TelegramError)) throw err;
     bot.log.warn('could not rename a topic', { error: err.message });
   }
-  await guarded(bot, `the topic of ${issue.identifier}`, async () => fillTopic(bot, await loadTask(bot, issue.id), thread, 'Created'));
+  await guarded(bot, `the topic of ${issue.identifier}`, async () => fillTopic(bot, await loadTask(bot, issue.id), thread));
   return true;
 }
 

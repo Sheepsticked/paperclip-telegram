@@ -19,12 +19,16 @@ const posts = (w, suffix) => w.pc.requests.filter((r) => r.method === 'POST' && 
 const TASK_BUTTON = 'Open task';
 // The answer buttons of a card; the trailing task button is checked on its own.
 const labels = (w, message) => w.tg.buttons(message.message_id).map((b) => b.text).filter((text) => text !== TASK_BUTTON);
+// Every button's label mapped to its style (null when it has none).
+const styles = (w, message) => Object.fromEntries(w.tg.buttons(message.message_id).map((b) => [b.text, b.style ?? null]));
 
-test('confirmation card shows the prompt, a deep link and its buttons', async (t) => {
+test('confirmation card reads Question, links the task id to the card and has coloured buttons', async (t) => {
   const { w, issue, interaction, message } = await cardWorld(t, { kind: 'request_confirmation', payload: confirmPayload() });
-  assert.match(message.text, /Deploy the change\?/);
-  assert.ok(message.text.includes(`<a href="${UI_BASE_URL}/TST/issues/${issue.identifier}#interaction-${interaction.id}">Open in Paperclip</a>`));
+  const link = `<a href="${UI_BASE_URL}/TST/issues/${issue.identifier}#interaction-${interaction.id}">${issue.identifier}</a>`;
+  assert.equal(message.text, `<b>Question</b> · ${link} Ship v2\nDeploy the change?`);
+  assert.ok(!message.text.includes('Open in Paperclip'));
   assert.deepEqual(labels(w, message), ['Deploy', 'Hold']);
+  assert.deepEqual(styles(w, message), { Deploy: 'success', Hold: 'danger', [TASK_BUTTON]: null });
   for (const button of w.tg.buttons(message.message_id)) assert.ok(Buffer.byteLength(button.callback_data) <= 64);
   assert.equal(w.tg.callsTo('sendMessage').length, 1);
 });
@@ -86,7 +90,7 @@ test('decline with a required reason asks for it and sends the reply as the reas
 test('single-question form submits on tap and sends no otherText', async (t) => {
   const payload = questionsPayload([choiceQuestion('env', 'Which environment?', ['Staging', 'Production'])]);
   const { w, bot, interaction, message } = await cardWorld(t, { kind: 'ask_user_questions', payload });
-  assert.deepEqual(labels(w, message), ['☐ Staging', '☐ Production']);
+  assert.deepEqual(labels(w, message), ['Staging', 'Production']);
 
   await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Production'));
   const responds = posts(w, '/respond');
@@ -120,13 +124,16 @@ test('multi-question form: choices, a multi choice and a text reply go out in on
   ]);
   const { w, bot, interaction, message } = await cardWorld(t, { kind: 'ask_user_questions', payload });
   const id = message.message_id;
-  assert.deepEqual(labels(w, message), ['1. ☐ EU', '1. ☐ US', '2. ☐ Alpha', '2. ☐ Beta', '2. ☐ Gamma', 'Submit']);
+  assert.deepEqual(labels(w, message), ['1 · EU', '1 · US', '2 · Alpha', '2 · Beta', '2 · Gamma', 'Submit']);
+  assert.equal(styles(w, message).Submit, 'success');
 
   await bot.handleUpdate(w.tg.tapButton(id, 'EU'));
   await bot.handleUpdate(w.tg.tapButton(id, 'Gamma'));
   await bot.handleUpdate(w.tg.tapButton(id, 'Alpha'));
   assert.equal(posts(w, '/respond').length, 0, 'a multi-question form waits for Submit');
-  assert.deepEqual(labels(w, message).slice(0, 5), ['1. ☑ EU', '1. ☐ US', '2. ☑ Alpha', '2. ☐ Beta', '2. ☑ Gamma']);
+  assert.deepEqual(labels(w, message).slice(0, 5), ['✓ 1 · EU', '1 · US', '✓ 2 · Alpha', '2 · Beta', '✓ 2 · Gamma']);
+  assert.equal(styles(w, message)['✓ 1 · EU'], 'primary');
+  assert.equal(styles(w, message)['1 · US'], null);
 
   // The text question is still open, so Submit is refused with an alert.
   await bot.handleUpdate(w.tg.tapButton(id, 'Submit'));
@@ -161,9 +168,10 @@ test('a tap on the chosen option again clears it in a multi-question form', asyn
     choiceQuestion('b', 'Second?', ['Yes', 'No'], { required: false }),
   ]);
   const { w, bot, message } = await cardWorld(t, { kind: 'ask_user_questions', payload });
-  await bot.handleUpdate(w.tg.tapButton(message.message_id, '1. ☐ Yes'));
-  await bot.handleUpdate(w.tg.tapButton(message.message_id, '1. ☑ Yes'));
-  assert.deepEqual(labels(w, message).slice(0, 2), ['1. ☐ Yes', '1. ☐ No']);
+  await bot.handleUpdate(w.tg.tapButton(message.message_id, '1 · Yes'));
+  assert.deepEqual(labels(w, message).slice(0, 2), ['✓ 1 · Yes', '1 · No']);
+  await bot.handleUpdate(w.tg.tapButton(message.message_id, '✓ 1 · Yes'));
+  assert.deepEqual(labels(w, message).slice(0, 2), ['1 · Yes', '1 · No']);
   await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Submit'));
   assert.match(w.tg.callbackAnswers.at(-1).text, /Answer the required question first/);
 });
@@ -183,7 +191,7 @@ test('checkbox card enforces the minimum and maximum before it calls accept', as
   };
   const { w, bot, interaction, message } = await cardWorld(t, { kind: 'request_checkbox_confirmation', payload });
   const id = message.message_id;
-  assert.deepEqual(labels(w, message), ['☐ Alpha', '☐ Beta', '☐ Gamma', 'Confirm', 'Decline']);
+  assert.deepEqual(labels(w, message), ['Alpha', 'Beta', 'Gamma', 'Confirm', 'Decline']);
 
   await bot.handleUpdate(w.tg.tapButton(id, 'Confirm'));
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Select at least 1');
@@ -193,7 +201,7 @@ test('checkbox card enforces the minimum and maximum before it calls accept', as
   await bot.handleUpdate(w.tg.tapButton(id, 'Beta'));
   await bot.handleUpdate(w.tg.tapButton(id, 'Gamma'));
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Select at most 2');
-  assert.deepEqual(labels(w, message).slice(0, 3), ['☑ Alpha', '☑ Beta', '☐ Gamma']);
+  assert.deepEqual(labels(w, message).slice(0, 3), ['✓ Alpha', '✓ Beta', 'Gamma']);
 
   await bot.handleUpdate(w.tg.tapButton(id, 'Confirm'));
   const accepts = posts(w, '/accept');
@@ -214,7 +222,7 @@ test('checkbox defaults are pre-selected and decline works', async (t) => {
     defaultSelectedOptionIds: ['b'],
   };
   const { w, bot, message } = await cardWorld(t, { kind: 'request_checkbox_confirmation', payload });
-  assert.deepEqual(labels(w, message).slice(0, 2), ['☐ Alpha', '☑ Beta']);
+  assert.deepEqual(labels(w, message).slice(0, 2), ['Alpha', '✓ Beta']);
   await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Decline'));
   assert.deepEqual(posts(w, '/reject')[0].body, {});
 });
@@ -224,7 +232,8 @@ test('cards the bot cannot render as buttons are text plus a link only', async (
   const big = await cardWorld(t, { kind: 'request_checkbox_confirmation', payload: { version: 1, prompt: 'Too many', options: many } });
   assert.deepEqual(labels(big.w, big.message), []);
   assert.match(big.message.text, /31 options: answer in Paperclip/);
-  assert.match(big.message.text, /Open in Paperclip/);
+  assert.match(big.message.text, /<a href="[^"]+#interaction-[^"]+">TST-1<\/a>/, 'the task id links to the card');
+  assert.ok(!big.message.text.includes('Open in Paperclip'));
 
   const verdicts = await cardWorld(t, {
     kind: 'request_item_verdicts',
@@ -313,7 +322,7 @@ test('a failed single-question submit keeps the form usable', async (t) => {
   await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Staging'));
   w.pc.setDropConnections(false);
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Paperclip unreachable, try again');
-  assert.deepEqual(labels(w, message), ['☐ Staging', '☐ Production']);
+  assert.deepEqual(labels(w, message), ['Staging', 'Production']);
   await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Staging'));
   assert.deepEqual(posts(w, '/respond').at(-1).body, { answers: [{ questionId: 'env', optionIds: ['env-opt1'] }] });
   assert.equal(w.pc.interactions.get(interaction.id).status, 'answered');
@@ -391,4 +400,109 @@ test('a reply to an old reason prompt whose card is gone is not posted as a comm
   await bot.handleUpdate(w.tg.message('Too risky', { replyTo: prompt.message_id }));
   assert.equal(posts(w, '/comments').length, 0);
   assert.equal(w.tg.lastMessage().text, "I don't know which task this is");
+});
+
+const SQUARES = /[☐-☒]/u;
+
+test('option buttons have no squares: plain when unselected, a check and primary when selected', async (t) => {
+  const many = await cardWorld(t, {
+    kind: 'ask_user_questions',
+    payload: questionsPayload([
+      choiceQuestion('region', 'Which region?', ['EU', 'US']),
+      choiceQuestion('features', 'Which features?', ['Alpha', 'Beta'], { multi: true }),
+    ]),
+  });
+  const id = many.message.message_id;
+  await many.bot.handleUpdate(many.w.tg.tapButton(id, 'Beta'));
+  assert.deepEqual(styles(many.w, many.message), {
+    '1 · EU': null,
+    '1 · US': null,
+    '2 · Alpha': null,
+    '✓ 2 · Beta': 'primary',
+    Submit: 'success',
+    [TASK_BUTTON]: null,
+  });
+
+  const single = await cardWorld(t, {
+    kind: 'ask_user_questions',
+    payload: questionsPayload([choiceQuestion('features', 'Which features?', ['Alpha', 'Beta'], { multi: true })]),
+  });
+  assert.deepEqual(labels(single.w, single.message), ['Alpha', 'Beta', 'Submit'], 'one question needs no number');
+  await single.bot.handleUpdate(single.w.tg.tapButton(single.message.message_id, 'Alpha'));
+  assert.deepEqual(labels(single.w, single.message), ['✓ Alpha', 'Beta', 'Submit']);
+
+  const checkbox = await cardWorld(t, {
+    kind: 'request_checkbox_confirmation',
+    payload: { version: 1, prompt: 'Pick', options: [{ id: 'a', label: 'Alpha' }, { id: 'b', label: 'Beta' }], defaultSelectedOptionIds: ['b'] },
+  });
+  assert.deepEqual(styles(checkbox.w, checkbox.message), {
+    Alpha: null,
+    '✓ Beta': 'primary',
+    Confirm: 'success',
+    Decline: 'danger',
+    [TASK_BUTTON]: null,
+  });
+
+  for (const world of [many, single, checkbox]) {
+    for (const button of world.w.tg.buttons(world.message.message_id)) assert.ok(!SQUARES.test(button.text), button.text);
+  }
+});
+
+test('a form lists numbered questions, marks optional ones and shows Answer only once answered', async (t) => {
+  const payload = questionsPayload([
+    choiceQuestion('region', 'Which region?', ['EU', 'US']),
+    choiceQuestion('features', 'Which features?', ['Alpha', 'Beta', 'Gamma'], { multi: true, required: false }),
+    textQuestion('notes', 'Notes'),
+  ]);
+  const { w, bot, issue, interaction, message } = await cardWorld(t, { kind: 'ask_user_questions', payload });
+  const head = `<b>Question</b> · <a href="${UI_BASE_URL}/TST/issues/${issue.identifier}#interaction-${interaction.id}">${issue.identifier}</a> Ship v2`;
+  assert.equal(
+    message.text,
+    `${head}\n\n1. Which region?\n2. Which features? (optional)\n3. Notes\n\nReply to this message to answer the text question.`,
+  );
+
+  const id = message.message_id;
+  await bot.handleUpdate(w.tg.tapButton(id, 'EU'));
+  await bot.handleUpdate(w.tg.tapButton(id, 'Gamma'));
+  await bot.handleUpdate(w.tg.message('ship it', { replyTo: id }));
+  const text = w.tg.messages.get(id).text;
+  assert.equal(text, `${head}\n\n1. Which region?\n   Answer: EU\n2. Which features? (optional)\n   Answer: Gamma\n3. Notes\n   Answer: “ship it”`);
+  assert.ok(!text.includes('*'), 'no star marks a required question');
+});
+
+test('a single question is not numbered and an unanswered optional one says so', async (t) => {
+  const payload = questionsPayload([choiceQuestion('features', 'Which features?', ['Alpha', 'Beta'], { multi: true, required: false })]);
+  const { w, bot, message } = await cardWorld(t, { kind: 'ask_user_questions', payload });
+  assert.match(message.text, /\n\nWhich features\? \(optional\)$/);
+  await bot.handleUpdate(w.tg.tapButton(message.message_id, 'Beta'));
+  assert.match(w.tg.messages.get(message.message_id).text, /\n\nWhich features\? \(optional\)\nAnswer: Beta$/);
+});
+
+test('custom accept and reject labels keep the success and danger colours', async (t) => {
+  const { w, message } = await cardWorld(t, {
+    kind: 'request_confirmation',
+    payload: confirmPayload({ acceptLabel: 'Ship it', rejectLabel: 'Not now' }),
+  });
+  assert.deepEqual(styles(w, message), { 'Ship it': 'success', 'Not now': 'danger', [TASK_BUTTON]: null });
+});
+
+test('a card in a task\'s own topic has no task id and no Open task; a subtask card in the parent topic has both', async (t) => {
+  const w = await startWorld({ telegram: { chatId: -1001234567890, forum: true }, config: { topics: 'auto' } });
+  t.after(() => w.close());
+  const bot = await w.primedBot();
+  const parent = w.pc.addIssue({ title: 'Big job', status: 'in_progress' });
+  const child = w.pc.addIssue({ title: 'Small step', status: 'in_review', parentId: parent.id });
+  await bot.pollOnce();
+  w.pc.addInteraction(parent.id, { kind: 'request_confirmation', payload: confirmPayload({ prompt: 'Start the job?' }) });
+  w.pc.addInteraction(child.id, { kind: 'request_confirmation', payload: confirmPayload({ prompt: 'Ship the step?' }) });
+  await bot.pollOnce();
+
+  const thread = bot.state.topics.get(parent.id).thread;
+  const own = w.tg.inTopic(thread).find((m) => m.text.includes('Start the job?'));
+  const sub = w.tg.inTopic(thread).find((m) => m.text.includes('Ship the step?'));
+  assert.match(own.text, /^<b>Question<\/b>\nStart the job\?$/);
+  assert.deepEqual(labels(w, own), ['Deploy', 'Hold']);
+  assert.ok(!w.tg.buttons(own.message_id).some((b) => b.text === TASK_BUTTON));
+  assert.match(sub.text, /^<b>Question<\/b> · <a href="[^"]+#interaction-[^"]+">TST-2<\/a> Small step\nShip the step\?$/);
+  assert.equal(w.tg.buttons(sub.message_id).at(-1).text, TASK_BUTTON);
 });

@@ -1,14 +1,16 @@
 import { authorName } from './comments.js';
 import { docsKeyboard, sendDocument } from './docs.js';
 import { followIssue, unfollowIssue } from './follow.js';
-import { ago, button, escapeHtml, fitMessage, flat, headline, issueUrl, link, statusName, truncate } from './format.js';
+import { ago, button, escapeHtml, fitMessage, headline, issueUrl, link, quote, statusName, truncate } from './format.js';
 import { PaperclipError } from './paperclip.js';
 import { ID_PREFIX, byPrefix } from './pick.js';
 import { ownTopic, threadOf } from './thread.js';
 
 export { ID_PREFIX, byPrefix };
 
-const COMMENT_COUNT = 3;
+const COMMENT_SCAN = 3;
+const CONFIRM_LABEL = 'Tap again to confirm';
+const HIGH_PRIORITIES = new Set(['high', 'critical']);
 const PICKER_PAGE = 8;
 const PICKER_AGENT_LIMIT = 40;
 const UNASSIGNABLE = new Set(['terminated', 'pending_approval']);
@@ -25,7 +27,7 @@ const LEVELS = [
 const MOVES = {
   d: { status: 'done', confirm: true, label: 'Done', done: 'Done' },
   t: { status: 'todo', confirm: false, label: 'To do', done: 'To do' },
-  x: { status: 'cancelled', confirm: true, label: 'Cancel', done: 'Cancelled' },
+  x: { status: 'cancelled', confirm: true, label: 'Cancel task', done: 'Cancelled' },
 };
 
 // Parses "ABC-12", "abc-12" or "12" (the most common company prefix is used for a bare number).
@@ -49,14 +51,14 @@ export async function guessPrefix(bot) {
 export async function loadTask(bot, ref) {
   const issue = await bot.pc.getIssue(ref);
   bot.state.notePrefix(issue.identifier);
-  const recent = await bot.pc.listComments(issue.id, { limit: COMMENT_COUNT + 2, order: 'desc' });
-  const comments = recent.filter((comment) => !comment.deletedAt).slice(0, COMMENT_COUNT).reverse();
-  const authors = await Promise.all(comments.map((comment) => authorName(bot, comment)));
+  const recent = await bot.pc.listComments(issue.id, { limit: COMMENT_SCAN, order: 'desc' });
+  const comment = recent.find((entry) => !entry.deletedAt) ?? null;
+  const author = comment ? await authorName(bot, comment) : null;
   let assignee = 'Unassigned';
   if (issue.assigneeAgentId) assignee = (await bot.agentName(issue.assigneeAgentId)) ?? 'An agent';
   else if (issue.assigneeUserId) assignee = 'You';
   const running = issue.executionRunId ? await runningAgentName(bot, issue.executionAgentNameKey) : null;
-  return { issue, comments, authors, assignee, running, project: issue.project?.name ?? null };
+  return { issue, comment, author, assignee, running, project: issue.project?.name ?? null };
 }
 
 // The agent holding the run: the server reports its lower-cased name, matched here to an agent's name or URL key.
@@ -68,59 +70,77 @@ async function runningAgentName(bot, nameKey) {
   return found?.name ?? 'An agent';
 }
 
-function composeTask(view, { kind, note, own, now, uiBaseUrl }, level) {
+// The status line: "In progress · Dev · Project · updated 5 min ago", with the priority only when it is high.
+function statusLine(view, now) {
   const { issue } = view;
-  const lines = [headline(kind, issue, { own, titleMax: level.title })];
+  const name = (value) => escapeHtml(truncate(value, 60));
+  const parts = [escapeHtml(statusName(issue.status)), view.running && view.running === view.assignee ? `${name(view.assignee)} running` : name(view.assignee)];
+  if (view.running && view.running !== view.assignee) parts.push(`${name(view.running)} running`);
+  if (view.project) parts.push(name(view.project));
+  parts.push(`updated ${ago(issue.updatedAt, now)}`);
+  if (HIGH_PRIORITIES.has(issue.priority)) parts.push(`${issue.priority} priority`);
+  return parts.join(' · ');
+}
+
+// `shown.id` ends up holding the comment the built text includes, if any.
+function composeTask(view, { note, own, now, uiBaseUrl, shown }, level) {
+  const { issue } = view;
+  const title = issue.title ? ` ${escapeHtml(truncate(issue.title, level.title))}` : '';
+  const lines = [`<b>${link(issueUrl(uiBaseUrl, issue.identifier), issue.identifier)}</b>${title}`];
   if (note) lines.push(escapeHtml(note));
-  lines.push(`Status: ${escapeHtml(statusName(issue.status))}`);
-  if (view.running) lines.push(`Running: ${escapeHtml(truncate(view.running, 60))}`);
-  lines.push(`Assignee: ${escapeHtml(truncate(view.assignee, 60))}`);
-  lines.push(`Project: ${escapeHtml(truncate(view.project ?? 'None', 60))}`);
-  lines.push(`Priority: ${escapeHtml(issue.priority ?? 'medium')}`);
-  lines.push(`Updated ${ago(issue.updatedAt, now)}`);
+  lines.push(statusLine(view, now));
   const description = String(issue.description ?? '').trim();
-  if (description && level.description > 0) lines.push('', escapeHtml(truncate(description, level.description)));
-  if (view.comments.length > 0 && level.comment > 0) {
-    lines.push('', '<b>Last comments</b>');
-    view.comments.forEach((comment, index) => {
-      lines.push(`- <b>${escapeHtml(truncate(view.authors[index], 60))}</b>: ${escapeHtml(truncate(flat(comment.body), level.comment))}`);
-    });
+  if (description && level.description > 0) lines.push(`<blockquote>${escapeHtml(truncate(description, level.description))}</blockquote>`);
+  shown.id = null;
+  const last = !own && level.comment > 0 && view.comment ? quote(view.comment.body, level.comment) : '';
+  if (last) {
+    lines.push(`<b>${escapeHtml(truncate(view.author, 60))}</b>`, last);
+    shown.id = view.comment.id;
   }
-  lines.push('', link(issueUrl(uiBaseUrl, issue.identifier), 'Open in Paperclip'));
   return lines.join('\n');
 }
 
-export function taskKeyboard(issue, { following, armed }) {
+// First keyboard: one row. `more` shows the second one with the rarer actions.
+export function taskKeyboard(issue, { following, armed, own = false, more = false }) {
   const id = issue.id;
-  const move = (op) => button(armed.has(op) ? 'Tap again to confirm' : MOVES[op].label, `T:${op}:${id}`);
+  const confirmable = (op, label, style) => button(armed.has(op) ? CONFIRM_LABEL : label, `T:${op}:${id}`, style);
+  const finished = issue.status === 'done' || issue.status === 'cancelled';
+  if (!more) {
+    const row = [finished ? button('Reopen', `T:t:${id}`, 'primary') : confirmable('d', MOVES.d.label, 'success')];
+    if (issue.executionRunId) row.push(button(armed.has('s') ? CONFIRM_LABEL : 'Stop run', `T:s:${id}:${issue.executionRunId.slice(0, ID_PREFIX)}`, 'danger'));
+    row.push(button('More', `T:m:${id}`));
+    return [row];
+  }
   const moves = [];
-  if (issue.status !== 'done') moves.push(move('d'));
-  if (issue.status !== 'todo') moves.push(move('t'));
-  if (issue.status !== 'cancelled') moves.push(move('x'));
+  if (issue.status !== 'todo') moves.push(button(MOVES.t.label, `T:t:${id}`));
+  if (issue.status !== 'cancelled') moves.push(confirmable('x', MOVES.x.label, 'danger'));
+  const others = [];
+  if (issue.documentSummaries?.length > 0) others.push(button('Docs', `T:l:${id}`));
+  if (!own) others.push(button(following ? 'Unfollow' : 'Follow', `T:f:${id}`));
   const rows = [
-    [button('Comment', `T:c:${id}`), button('Refresh', `T:r:${id}`)],
-    moves,
     [button('Assign', `T:a:${id}`), button('Project', `T:p:${id}:0`)],
-    [following ? button('Unfollow', `T:f:${id}`) : button('Follow', `T:f:${id}`)],
+    moves,
+    others,
+    own ? [] : [button('Comment', `T:c:${id}`)],
+    [button('Refresh', `T:r:${id}`), button('◀ Back', `T:b:${id}`)],
   ];
-  if (issue.documentSummaries?.length > 0) rows[3].push(button('Docs', `T:l:${id}`));
-  if (issue.executionRunId) rows.push([button(armed.has('s') ? 'Tap again to confirm' : 'Stop run', `T:s:${id}:${issue.executionRunId.slice(0, ID_PREFIX)}`)]);
-  return rows;
+  return rows.filter((row) => row.length > 0);
 }
 
-export function renderTask(bot, view, { kind = 'Task', note = null, own = false, armed = new Set() } = {}) {
-  const context = { kind, note, own, now: bot.now(), uiBaseUrl: bot.config.uiBaseUrl };
-  return {
-    text: fitMessage((level) => composeTask(view, context, level), LEVELS),
-    keyboard: taskKeyboard(view.issue, { following: bot.state.isFollowing(view.issue.id), armed }),
-  };
+export function renderTask(bot, view, { note = null, own = false, armed = new Set(), more = false } = {}) {
+  const shown = { id: null };
+  const context = { note, own, now: bot.now(), uiBaseUrl: bot.config.uiBaseUrl, shown };
+  // The last build is the one that fits, so `shown` describes the returned text.
+  const text = fitMessage((level) => composeTask(view, context, level), LEVELS);
+  return { text, keyboard: taskKeyboard(view.issue, { following: bot.state.isFollowing(view.issue.id), armed, own, more }), shownCommentId: shown.id };
 }
 
 // Sends an already loaded task view as a new message; replies to it become comments on the task.
-export async function sendLoadedView(bot, view, { kind = 'Task', note = null, replyTo, thread = null } = {}) {
+export async function sendLoadedView(bot, view, { note = null, replyTo, thread = null } = {}) {
   const { issue } = view;
-  const { text, keyboard } = renderTask(bot, view, { kind, note, own: ownTopic(bot, issue.id, thread) });
+  const { text, keyboard, shownCommentId } = renderTask(bot, view, { note, own: ownTopic(bot, issue.id, thread) });
   const messageId = await bot.send(text, { keyboard, replyTo, thread, issue: { id: issue.id, identifier: issue.identifier } });
+  bot.state.noteShown(shownCommentId);
   return { issue, messageId };
 }
 
@@ -129,11 +149,12 @@ export async function sendTaskView(bot, ref, options = {}) {
 }
 
 // Re-reads the task and edits the view message in place.
-async function showTask(bot, message, ref, view) {
+async function showTask(bot, message, ref, view, { more = false } = {}) {
   const current = view ?? (await loadTask(bot, ref));
   const own = ownTopic(bot, current.issue.id, threadOf(bot, message));
-  const { text, keyboard } = renderTask(bot, current, { own, armed: bot.armedOps(message.message_id) });
+  const { text, keyboard, shownCommentId } = renderTask(bot, current, { own, armed: bot.armedOps(message.message_id), more });
   await bot.edit(message.message_id, text, keyboard);
+  bot.state.noteShown(shownCommentId);
 }
 
 // What the owner is told when Paperclip refuses or fails a button action.
@@ -153,9 +174,11 @@ async function moveStatus(bot, cq, issueId, op) {
   const move = MOVES[op];
   const messageId = cq.message.message_id;
   if (move.confirm && !bot.isArmed(messageId, op)) {
-    bot.arm(messageId, op, () => showTask(bot, cq.message, issueId));
-    await showTask(bot, cq.message, issueId);
-    return bot.answer(cq.id, 'Tap again to confirm');
+    // Cancel task sits on the second keyboard, so that is the one redrawn.
+    const more = op === 'x';
+    bot.arm(messageId, op, () => showTask(bot, cq.message, issueId, null, { more }));
+    await showTask(bot, cq.message, issueId, null, { more });
+    return bot.answer(cq.id, CONFIRM_LABEL);
   }
   await bot.pc.updateIssue(issueId, { status: move.status });
   bot.disarm(messageId);
@@ -169,7 +192,7 @@ async function stopRun(bot, cq, issueId, prefix) {
   if (!bot.isArmed(messageId, 's')) {
     bot.arm(messageId, 's', () => showTask(bot, cq.message, issueId));
     await showTask(bot, cq.message, issueId);
-    return bot.answer(cq.id, 'Tap again to confirm');
+    return bot.answer(cq.id, CONFIRM_LABEL);
   }
   bot.disarm(messageId);
   const { executionRunId: runId } = await bot.pc.getIssue(issueId);
@@ -180,6 +203,15 @@ async function stopRun(bot, cq, issueId, prefix) {
   await bot.pc.cancelRun(runId);
   await showTask(bot, cq.message, issueId);
   return bot.answer(cq.id, 'Run stopped');
+}
+
+// Turns the first keyboard of the task view into the second one.
+async function openMore(bot, cq, issueId) {
+  const issue = await bot.pc.getIssue(issueId);
+  const own = ownTopic(bot, issue.id, threadOf(bot, cq.message));
+  const keyboard = taskKeyboard(issue, { following: bot.state.isFollowing(issue.id), armed: bot.armedOps(cq.message.message_id), own, more: true });
+  await bot.editKeyboard(cq.message.message_id, keyboard);
+  return bot.answer(cq.id);
 }
 
 // Turns the buttons of the task view into one button per document.
@@ -267,7 +299,7 @@ async function toggleFollow(bot, cq, issueId) {
 
 async function askForComment(bot, cq, issueId) {
   const identifier = bot.state.identifiers.get(issueId);
-  const lead = identifier ? `${headline('Comment', { identifier })}\n` : '';
+  const lead = identifier ? `${headline('Comment', { identifier }, { url: issueUrl(bot.config.uiBaseUrl, identifier) })}\n` : '';
   await bot.send(`${lead}Reply to this message with your comment.`, {
     replyTo: cq.message.message_id,
     thread: threadOf(bot, cq.message),
@@ -290,6 +322,7 @@ export async function handleTaskCallback(bot, cq) {
       return await bot.answer(cq.id, 'Refreshed');
     }
     if (op === 'c') return await askForComment(bot, cq, issueId);
+    if (op === 'm') return await openMore(bot, cq, issueId);
     if (MOVES[op]) return await moveStatus(bot, cq, issueId, op);
     if (op === 'a') return await openAgentPicker(bot, cq, issueId);
     if (op === 'A') return await assign(bot, cq, issueId, arg ?? '');

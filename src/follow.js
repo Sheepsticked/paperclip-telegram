@@ -1,5 +1,5 @@
 import { authorName, isBoardComment } from './comments.js';
-import { escapeHtml, headline, issueUrl, link, taskButton, truncate, truncateLines } from './format.js';
+import { QUOTE_LEVELS, fitMessage, headline, issueUrl, openRows, quote } from './format.js';
 import { isTelegramOutage, isUnauthorized } from './guard.js';
 import { gate } from './settings.js';
 import { PaperclipError } from './paperclip.js';
@@ -32,22 +32,22 @@ export function unfollowIssue(bot, issueId) {
   return removed;
 }
 
+// One followed comment: the author's name is the kind, the text follows as a quote.
 async function sendFollowComment(bot, issue, comment) {
   const author = await authorName(bot, comment);
-  const excerpt = truncateLines(comment.body, 5, 400);
   await bot.sendAbout(issue, ({ own }) => {
-    const lines = [headline('Comment', issue, { own }), `From ${escapeHtml(truncate(author, 80))}`];
-    if (excerpt) lines.push(`<blockquote>${escapeHtml(excerpt)}</blockquote>`);
-    lines.push(link(issueUrl(bot.config.uiBaseUrl, issue.identifier), 'Open in Paperclip'));
-    return { text: lines.join('\n'), keyboard: [[taskButton(issue.id)]] };
+    const head = headline(author, issue, { own, url: issueUrl(bot.config.uiBaseUrl, issue.identifier) });
+    const text = fitMessage((max) => [head, quote(comment.body, max)].filter(Boolean).join('\n'), QUOTE_LEVELS);
+    return { text, keyboard: openRows(issue.id, own) };
   });
+  bot.state.noteShown(comment.id);
 }
 
 async function sendFollowBurst(bot, issue, count) {
-  await bot.sendAbout(issue, ({ own }) => {
-    const lines = [headline('Comment', issue, { own }), `${count} new comments`, link(issueUrl(bot.config.uiBaseUrl, issue.identifier), 'Open in Paperclip')];
-    return { text: lines.join('\n'), keyboard: [[taskButton(issue.id)]] };
-  });
+  await bot.sendAbout(issue, ({ own }) => ({
+    text: headline(`${count} new comments`, issue, { own, url: issueUrl(bot.config.uiBaseUrl, issue.identifier) }),
+    keyboard: openRows(issue.id, own),
+  }));
 }
 
 const moveCursor = (entry, comment) => {
@@ -73,7 +73,7 @@ async function readFresh(bot, issue, entry) {
 }
 
 // Sends the new comments that are not the owner's, and moves the cursor.
-async function followOne(bot, issue, entry, quoted) {
+async function followOne(bot, issue, entry) {
   const { state } = bot;
   entry.title = issue.title;
   entry.status = issue.status;
@@ -81,7 +81,7 @@ async function followOne(bot, issue, entry, quoted) {
   const fresh = await readFresh(bot, issue, entry);
   const eligible = fresh.filter((comment) => !comment.deletedAt && !isBoardComment(comment));
   const mode = eligible.length > 0 ? gate(bot, 'followedComments') : 'off';
-  const toSend = eligible.filter((comment) => !quoted.has(comment.id));
+  const toSend = eligible.filter((comment) => !state.hasShown(comment.id));
 
   if (mode === 'muted') {
     for (let i = 0; i < toSend.length; i += 1) state.countMuted('comments');
@@ -123,15 +123,15 @@ async function retriedFollowed(bot, updatedIssues) {
   return issues;
 }
 
-// Sends the new non-owner comments of followed tasks that changed; `quoted` holds comment ids already sent as quotes.
+// Sends the new non-owner comments of followed tasks that changed, except those the chat already showed.
 // One task failing does not stop the others; it is read again on the next poll, up to MAX_FOLLOW_TRIES times.
-export async function pollFollowing(bot, updatedIssues, quoted) {
+export async function pollFollowing(bot, updatedIssues) {
   const { state } = bot;
   for (const issue of [...updatedIssues, ...(await retriedFollowed(bot, updatedIssues))]) {
     const entry = state.following.get(issue.id);
     if (!entry) continue;
     try {
-      await followOne(bot, issue, entry, quoted);
+      await followOne(bot, issue, entry);
       entry.retry = 0;
     } catch (err) {
       // A rejected token or an unreachable Telegram fails the poll, so the window is read again.

@@ -2,7 +2,7 @@ import { findCardByMessage, findCardByReasonPrompt, handleReasonReply, handleTex
 import { commandAgents } from './agents.js';
 import { NEW_USAGE, askProjectForNew, createTask, offerTask, parseNewArgs, resolveTargets } from './create.js';
 import { attachToTask, fileOf } from './files.js';
-import { headline, issueUrl, link } from './format.js';
+import { headline, issueUrl } from './format.js';
 import { handleNoteReply } from './inbox.js';
 import { commandFind, commandFollowing, commandStatus, commandTasks } from './lists.js';
 import { PaperclipError } from './paperclip.js';
@@ -101,9 +101,8 @@ async function postComment(bot, msg, issue) {
     return undefined;
   }
   if (bot.topics.on && (await bot.react(msg.message_id))) return undefined;
-  const lines = [issue.identifier ? headline('Comment', issue) : '<b>Comment</b>', 'Posted'];
-  if (issue.identifier) lines.push(link(issueUrl(bot.config.uiBaseUrl, issue.identifier), 'Open in Paperclip'));
-  return reply(bot, msg, lines.join('\n'), issue);
+  const url = issue.identifier ? issueUrl(bot.config.uiBaseUrl, issue.identifier) : null;
+  return reply(bot, msg, issue.identifier ? headline('Comment posted', issue, { url }) : '<b>Comment posted</b>', issue);
 }
 
 // The task a reply belongs to: the one its message was about, the card's, or the topic's.

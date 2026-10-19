@@ -1,6 +1,6 @@
 import { refreshCard, sendCard } from './actions.js';
 import { pollFollowing } from './follow.js';
-import { escapeHtml, firstLine, headline, issueUrl, link, prefixOf, runUrl, taskButton, truncate, truncateLines } from './format.js';
+import { QUOTE_LEVELS, escapeHtml, firstLine, fitMessage, headline, issueUrl, kindWord, openRows, prefixOf, quote, runUrl, truncate } from './format.js';
 import { guarded, isTelegramOutage, isUnauthorized } from './guard.js';
 import { INBOX_KINDS, isFreshInbox, itemIssueId, sendInboxItem, syncInbox } from './inbox.js';
 import { PaperclipError } from './paperclip.js';
@@ -165,13 +165,16 @@ async function sendRunAlert(bot, item) {
   const reason = truncate(firstLine(meta.error ?? meta.retryExhaustedReason ?? item.detail?.failureReasonExcerpt ?? ''), 200);
   const detail = [meta.errorCode, reason].filter(Boolean).join(' — ');
   const url = runUrl(bot.config.uiBaseUrl, runPrefix(item), meta.agentId, item.subject.id);
-  const compose = (head, body) => [head, ...body.filter(Boolean).map(escapeHtml), link(url, 'Open in Paperclip')].join('\n');
+  const compose = (head, body) => [head, ...body.filter(Boolean).map(escapeHtml)].join('\n');
   if (!issue) {
-    await bot.send(compose(`<b>Run failed</b> · ${escapeHtml(truncate(agent, 80))}`, [detail]));
+    await bot.send(compose(`${kindWord('Run failed', url)} · ${escapeHtml(truncate(agent, 80))}`, [detail]));
     return;
   }
   const who = [truncate(agent, 80), detail].filter(Boolean).join(': ');
-  await bot.sendAbout(issue, ({ own }) => ({ text: compose(headline('Run failed', issue, { own }), [who]), keyboard: [[taskButton(issue.id)]] }));
+  await bot.sendAbout(issue, ({ own }) => ({
+    text: compose(headline('Run failed', issue, { own, kindUrl: url }), [who]),
+    keyboard: openRows(issue.id, own),
+  }));
 }
 
 async function alertFailedRuns(bot, failedRuns) {
@@ -216,18 +219,23 @@ async function lastAgentComment(bot, issueId) {
   }
 }
 
-// Sends the done / in-review message and returns the id of the comment it quotes, if any.
+// Sends the done / in-review message. It quotes the last agent comment unless the chat already showed that comment.
 async function sendStatusUpdate(bot, issue) {
-  const done = issue.status === 'done';
-  const comment = await lastAgentComment(bot, issue.id);
-  const excerpt = comment ? truncateLines(comment.body, 5, 400) : '';
+  const kind = issue.status === 'done' ? 'Done' : 'In review';
+  const found = await lastAgentComment(bot, issue.id);
+  const comment = found && !bot.state.hasShown(found.id) ? found : null;
+  let quoted = false;
   await bot.sendAbout(issue, ({ own }) => {
-    const lines = [headline(done ? 'Done' : 'In review', issue, { own })];
-    if (excerpt) lines.push(`<blockquote>${escapeHtml(excerpt)}</blockquote>`);
-    lines.push(link(issueUrl(bot.config.uiBaseUrl, issue.identifier), 'Open in Paperclip'));
-    return { text: lines.join('\n'), keyboard: [[taskButton(issue.id)]] };
+    const head = headline(kind, issue, { own, url: issueUrl(bot.config.uiBaseUrl, issue.identifier) });
+    const build = (max) => {
+      const body = comment ? quote(comment.body, max) : '';
+      quoted = body !== '';
+      return [head, body].filter(Boolean).join('\n');
+    };
+    // The last build is the one that fits, so `quoted` describes the sent text.
+    return { text: fitMessage(build, QUOTE_LEVELS), keyboard: openRows(issue.id, own) };
   });
-  return excerpt ? comment.id : null;
+  if (quoted) bot.state.noteShown(comment.id);
 }
 
 // Issues whose status message failed earlier may have left the update window, so they are read again.
@@ -264,11 +272,10 @@ async function retriedIssues(bot, updated) {
 }
 
 // Sends one done / in-review message. A failed one is tried again on the next poll and given up after MAX_STATUS_TRIES.
-async function deliverStatus(bot, issue, quoted, reviewed) {
+async function deliverStatus(bot, issue, reviewed) {
   const { state } = bot;
   try {
-    const quote = await sendStatusUpdate(bot, issue);
-    if (quote) quoted.add(quote);
+    await sendStatusUpdate(bot, issue);
     if (issue.status === 'in_review') {
       reviewed.add(issue.id);
       state.noteReviewSent(issue.id);
@@ -320,7 +327,6 @@ async function reportStatusChanges(bot, sentIssueIds) {
     return send;
   });
 
-  const quoted = new Set();
   const reviewed = new Set();
   if (outgoing.length > CHANGE_SUMMARY_THRESHOLD) {
     const done = outgoing.filter((issue) => issue.status === 'done').length;
@@ -334,10 +340,10 @@ async function reportStatusChanges(bot, sentIssueIds) {
       }
     }
   } else {
-    for (const issue of outgoing.reverse()) await deliverStatus(bot, issue, quoted, reviewed);
+    for (const issue of outgoing.reverse()) await deliverStatus(bot, issue, reviewed);
   }
   await guarded(bot, 'the topic sync', () => syncTopics(bot, updated));
-  await pollFollowing(bot, updated, quoted);
+  await pollFollowing(bot, updated);
   return reviewed;
 }
 

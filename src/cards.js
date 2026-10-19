@@ -1,4 +1,4 @@
-import { button, cardUrl, escapeHtml, fitMessage, headline, link, taskButton, truncate } from './format.js';
+import { button, cardUrl, escapeHtml, fitMessage, headline, openRows, truncate } from './format.js';
 
 export const MAX_CHECKBOX_OPTIONS = 30;
 export const MAX_FORM_QUESTIONS = 20;
@@ -13,15 +13,8 @@ const LEVELS = [
   { title: 50, prompt: 0, details: 0, preview: 0, question: 0, answer: 0 },
 ];
 
-// The first word of line 1 for each kind of card.
-const CARD_KINDS = {
-  request_confirmation: 'Approval',
-  request_checkbox_confirmation: 'Decision',
-  ask_user_questions: 'Question',
-  request_item_verdicts: 'Review',
-  suggest_tasks: 'Decision',
-  connection_intent: 'Approval',
-};
+// Every card is an agent asking the owner something; real Paperclip approvals have their own message kind.
+const CARD_KIND = 'Question';
 
 const KIND_LABELS = {
   request_item_verdicts: 'Verdicts requested',
@@ -169,7 +162,7 @@ function questionLabel(q) {
 function composeText(card, uiBaseUrl, level) {
   const lines = [];
   const issue = { identifier: card.identifier, title: card.issueTitle };
-  lines.push(headline(CARD_KINDS[card.kind] ?? 'Decision', issue, { own: card.own, titleMax: level.title }));
+  lines.push(headline(CARD_KIND, issue, { own: card.own, titleMax: level.title, url: cardUrl(uiBaseUrl, card.identifier, card.interactionId) }));
   if (level.prompt > 0) {
     if (card.cardTitle && card.cardTitle !== card.prompt) lines.push(`<b>${escapeHtml(truncate(card.cardTitle, 200))}</b>`);
     if (card.prompt) lines.push(escapeHtml(truncate(card.prompt, level.prompt)));
@@ -182,55 +175,55 @@ function composeText(card, uiBaseUrl, level) {
     if (card.note) lines.push('', escapeHtml(card.note));
     if (card.mode === 'form' && level.question > 0) {
       lines.push('');
+      const numbered = card.questions.length > 1;
       card.questions.forEach((q, index) => {
-        lines.push(`${index + 1}. ${escapeHtml(truncate(q.prompt, level.question))}${q.required ? ' *' : ''}`);
+        lines.push(`${numbered ? `${index + 1}. ` : ''}${escapeHtml(truncate(q.prompt, level.question))}${q.required ? '' : ' (optional)'}`);
         const answer = card.answers[index];
-        let shown = '—';
+        let shown = null;
         if (q.mode === 'text' && answer.text) shown = `“${truncate(answer.text, level.answer)}”`;
-        else if (q.mode !== 'text' && answer.sel.length > 0) {
-          shown = answer.sel.map((i) => truncate(q.options[i].label, 60)).join(', ');
-        }
-        lines.push(`   Answer: ${escapeHtml(shown)}`);
+        else if (q.mode !== 'text' && answer.sel.length > 0) shown = answer.sel.map((i) => truncate(q.options[i].label, 60)).join(', ');
+        if (shown) lines.push(`${numbered ? '   ' : ''}Answer: ${escapeHtml(shown)}`);
       });
       if (card.status === 'pending' && openTextQuestion(card) >= 0) lines.push('', 'Reply to this message to answer the text question.');
     }
     if (card.reasonPromptMessageId && card.status === 'pending') lines.push('', 'Waiting for the decline reason (reply to the prompt below).');
   }
-  lines.push('', link(cardUrl(uiBaseUrl, card.identifier, card.interactionId), 'Open in Paperclip'));
   if (card.resolution) lines.push('', escapeHtml(card.resolution));
   return lines.join('\n');
 }
 
+// A choice button: the plain label, or a blue one with a check mark when selected.
+function choiceButton(label, on, data) {
+  return on ? button(`✓ ${label}`, data, 'primary') : button(label, data);
+}
+
 function answerRows(card) {
   const k = card.key;
-  if (card.mode === 'confirm') {
-    return [[button(card.confirm.acceptLabel, `${k}:a`), button(card.confirm.rejectLabel, `${k}:d`)]];
-  }
+  const decide = () => [button(card.confirm.acceptLabel, `${k}:a`, 'success'), button(card.confirm.rejectLabel, `${k}:d`, 'danger')];
+  if (card.mode === 'confirm') return [decide()];
   if (card.mode === 'checkbox') {
-    const rows = card.options.map((option, i) => [button(`${card.selected[i] ? '☑' : '☐'} ${option.label}`, `${k}:t:${i}`)]);
-    rows.push([button(card.confirm.acceptLabel, `${k}:a`), button(card.confirm.rejectLabel, `${k}:d`)]);
+    const rows = card.options.map((option, i) => [choiceButton(option.label, card.selected[i], `${k}:t:${i}`)]);
+    rows.push(decide());
     return rows;
   }
   if (card.mode === 'form') {
     const rows = [];
     card.questions.forEach((q, qi) => {
       q.options.forEach((option, oi) => {
-        const on = card.answers[qi].sel.includes(oi);
-        const mark = on ? '☑' : '☐';
-        const prefix = card.questions.length > 1 ? `${qi + 1}. ` : '';
-        rows.push([button(`${prefix}${mark} ${option.label}`, `${k}:o:${qi}:${oi}`)]);
+        const prefix = card.questions.length > 1 ? `${qi + 1} · ` : '';
+        rows.push([choiceButton(`${prefix}${option.label}`, card.answers[qi].sel.includes(oi), `${k}:o:${qi}:${oi}`)]);
       });
     });
-    if (!isInstantForm(card)) rows.push([button(card.submitLabel, `${k}:s`)]);
+    if (!isInstantForm(card)) rows.push([button(card.submitLabel, `${k}:s`, 'success')]);
     return rows;
   }
   return [];
 }
 
-// Pending cards get the answer buttons plus a button that opens the task.
+// Pending cards get the answer buttons, plus a button that opens the task outside the task's own topic.
 function keyboardFor(card) {
   if (card.status !== 'pending') return [];
-  return [...answerRows(card), [taskButton(card.issueId)]];
+  return [...answerRows(card), ...openRows(card.issueId, card.own)];
 }
 
 export function renderCard(card, uiBaseUrl) {

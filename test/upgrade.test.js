@@ -8,7 +8,8 @@ const GROUP_ID = -1001234567890;
 const V1_STATE = fs.readFileSync(new URL('./fixtures/v1-state.json', import.meta.url), 'utf8');
 
 const posts = (w, suffix) => w.pc.requests.filter((r) => r.method === 'POST' && r.path.endsWith(suffix));
-const headOf = (message) => message.text.match(/^<b>([^<]+)<\/b>/)?.[1];
+// The kind word that starts a message, with or without a link around it.
+const headOf = (message) => message.text.match(/^<b>(?:<a [^>]*>)?([^<]+)/)?.[1];
 
 // Four tasks and two interactions on the fake server that match the ids in the state file written by the first version.
 function seedV1(w) {

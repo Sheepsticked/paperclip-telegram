@@ -13,8 +13,14 @@ async function setup(t, options) {
   return { w, bot };
 }
 
+const ISSUE_URL = `${UI_BASE_URL}/TST/issues/TST-1`;
+const HEAD = `<a href="${ISSUE_URL}">TST-1</a> Followed work`;
+
 const rowsOf = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => b.text));
-const followMessages = (w) => w.tg.sent().filter((m) => m.text.startsWith('<b>Comment</b>'));
+// Followed comments are the messages that are not a done or in-review message; the kind word is the author's name.
+const followMessages = (w) => w.tg.sent().filter((m) => !/^<b>(Done|In review)<\/b>/.test(m.text));
+// The text of a message's block quote, unescaped.
+const quoted = (message) => /<blockquote[^>]*>([^]*)<\/blockquote>/.exec(message.text)[1].replaceAll('&lt;', '<').replaceAll('&amp;', '&');
 
 async function followed(w, bot, fields = {}) {
   const issue = w.pc.addIssue({ title: 'Followed work', status: 'in_progress', assigneeAgentId: 'agent-1', ...fields });
@@ -22,7 +28,7 @@ async function followed(w, bot, fields = {}) {
   return issue;
 }
 
-test('a new agent comment on a followed task is sent with an excerpt and a task button', async (t) => {
+test('a new agent comment on a followed task is sent as a quote under a linked id, with a task button', async (t) => {
   const { w, bot } = await setup(t);
   const issue = await followed(w, bot);
   w.pc.addComment(issue.id, { body: 'Found the <root> cause & fixed it.' });
@@ -31,7 +37,7 @@ test('a new agent comment on a followed task is sent with an excerpt and a task 
   const [message] = followMessages(w);
   assert.equal(
     message.text,
-    `<b>Comment</b> · TST-1 Followed work\nFrom Dev\n<blockquote>Found the &lt;root&gt; cause &amp; fixed it.</blockquote>\n<a href="${UI_BASE_URL}/TST/issues/TST-1">Open in Paperclip</a>`,
+    `<b>Dev</b> · ${HEAD}\n<blockquote>Found the &lt;root&gt; cause &amp; fixed it.</blockquote>`,
   );
   assert.equal(validateTelegramHtml(message.text), null);
   assert.deepEqual(rowsOf(w, message.message_id), [['Open task']]);
@@ -75,28 +81,56 @@ test('agents that post as the local board user, system notes and deleted comment
   w.pc.addComment(issue.id, { body: 'Taken back', deletedAt: new Date().toISOString() });
   await bot.pollOnce();
 
-  const heads = followMessages(w).map((m) => m.text.split('\n').slice(0, 2));
-  assert.deepEqual(heads, [
-    ['<b>Comment</b> · TST-1 Followed work', 'From Dev'],
-    ['<b>Comment</b> · TST-1 Followed work', 'From An agent'],
-    ['<b>Comment</b> · TST-1 Followed work', 'From System'],
+  assert.deepEqual(followMessages(w).map((m) => m.text.split('\n')), [
+    [`<b>Dev</b> · ${HEAD}`, '<blockquote>Posted by Dev through the board key</blockquote>'],
+    [`<b>An agent</b> · ${HEAD}`, '<blockquote>Unknown poster</blockquote>'],
+    [`<b>System</b> · ${HEAD}`, '<blockquote>Run finished</blockquote>'],
   ]);
   assert.ok(!w.tg.sent().some((m) => m.text.includes('Taken back')));
 });
 
-test('an excerpt is cut at five lines and 400 characters', async (t) => {
+test('a quote of up to three lines and 300 characters is plain, a longer one is expandable', async (t) => {
   const { w, bot } = await setup(t);
   const issue = await followed(w, bot);
-  w.pc.addComment(issue.id, { body: Array.from({ length: 8 }, (_, i) => `line ${i + 1}`).join('\n') });
-  w.pc.addComment(issue.id, { body: 'x'.repeat(2000) });
+  const bodies = ['one\ntwo\nthree', 'one\ntwo\nthree\nfour', 'x'.repeat(300), 'x'.repeat(301), 'one\n\n\n\ntwo\n\nthree'];
+  for (const body of bodies) w.pc.addComment(issue.id, { body });
   await bot.pollOnce();
 
-  const [lines, long] = followMessages(w);
-  assert.match(lines.text, /<blockquote>line 1\nline 2\nline 3\nline 4\nline 5…<\/blockquote>/);
-  assert.ok(!lines.text.includes('line 6'));
-  const quote = /<blockquote>([^<]*)<\/blockquote>/.exec(long.text)[1];
-  assert.ok(quote.length <= 401);
-  assert.ok(quote.endsWith('…'));
+  assert.deepEqual(
+    followMessages(w).map((m) => /<blockquote( expandable)?>/.exec(m.text)[0]),
+    ['<blockquote>', '<blockquote expandable>', '<blockquote>', '<blockquote expandable>', '<blockquote>'],
+  );
+  assert.ok(followMessages(w).at(-1).text.endsWith('<blockquote>one\n\ntwo\n\nthree</blockquote>'), 'a run of blank lines becomes one');
+});
+
+test('a comment is cut to 2000 characters and shown in an expandable quote', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await followed(w, bot);
+  w.pc.addComment(issue.id, { body: 'x'.repeat(2500) });
+  await bot.pollOnce();
+
+  const [message] = followMessages(w);
+  const text = quoted(message);
+  assert.equal(Array.from(text).length, 2000);
+  assert.ok(text.endsWith('…'));
+  assert.ok(message.text.includes('<blockquote expandable>'));
+});
+
+test('special characters that double the length of a quote make it shrink until the message fits', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await followed(w, bot);
+  w.pc.addComment(issue.id, { body: '<x'.repeat(1500) });
+  w.pc.addComment(issue.id, { body: '&'.repeat(2000) });
+  await bot.pollOnce();
+
+  const [mixed, ampersands] = followMessages(w);
+  for (const message of [mixed, ampersands]) {
+    assert.ok(message.text.length <= 4096);
+    assert.equal(validateTelegramHtml(message.text), null);
+    assert.ok(quoted(message).endsWith('…'));
+  }
+  assert.equal(Array.from(quoted(mixed)).length, 1000, 'the second level of the quote budget');
+  assert.equal(Array.from(quoted(ampersands)).length, 400, 'the third level of the quote budget');
 });
 
 test('up to five new comments are sent one by one, more are summarised', async (t) => {
@@ -113,7 +147,7 @@ test('up to five new comments are sent one by one, more are summarised', async (
   await bot.pollOnce();
   const burst = followMessages(w).at(-1);
   assert.equal(followMessages(w).length, 6);
-  assert.match(burst.text, /^<b>Comment<\/b> · TST-1 Followed work\n6 new comments\n<a href="[^"]+">Open in Paperclip<\/a>$/);
+  assert.equal(burst.text, `<b>6 new comments</b> · ${HEAD}`);
   assert.deepEqual(rowsOf(w, burst.message_id), [['Open task']]);
   assert.equal(bot.state.following.get(issue.id).lastSeenCommentId, w.pc.comments.at(-1).id);
 });
@@ -125,7 +159,7 @@ test('a long comment backlog is read in pages and summarised', async (t) => {
   w.pc.requests.length = 0;
   await bot.pollOnce();
 
-  assert.match(followMessages(w).at(-1).text, /^120 new comments$/m);
+  assert.equal(followMessages(w).at(-1).text, `<b>120 new comments</b> · ${HEAD}`);
   const reads = w.pc.requests.filter((r) => r.method === 'GET' && r.path.endsWith('/comments'));
   assert.equal(reads.length, 3);
   assert.match(reads[0].query, /order=asc/);
@@ -170,7 +204,7 @@ test('a done message that quotes the last comment is the only message and ends t
 
   const sent = w.tg.sent().filter((m) => m.text.includes('All finished'));
   assert.equal(sent.length, 1);
-  assert.match(sent[0].text, /^<b>Done<\/b> · TST-1/);
+  assert.equal(sent[0].text, `<b>Done</b> · ${HEAD}\n<blockquote>All finished, see the result.</blockquote>`);
   assert.equal(bot.state.following.size, 0, 'a finished task is no longer followed');
 });
 
@@ -255,6 +289,7 @@ test('the follow list holds fifty tasks and drops the oldest', async (t) => {
   const extra = w.pc.addIssue({ title: 'One too many' });
   await bot.handleUpdate(w.tg.message(`/task ${extra.identifier}`));
   const view = w.tg.lastMessage();
+  await bot.handleUpdate(w.tg.tapButton(view.message_id, 'More'));
   await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Follow'));
   assert.equal(bot.state.following.size, 50);
   assert.ok(!bot.state.isFollowing(first.id));
@@ -328,4 +363,92 @@ test('a task that changed without a new comment does not replay comments when th
   w.pc.setStatus(issue.id, 'blocked');
   await bot.pollOnce();
   assert.equal(followMessages(w).length, 0);
+});
+
+test('a status message quotes only the last comment, earlier comments of the same poll are still sent', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await followed(w, bot);
+  const first = w.pc.addComment(issue.id, { body: 'First note' });
+  const second = w.pc.addComment(issue.id, { body: 'Second note' });
+  w.pc.setStatus(issue.id, 'in_review');
+  await bot.pollOnce();
+
+  const sent = w.tg.sent();
+  assert.equal(sent.length, 2);
+  assert.equal(sent.filter((m) => m.text.includes('Second note')).length, 1, 'the quoted comment is not sent again');
+  assert.ok(sent.some((m) => m.text === `<b>In review</b> · ${HEAD}\n<blockquote>Second note</blockquote>`));
+  assert.ok(sent.some((m) => m.text === `<b>Dev</b> · ${HEAD}\n<blockquote>First note</blockquote>`));
+  assert.ok(bot.state.hasShown(first.id) && bot.state.hasShown(second.id));
+  assert.equal(bot.state.following.get(issue.id).lastSeenCommentId, second.id);
+});
+
+test('a comment that follow sent is not quoted again by a later status message', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await followed(w, bot);
+  w.pc.addComment(issue.id, { body: 'Ready when you are' });
+  await bot.pollOnce();
+  assert.equal(followMessages(w).length, 1);
+
+  w.pc.setStatus(issue.id, 'in_review');
+  await bot.pollOnce();
+  assert.equal(w.tg.sent().length, 2);
+  assert.equal(w.tg.lastMessage().text, `<b>In review</b> · ${HEAD}`, 'no quote of a comment the chat already has');
+});
+
+test('a comment that a status message quoted is skipped when follow reads it again', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = w.pc.addIssue({ title: 'Followed work', status: 'in_progress', assigneeAgentId: 'agent-1' });
+  const earlier = w.pc.addComment(issue.id, { body: 'Earlier comment' });
+  await followIssue(bot, issue);
+  const entry = bot.state.following.get(issue.id);
+  const ready = w.pc.addComment(issue.id, { body: 'Ready for review' });
+  w.pc.setStatus(issue.id, 'in_review');
+  await bot.pollOnce();
+  assert.equal(w.tg.sent().length, 1);
+  assert.ok(bot.state.hasShown(ready.id));
+
+  // The same comment is read once more, as after a read that failed halfway.
+  entry.lastSeenCommentId = earlier.id;
+  const reads = () => w.pc.requestsTo('GET', /\/comments$/).length;
+  const before = reads();
+  await bot.pollOnce();
+  assert.ok(reads() > before, 'the comments were read again');
+  assert.equal(entry.lastSeenCommentId, ready.id, 'the cursor passed the comment');
+  assert.equal(w.tg.sent().length, 1, 'nothing was sent for it');
+});
+
+test('a comment shown in a task view in General is not followed again', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await followed(w, bot);
+  const comment = w.pc.addComment(issue.id, { body: 'Seen in the view' });
+  await bot.handleUpdate(w.tg.message('/task TST-1'));
+  assert.match(w.tg.lastMessage().text, /<b>Dev<\/b>\n<blockquote>Seen in the view<\/blockquote>/);
+  assert.ok(bot.state.hasShown(comment.id));
+
+  await bot.pollOnce();
+  assert.equal(w.tg.sent().length, 1, 'only the view');
+  assert.equal(bot.state.following.get(issue.id).lastSeenCommentId, comment.id);
+
+  w.pc.addComment(issue.id, { body: 'After the view' });
+  await bot.pollOnce();
+  assert.equal(w.tg.lastMessage().text, `<b>Dev</b> · ${HEAD}\n<blockquote>After the view</blockquote>`);
+});
+
+test('muted comments leave out those the chat already showed', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await followed(w, bot);
+  w.pc.addComment(issue.id, { body: 'Seen in the view' });
+  await bot.handleUpdate(w.tg.message('/task TST-1'));
+  const sent = w.tg.sent().length;
+
+  bot.state.mute(bot.now(), 8);
+  w.pc.addComment(issue.id, { body: 'Hidden while muted' });
+  await bot.pollOnce();
+  assert.equal(w.tg.sent().length, sent, 'nothing is sent while muted');
+  assert.equal(bot.state.mutedCounts.comments, 1, 'only the comment the chat did not show is counted');
+
+  const shown = w.pc.addComment(issue.id, { body: 'Shown while muted' });
+  bot.state.noteShown(shown.id);
+  await bot.pollOnce();
+  assert.equal(bot.state.mutedCounts.comments, 1);
 });

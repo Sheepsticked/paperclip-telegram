@@ -2,23 +2,6 @@ export const MESSAGE_LIMIT = 4096;
 export const CALLBACK_DATA_LIMIT = 64;
 const BUTTON_LABEL_MAX = 60;
 
-// First words of line 1 of every task message.
-export const KINDS = [
-  'Question',
-  'Done',
-  'In review',
-  'Run failed',
-  'Comment',
-  'Task',
-  'Created',
-  'Approval',
-  'Decision',
-  'Review',
-  'Blocked',
-  'Recovery',
-  'Join request',
-];
-
 export const STATUS_NAMES = {
   backlog: 'Backlog',
   todo: 'To do',
@@ -33,16 +16,23 @@ export function statusName(status) {
   return STATUS_NAMES[status] ?? String(status ?? 'Unknown');
 }
 
+// The colours Telegram allows for an inline button: blue, green and red.
+export const BUTTON_STYLES = ['primary', 'success', 'danger'];
+
 // An inline keyboard button; callback data over Telegram's byte limit would be rejected, so it fails early.
-export function button(label, data) {
+export function button(label, data, style) {
   if (Buffer.byteLength(data) > CALLBACK_DATA_LIMIT) throw new Error(`callback data over ${CALLBACK_DATA_LIMIT} bytes: ${data}`);
-  return { text: truncate(label, BUTTON_LABEL_MAX), callback_data: data };
+  if (style !== undefined && !BUTTON_STYLES.includes(style)) throw new Error(`unknown button style: ${style}`);
+  return { text: truncate(label, BUTTON_LABEL_MAX), callback_data: data, ...(style ? { style } : {}) };
 }
 
 // The extra button on messages about one task; it sends the task view.
 export function taskButton(issueId) {
   return button('Open task', `T:v:${issueId}`);
 }
+
+// The keyboard of a message about a task: the open button, except inside the task's own topic.
+export const openRows = (issueId, own) => (own ? [] : [[taskButton(issueId)]]);
 
 // "5 min ago", "3 h ago", "2 d ago".
 export function ago(iso, nowMs) {
@@ -100,11 +90,37 @@ export function link(url, label) {
   return `<a href="${escapeAttribute(url)}">${escapeHtml(label)}</a>`;
 }
 
-// Line 1 of a task message; the title is left out inside the task's own topic.
-export function headline(kind, issue, { own = false, titleMax = 100 } = {}) {
-  if (!KINDS.includes(kind)) throw new Error(`unknown message kind: ${kind}`);
-  const title = !own && issue.title ? ` ${escapeHtml(truncate(issue.title, titleMax))}` : '';
-  return `<b>${kind}</b> · ${escapeHtml(issue.identifier)}${title}`;
+// The bold first word of a message; `url` makes it a link.
+export function kindWord(kind, url = null) {
+  const label = truncate(kind, 80);
+  return `<b>${url ? link(url, label) : escapeHtml(label)}</b>`;
+}
+
+// Line 1 of a task message: "Kind · ID Title", or the kind alone inside the task's own topic.
+// `url` links the ID; `kindUrl` links the kind word instead.
+export function headline(kind, issue, { own = false, titleMax = 100, url = null, kindUrl = null } = {}) {
+  if (own) return kindWord(kind, kindUrl);
+  const id = url && !kindUrl ? link(url, issue.identifier) : escapeHtml(issue.identifier);
+  const title = issue.title ? ` ${escapeHtml(truncate(issue.title, titleMax))}` : '';
+  return `${kindWord(kind, kindUrl)} · ${id}${title}`;
+}
+
+export const QUOTE_MAX = 2000;
+// Quote budgets tried in turn until the whole message fits the Telegram limit.
+export const QUOTE_LEVELS = [QUOTE_MAX, 1000, 400, 150, 0];
+const FOLD_LINES = 3;
+const FOLD_CHARS = 300;
+
+// Text as a block quote, cut to `max` characters. A long quote is expandable; empty text gives an empty string.
+export function quote(text, max = QUOTE_MAX) {
+  const lines = String(text ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd());
+  const tidy = lines.filter((line, index) => line.trim() !== '' || (lines[index - 1]?.trim() ?? '') !== '').join('\n').trim();
+  const body = max > 0 ? truncate(tidy, max) : '';
+  if (!body) return '';
+  const long = body.split('\n').filter((line) => line.trim()).length > FOLD_LINES || Array.from(body).length > FOLD_CHARS;
+  return `<blockquote${long ? ' expandable' : ''}>${escapeHtml(body)}</blockquote>`;
 }
 
 export function prefixOf(identifier) {

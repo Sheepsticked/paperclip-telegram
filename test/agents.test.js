@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { validateTelegramHtml } from './fakes/telegram.js';
-import { startWorld, waitFor } from './helpers.js';
+import { UI_BASE_URL, startWorld, waitFor } from './helpers.js';
 
 async function setup(t, options, botOptions) {
   const w = await startWorld(options);
@@ -11,6 +11,8 @@ async function setup(t, options, botOptions) {
 }
 
 const rowsOf = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => b.text));
+// Rows with the colour of each button after its label: "Stop run [danger]".
+const styledRows = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => (b.style ? `${b.text} [${b.style}]` : b.text)));
 const posts = (w, suffix) => w.pc.requests.filter((r) => r.method === 'POST' && r.path.endsWith(suffix));
 const tap = (w, bot, message, label, options) => bot.handleUpdate(w.tg.tapButton(message.message_id, label, options));
 
@@ -37,11 +39,11 @@ test('the agent view shows the role, status, last run and the tasks in progress 
   assert.match(lines[3], /^Last run: Succeeded just now$/);
   assert.equal(lines[4], 'In progress: 1');
   assert.equal(validateTelegramHtml(view.text), null);
-  assert.deepEqual(rowsOf(w, view.message_id), [['Pause (stops its current run)', 'Run now', 'Refresh'], ['TST-1 · Build the API']]);
+  assert.deepEqual(styledRows(w, view.message_id), [['Pause (stops its current run) [danger]', 'Run now', 'Refresh'], ['TST-1 · Build the API']]);
   assert.equal(w.tg.buttons(view.message_id).at(-1).callback_data, `T:v:${w.pc.issues.values().next().value.id}`);
 
   await tap(w, bot, view, 'TST-1 · Build the API');
-  assert.ok(w.tg.lastMessage().text.startsWith('<b>Task</b> · TST-1 Build the API'));
+  assert.equal(w.tg.lastMessage().text.split('\n')[0], `<b><a href="${UI_BASE_URL}/TST/issues/TST-1">TST-1</a></b> Build the API`);
 });
 
 test('an agent without a title shows its role and one without runs says so', async (t) => {
@@ -66,7 +68,7 @@ test('Pause needs a second tap, then pauses the agent and shows Resume', async (
 
   await tap(w, bot, view, 'Pause');
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Tap again to confirm');
-  assert.deepEqual(rowsOf(w, view.message_id)[0], ['Tap again to confirm', 'Run now', 'Refresh']);
+  assert.deepEqual(styledRows(w, view.message_id)[0], ['Tap again to confirm [danger]', 'Run now', 'Refresh'], 'the armed button keeps its colour');
   assert.equal(posts(w, '/pause').length, 0);
   assert.equal(w.pc.agents[0].status, 'idle');
 
@@ -77,7 +79,7 @@ test('Pause needs a second tap, then pauses the agent and shows Resume', async (
   assert.equal(w.pc.runs.find((r) => r.id === run.id).status, 'cancelled');
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Paused');
   assert.ok(w.tg.messages.get(view.message_id).text.includes('Status: Paused (manual)'));
-  assert.deepEqual(rowsOf(w, view.message_id)[0], ['Resume', 'Refresh']);
+  assert.deepEqual(styledRows(w, view.message_id)[0], ['Resume', 'Refresh'], 'Resume has no colour');
 });
 
 test('the Pause confirmation goes back to normal when the window ends', async (t) => {
@@ -99,7 +101,7 @@ test('Resume resumes the agent at once', async (t) => {
   assert.equal(agent.status, 'idle');
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Resumed');
   assert.ok(w.tg.messages.get(view.message_id).text.includes('Status: Idle'));
-  assert.deepEqual(rowsOf(w, view.message_id)[0], ['Pause (stops its current run)', 'Run now', 'Refresh']);
+  assert.deepEqual(styledRows(w, view.message_id)[0], ['Pause (stops its current run) [danger]', 'Run now', 'Refresh']);
 });
 
 test('Run now starts a run with an empty body and shows it as the last run', async (t) => {
@@ -209,45 +211,48 @@ test('a task with an active run shows who is running it and a Stop run button', 
   const { w, bot } = await setup(t);
   const { issue, run } = runningTask(w);
   const view = await openTask(w, bot, issue);
-  const lines = view.text.split('\n');
-  assert.ok(lines.includes('Running: Dev'));
-  assert.ok(lines.indexOf('Running: Dev') < lines.indexOf('Assignee: Dev'));
-  assert.deepEqual(rowsOf(w, view.message_id).at(-1), ['Stop run']);
-  assert.equal(w.tg.buttons(view.message_id).at(-1).callback_data, `T:s:${issue.id}:${run.id.slice(0, 8)}`);
+  assert.equal(view.text.split('\n')[1], 'In progress · Dev running · updated just now');
+  assert.deepEqual(styledRows(w, view.message_id), [['Done [success]', 'Stop run [danger]', 'More']], 'Stop run is the second button of the first row');
+  assert.equal(w.tg.buttons(view.message_id)[1].callback_data, `T:s:${issue.id}:${run.id.slice(0, 8)}`);
   assert.equal(validateTelegramHtml(view.text), null);
 });
 
-test('a task without an active run has no Running line and no Stop run button', async (t) => {
+test('a task without an active run has no running part and no Stop run button', async (t) => {
   const { w, bot } = await setup(t);
   const issue = w.pc.addIssue({ title: 'Quiet', status: 'in_progress', assigneeAgentId: 'agent-1' });
   w.pc.addRun({ agentId: 'agent-1', issueId: issue.id, status: 'succeeded' });
   const view = await openTask(w, bot, issue);
-  assert.ok(!view.text.includes('Running:'));
-  assert.ok(!rowsOf(w, view.message_id).flat().includes('Stop run'));
+  assert.equal(view.text.split('\n')[1], 'In progress · Dev · updated just now');
+  assert.deepEqual(rowsOf(w, view.message_id), [['Done', 'More']]);
+});
+
+test('a finished task that still holds a run has Reopen and Stop run', async (t) => {
+  const { w, bot } = await setup(t);
+  const { issue } = runningTask(w, { status: 'done' });
+  const view = await openTask(w, bot, issue);
+  assert.deepEqual(styledRows(w, view.message_id), [['Reopen [primary]', 'Stop run [danger]', 'More']]);
 });
 
 test('a running task without an assignee names the agent from the run', async (t) => {
   const { w, bot } = await setup(t);
   const { issue } = runningTask(w, { assigneeAgentId: null });
   const view = await openTask(w, bot, issue);
-  assert.ok(view.text.split('\n').includes('Running: Dev'));
+  assert.equal(view.text.split('\n')[1], 'In progress · Unassigned · Dev running · updated just now');
 });
 
-test('the Running line names the agent that holds the run, not the assignee', async (t) => {
+test('the status line names the agent that holds the run next to the assignee', async (t) => {
   const { w, bot } = await setup(t);
   const { issue } = runningTask(w, { assigneeAgentId: 'agent-lead' });
   const view = await openTask(w, bot, issue);
-  const lines = view.text.split('\n');
-  assert.ok(lines.includes('Running: Dev'));
-  assert.ok(lines.includes('Assignee: Lead'));
+  assert.equal(view.text.split('\n')[1], 'In progress · Lead · Dev running · updated just now');
 });
 
-test('the Running line says an agent when the run holder is unknown', async (t) => {
+test('the status line says an agent when the run holder is unknown', async (t) => {
   const { w, bot } = await setup(t);
   const { issue } = runningTask(w);
   w.pc.issues.get(issue.id).executionAgentNameKey = 'someone-removed';
   const view = await openTask(w, bot, issue);
-  assert.ok(view.text.split('\n').includes('Running: An agent'));
+  assert.equal(view.text.split('\n')[1], 'In progress · Dev · An agent running · updated just now');
 });
 
 test('Stop run needs a second tap, then cancels the run and redraws the view', async (t) => {
@@ -257,7 +262,7 @@ test('Stop run needs a second tap, then cancels the run and redraws the view', a
 
   await tap(w, bot, view, 'Stop run');
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Tap again to confirm');
-  assert.deepEqual(rowsOf(w, view.message_id).at(-1), ['Tap again to confirm']);
+  assert.deepEqual(styledRows(w, view.message_id), [['Done [success]', 'Tap again to confirm [danger]', 'More']]);
   assert.equal(posts(w, '/cancel').length, 0);
   assert.equal(w.pc.runs[0].status, 'running');
 
@@ -266,8 +271,18 @@ test('Stop run needs a second tap, then cancels the run and redraws the view', a
   assert.equal(posts(w, '/cancel')[0].path, `/api/heartbeat-runs/${run.id}/cancel`);
   assert.equal(w.pc.runs[0].status, 'cancelled');
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Run stopped');
-  assert.ok(!w.tg.messages.get(view.message_id).text.includes('Running:'));
-  assert.ok(!rowsOf(w, view.message_id).flat().includes('Stop run'));
+  assert.equal(w.tg.messages.get(view.message_id).text.split('\n')[1], 'In progress · Dev · updated just now');
+  assert.deepEqual(rowsOf(w, view.message_id), [['Done', 'More']]);
+});
+
+test('an armed Stop run goes back to normal when the confirm window ends', async (t) => {
+  const { w, bot } = await setup(t, undefined, { confirmMs: 300 });
+  const { issue } = runningTask(w);
+  const view = await openTask(w, bot, issue);
+  await tap(w, bot, view, 'Stop run');
+  assert.deepEqual(rowsOf(w, view.message_id), [['Done', 'Tap again to confirm', 'More']]);
+  await waitFor(() => rowsOf(w, view.message_id)[0][1] === 'Stop run', { label: 'button reset' });
+  assert.equal(posts(w, '/cancel').length, 0);
 });
 
 test('Stop run does nothing when the run ended or another run took over', async (t) => {
@@ -283,7 +298,7 @@ test('Stop run does nothing when the run ended or another run took over', async 
   assert.equal(posts(w, '/cancel').length, 0);
   assert.equal(w.pc.runs.find((r) => r.id === next.id).status, 'running');
   assert.notEqual(run.id, next.id);
-  assert.deepEqual(rowsOf(w, view.message_id).at(-1), ['Stop run']);
+  assert.deepEqual(styledRows(w, view.message_id), [['Done [success]', 'Stop run [danger]', 'More']]);
 });
 
 test('Stop run from another user changes nothing', async (t) => {

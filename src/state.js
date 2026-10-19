@@ -13,6 +13,7 @@ const OFFER_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_ROOTS = 2000;
 const MAX_REVIEW_SENT = 2000;
 const MAX_STATUS_RETRIES = 200;
+const MAX_SHOWN_COMMENTS = 500;
 
 export const DEFAULT_SETTINGS = {
   done: true,
@@ -40,7 +41,9 @@ function loadTopics(saved) {
   for (const [rootId, topic] of Object.entries(saved && typeof saved === 'object' ? saved : {})) {
     if (!Number.isInteger(topic?.thread)) continue;
     const closed = topic.closed === 'done' || topic.closed === 'cancelled' ? topic.closed : null;
-    topics.set(rootId, { thread: topic.thread, identifier: String(topic.identifier ?? ''), title: String(topic.title ?? ''), closed });
+    // An entry without the flag that is closed is taken to carry a status suffix in its name.
+    const suffixed = typeof topic.suffixed === 'boolean' ? topic.suffixed : closed !== null;
+    topics.set(rootId, { thread: topic.thread, identifier: String(topic.identifier ?? ''), title: String(topic.title ?? ''), closed, suffixed });
   }
   return topics;
 }
@@ -106,6 +109,11 @@ function loadReviewSent(saved) {
   return new Set(ids.slice(-MAX_REVIEW_SENT));
 }
 
+function loadShownComments(saved) {
+  const ids = Array.isArray(saved) ? saved.filter((id) => typeof id === 'string') : [];
+  return new Set(ids.slice(-MAX_SHOWN_COMMENTS));
+}
+
 // Failed status messages that are tried again: issue id to the status and the number of failed tries.
 function loadStatusRetries(saved) {
   const retries = new Map();
@@ -162,6 +170,7 @@ export class State {
     this.prefixCounts = loadPrefixCounts(data.prefixCounts);
     this.reviewSent = loadReviewSent(data.reviewSent);
     this.statusRetries = loadStatusRetries(data.statusRetries);
+    this.shownComments = loadShownComments(data.shownComments);
     this.topics = loadTopics(data.topics);
     this.roots = loadRoots(data.roots);
   }
@@ -197,6 +206,7 @@ export class State {
     this.inbox.clear();
     this.offers.clear();
     this.topics.clear();
+    this.shownComments.clear();
     this.inboxSyncDone = false;
     this.cardResync = true;
     return true;
@@ -272,6 +282,18 @@ export class State {
     this.reviewSent.delete(issueId);
     this.reviewSent.add(issueId);
     while (this.reviewSent.size > MAX_REVIEW_SENT) this.reviewSent.delete(this.reviewSent.values().next().value);
+  }
+
+  // Remembers that a comment was shown in the chat, so it is not quoted or sent a second time.
+  noteShown(commentId) {
+    if (!commentId) return;
+    this.shownComments.delete(commentId);
+    this.shownComments.add(commentId);
+    while (this.shownComments.size > MAX_SHOWN_COMMENTS) this.shownComments.delete(this.shownComments.values().next().value);
+  }
+
+  hasShown(commentId) {
+    return this.shownComments.has(commentId);
   }
 
   // Counts a failed status message; returns the number of failed tries for this issue and status.
@@ -417,6 +439,7 @@ export class State {
       roots: Object.fromEntries(this.roots),
       reviewSent: [...this.reviewSent],
       statusRetries: Object.fromEntries(this.statusRetries),
+      shownComments: [...this.shownComments],
     };
   }
 

@@ -12,7 +12,12 @@ async function setup(t, options, botOptions) {
 
 const rowsOf = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => b.text));
 const posts = (w, suffix) => w.pc.requests.filter((r) => r.method === 'POST' && r.path.endsWith(suffix));
-const startsWith = (w, head) => w.tg.sent().find((m) => m.text.startsWith(head));
+// Line 1 without its link markup, so a test can name the item by its words.
+const plain = (text) => text.replace(/<a href="[^"]*">|<\/a>/g, '');
+const startsWith = (w, head) => w.tg.sent().find((m) => plain(m.text).startsWith(head));
+// Button labels per row, with the style of each styled button in brackets.
+const styledRows = (w, id) =>
+  (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => (b.style ? `${b.text} [${b.style}]` : b.text)));
 const tap = (w, bot, message, label, options) => bot.handleUpdate(w.tg.tapButton(message.message_id, label, options));
 
 // A task that has already been seen in progress, so a later status change counts as new.
@@ -36,7 +41,7 @@ test('an approval shows its type, requester and payload, with Approve, Reject an
   assert.ok(message);
   assert.equal(validateTelegramHtml(message.text), null);
   const lines = message.text.split('\n');
-  assert.equal(lines[0], '<b>Approval</b> · TST-1 Staffing');
+  assert.equal(lines[0], `<b>Approval</b> · <a href="${UI_BASE_URL}/TST/approvals/${approval.id}">TST-1</a> Staffing`);
   assert.ok(lines.includes('Approval is pending a board decision.'));
   assert.ok(lines.includes('Type: Hire agent'));
   assert.ok(lines.includes('Requested by: Dev'));
@@ -45,7 +50,7 @@ test('an approval shows its type, requester and payload, with Approve, Reject an
   assert.ok(lines.includes('budget: 500'));
   assert.ok(lines.includes('tags: ui, brand'));
   assert.ok(lines.includes('notes: Needs &lt;b&gt;care&lt;/b&gt; &amp; speed'));
-  assert.ok(message.text.includes(`<a href="${UI_BASE_URL}/TST/approvals/${approval.id}">Open in Paperclip</a>`));
+  assert.ok(!message.text.includes('Open in Paperclip'));
   assert.deepEqual(rowsOf(w, message.message_id), [['Approve', 'Reject'], ['Open task']]);
   assert.equal(w.tg.buttons(message.message_id).at(-1).callback_data, `T:v:${issue.id}`);
   assert.equal(w.tg.callsTo('sendMessage').length, 1, 'one message for one item');
@@ -128,12 +133,13 @@ test('an armed approval button goes back to normal when the window ends', async 
 test('an approval that cannot be answered inline shows text and a link only', async (t) => {
   const { w, bot } = await setup(t);
   const issue = w.pc.addIssue({ title: 'Board matter', status: 'in_progress' });
-  w.pc.addApproval({ type: 'request_board_approval', issueId: issue.id, payload: { title: 'Sign off the plan' } });
+  const approval = w.pc.addApproval({ type: 'request_board_approval', issueId: issue.id, payload: { title: 'Sign off the plan' } });
   await bot.pollOnce();
   const message = startsWith(w, '<b>Approval</b>');
   assert.ok(message.text.includes('Type: Board approval'));
   assert.ok(message.text.includes('Answer this one in Paperclip'));
-  assert.ok(message.text.includes('Open in Paperclip'));
+  assert.ok(message.text.includes(`<a href="${UI_BASE_URL}/TST/approvals/${approval.id}">TST-1</a>`), 'the task id links to the approval');
+  assert.ok(!message.text.includes('Open in Paperclip'));
   assert.deepEqual(rowsOf(w, message.message_id), [['Open task']]);
 });
 
@@ -154,10 +160,12 @@ test('a decision shows its body and one button per option, and a tap decides it'
   const message = startsWith(w, '<b>Decision</b>');
   assert.ok(message);
   assert.equal(validateTelegramHtml(message.text), null);
-  assert.ok(message.text.startsWith('<b>Decision</b> · TST-1 Pick a stack\n<b>Database choice</b>\n'));
+  assert.ok(
+    message.text.startsWith(`<b>Decision</b> · <a href="${UI_BASE_URL}/TST/decisions?decisionId=${decision.id}">TST-1</a> Pick a stack\n<b>Database choice</b>\n`),
+  );
   assert.ok(message.text.includes('Which database should we use?'));
   assert.ok(message.text.includes('- Postgres: Reliable and boring'));
-  assert.ok(message.text.includes(`${UI_BASE_URL}/TST/decisions?decisionId=${decision.id}`));
+  assert.ok(!message.text.includes('Open in Paperclip'));
   assert.deepEqual(rowsOf(w, message.message_id), [['Postgres'], ['SQLite'], ['Dismiss'], ['Open task']]);
 
   await tap(w, bot, message, 'SQLite');
@@ -193,7 +201,7 @@ test('a decision that needs input has no option buttons and points to Paperclip'
   const message = startsWith(w, '<b>Decision</b>');
   assert.ok(message.text.includes('More options in Paperclip'));
   assert.ok(message.text.includes('- Go ahead'));
-  assert.ok(message.text.includes('Open in Paperclip'));
+  assert.ok(!message.text.includes('Open in Paperclip'));
   assert.deepEqual(rowsOf(w, message.message_id), [['Open task']], 'Dismiss would decide the first option, which needs the input');
 
   // Hand-made option and dismiss taps are refused without calling Paperclip.
@@ -259,9 +267,9 @@ test('a stalled review offers Approve, Request changes and Send back', async (t)
   const { w, bot } = await setup(t);
   const { issue, message } = await stalledReview(w, bot);
   assert.ok(message);
-  assert.ok(message.text.startsWith('<b>Review</b> · TST-1 Stuck in review\n'));
+  assert.ok(message.text.startsWith(`<b>Review</b> · <a href="${UI_BASE_URL}/TST/issues/TST-1">TST-1</a> Stuck in review\n`));
   assert.ok(message.text.includes('Issue is in review without a maintained reviewer'));
-  assert.ok(message.text.includes(`${UI_BASE_URL}/TST/issues/TST-1`));
+  assert.ok(!message.text.includes('Open in Paperclip'));
   assert.deepEqual(rowsOf(w, message.message_id), [['Approve', 'Request changes', 'Send back'], ['Open task']]);
   assert.equal(w.tg.buttons(message.message_id).at(-1).callback_data, `T:v:${issue.id}`);
 });
@@ -358,9 +366,9 @@ test('a review that is not stalled gets text, a link and the task button only, e
 
   const message = startsWith(w, '<b>Review</b>');
   assert.ok(message);
-  assert.equal(message.text.split('\n')[0], '<b>Review</b> · TST-1 Look at this');
+  assert.equal(message.text.split('\n')[0], `<b>Review</b> · <a href="${UI_BASE_URL}/TST/issues/TST-1">TST-1</a> Look at this`);
   assert.ok(message.text.includes('Issue is in review and assigned to a user.'));
-  assert.ok(message.text.includes(`${UI_BASE_URL}/TST/issues/TST-1`));
+  assert.ok(!message.text.includes('Open in Paperclip'));
   assert.deepEqual(rowsOf(w, message.message_id), [['Open task']]);
 });
 
@@ -433,23 +441,24 @@ test('blocker, recovery and join request items are text with a link and no actio
   await bot.pollOnce();
 
   const block = startsWith(w, '<b>Blocked</b>');
-  assert.equal(block.text.split('\n')[0], '<b>Blocked</b> · TST-1 Needs a key');
+  assert.equal(block.text.split('\n')[0], `<b>Blocked</b> · <a href="${UI_BASE_URL}/TST/issues/TST-1">TST-1</a> Needs a key`);
   assert.ok(block.text.includes('Provide the missing access key.'));
-  assert.ok(block.text.includes(`${UI_BASE_URL}/TST/issues/TST-1`));
   assert.deepEqual(rowsOf(w, block.message_id), [['Open task']]);
 
   const recovery = startsWith(w, '<b>Recovery</b>');
-  assert.equal(recovery.text.split('\n')[0], '<b>Recovery</b> · TST-2 Went quiet');
+  assert.equal(recovery.text.split('\n')[0], `<b>Recovery</b> · <a href="${UI_BASE_URL}/TST/issues/TST-2">TST-2</a> Went quiet`);
   assert.ok(recovery.text.includes('Decide how to recover this task'));
   assert.ok(recovery.text.includes('Recovery action is assigned to a human owner.'));
   assert.deepEqual(rowsOf(w, recovery.message_id), [['Open task']]);
 
   const join = startsWith(w, '<b>Join request</b>');
-  assert.equal(join.text.split('\n')[0], '<b>Join request</b> · Helper &lt;bot&gt;');
+  assert.equal(join.text.split('\n')[0], `<b><a href="${UI_BASE_URL}/TST/settings/access">Join request</a></b> · Helper &lt;bot&gt;`);
   assert.ok(join.text.includes('Join request is pending approval.'));
-  assert.ok(join.text.includes(`${UI_BASE_URL}/TST/settings/access`));
   assert.deepEqual(rowsOf(w, join.message_id), []);
-  for (const message of [block, recovery, join]) assert.equal(validateTelegramHtml(message.text), null);
+  for (const message of [block, recovery, join]) {
+    assert.equal(validateTelegramHtml(message.text), null);
+    assert.ok(!message.text.includes('Open in Paperclip'));
+  }
 });
 
 test('an item is sent once and not again on the next polls', async (t) => {
@@ -619,10 +628,10 @@ test('/status lists every inbox kind as a button that opens the task or sends th
   const count = w.tg.callsTo('sendMessage').length;
   await tap(w, bot, waiting, 'Join request · Joiner');
   assert.equal(w.tg.callsTo('sendMessage').length, count + 1, 'the item message is sent again');
-  assert.ok(w.tg.lastMessage().text.startsWith('<b>Join request</b> · Joiner'));
+  assert.ok(plain(w.tg.lastMessage().text).startsWith('<b>Join request</b> · Joiner'));
   await tap(w, bot, waiting, 'Approval · Approve without a task');
   const resent = w.tg.lastMessage();
-  assert.ok(resent.text.startsWith('<b>Approval</b>'));
+  assert.ok(plain(resent.text).startsWith('<b>Approval</b>'));
   assert.deepEqual(rowsOf(w, resent.message_id), [['Approve', 'Reject']]);
 
   await tap(w, bot, resent, 'Approve');
@@ -725,7 +734,8 @@ test('an inbox item about a task goes into that task topic, and one without a ta
 
   const approval = startsWith(w, '<b>Approval</b>');
   assert.equal(approval.thread, thread);
-  assert.equal(approval.text.split('\n')[0], '<b>Approval</b> · TST-1', 'the title is left out inside its own topic');
+  assert.equal(approval.text.split('\n')[0], '<b>Approval</b>', 'line 1 is the kind alone inside its own topic');
+  assert.deepEqual(rowsOf(w, approval.message_id), [['Approve', 'Reject']], 'and there is no Open task button');
   const join = startsWith(w, '<b>Join request</b>');
   assert.equal(join.thread, null);
 
@@ -760,5 +770,73 @@ test('an item sent again from /status lands in the topic it was asked from', asy
   assert.equal(waiting.thread, thread);
   await tap(w, bot, waiting, 'Join request · Joiner');
   assert.equal(w.tg.lastMessage().thread, thread);
-  assert.ok(w.tg.lastMessage().text.startsWith('<b>Join request</b> · Joiner'));
+  assert.ok(plain(w.tg.lastMessage().text).startsWith('<b>Join request</b> · Joiner'));
+});
+
+test('Approve is success and Reject is danger, and an armed button keeps its colour', async (t) => {
+  const { w, bot } = await setup(t);
+  w.pc.addApproval({ payload: { title: 'Hire' } });
+  await bot.pollOnce();
+  const message = startsWith(w, '<b>Approval</b>');
+  assert.deepEqual(styledRows(w, message.message_id), [['Approve [success]', 'Reject [danger]']]);
+
+  await tap(w, bot, message, 'Approve');
+  assert.deepEqual(styledRows(w, message.message_id), [['Tap again to confirm [success]', 'Reject [danger]']]);
+  await tap(w, bot, message, 'Reject');
+  assert.deepEqual(styledRows(w, message.message_id), [['Approve [success]', 'Tap again to confirm [danger]']]);
+});
+
+test('on a stalled review only Approve is coloured', async (t) => {
+  const { w, bot } = await setup(t);
+  const { message } = await stalledReview(w, bot);
+  assert.deepEqual(styledRows(w, message.message_id), [['Approve [success]', 'Request changes', 'Send back'], ['Open task']]);
+  await tap(w, bot, message, 'Send back');
+  assert.deepEqual(styledRows(w, message.message_id)[0], ['Approve [success]', 'Request changes', 'Tap again to confirm']);
+});
+
+test('decision options and Dismiss have no colour', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = w.pc.addIssue({ title: 'Pick a stack', status: 'in_progress' });
+  w.pc.addDecision({
+    issueId: issue.id,
+    options: [{ id: 'pg', label: 'Postgres', effects: [] }, { id: 'wipe', label: 'Wipe it', style: 'destructive', effects: [] }],
+  });
+  await bot.pollOnce();
+  const message = startsWith(w, '<b>Decision</b>');
+  assert.deepEqual(styledRows(w, message.message_id), [['Postgres'], ['Wipe it'], ['Dismiss'], ['Open task']]);
+});
+
+test('line 1 links the task id when the item has a task and the kind word when it has none', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = w.pc.addIssue({ title: 'Staffing', status: 'in_progress' });
+  const withTask = w.pc.addApproval({ issueId: issue.id, payload: { title: 'Hire' } });
+  const without = w.pc.addApproval({ payload: { title: 'No task here' } });
+  w.pc.addJoinRequest({ name: 'Joiner' });
+  await bot.pollOnce();
+
+  const first = w.tg.sent().find((m) => m.text.includes(`approvals/${withTask.id}`));
+  assert.equal(first.text.split('\n')[0], `<b>Approval</b> · <a href="${UI_BASE_URL}/TST/approvals/${withTask.id}">TST-1</a> Staffing`);
+  const second = w.tg.sent().find((m) => m.text.includes(`approvals/${without.id}`));
+  assert.equal(second.text.split('\n')[0], `<b><a href="${UI_BASE_URL}/TST/approvals/${without.id}">Approval</a></b> · No task here`);
+  const join = startsWith(w, '<b>Join request</b>');
+  assert.equal(join.text.split('\n')[0], `<b><a href="${UI_BASE_URL}/TST/settings/access">Join request</a></b> · Joiner`);
+  for (const message of [first, second, join]) assert.equal(validateTelegramHtml(message.text), null);
+});
+
+test('inside its own topic an item has no Open task button; a subtask item in the parent topic keeps it', async (t) => {
+  const { w, bot, issue, thread } = await topicSetup(t);
+  const child = w.pc.addIssue({ title: 'Small step', status: 'blocked', parentId: issue.id });
+  w.pc.addBlocker(issue.id, { whyNow: 'Waiting for a key.' });
+  w.pc.addBlocker(child.id, { whyNow: 'Waiting for access.' });
+  await bot.pollOnce();
+
+  const own = w.tg.sent().find((m) => m.text.includes('Waiting for a key.'));
+  assert.equal(own.thread, thread);
+  assert.equal(own.text.split('\n')[0], '<b>Blocked</b>');
+  assert.deepEqual(rowsOf(w, own.message_id), []);
+
+  const sub = w.tg.sent().find((m) => m.text.includes('Waiting for access.'));
+  assert.equal(sub.thread, thread);
+  assert.equal(sub.text.split('\n')[0], `<b>Blocked</b> · <a href="${UI_BASE_URL}/TST/issues/TST-2">TST-2</a> Small step`);
+  assert.deepEqual(rowsOf(w, sub.message_id), [['Open task']]);
 });

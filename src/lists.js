@@ -30,7 +30,7 @@ function openTasksView(issues, filter, page, hasNext, project) {
   if (page > 0) nav.push(button('◀', `L:t:${filter}:${page - 1}${suffix}`));
   if (hasNext) nav.push(button('▶', `L:t:${filter}:${page + 1}${suffix}`));
   if (nav.length > 0) rows.push(nav);
-  rows.push(Object.entries(FILTERS).map(([key, entry]) => button(`${key === filter ? '☑' : '☐'} ${entry.label}`, `L:t:${key}:0${suffix}`)));
+  rows.push(Object.entries(FILTERS).map(([key, entry]) => button(entry.label, `L:t:${key}:0${suffix}`, key === filter ? 'primary' : undefined)));
   if (project) rows.push([button('All projects', `L:t:${filter}:0`)]);
   const head = `<b>Open tasks</b> · ${escapeHtml(label)}${project ? ` · ${escapeHtml(truncate(project.name, 60))}` : ''} · page ${page + 1}`;
   return { text: issues.length > 0 ? head : `${head}\nNothing here.`, keyboard: rows };

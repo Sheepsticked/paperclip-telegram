@@ -6,7 +6,7 @@ import { PaperclipClient, PaperclipError } from './paperclip.js';
 import { SerialQueue } from './queue.js';
 import { TelegramClient, TelegramError, defaultSleep } from './telegram.js';
 import { dropTopic, topicTarget } from './topics.js';
-import { COMMENT_REACTION, threadGone } from './thread.js';
+import { COMMENT_REACTION, isServiceMessage, threadGone } from './thread.js';
 
 export const LONG_POLL_SECONDS = 50;
 const AGENT_CACHE_MS = 10 * 60 * 1000;
@@ -63,6 +63,7 @@ export class Bot {
     this.topicWarnedAt = null;
     this.ignoredChats = new Set();
     this.topicCheck = null;
+    this.botId = null;
     if (state.adoptChat(config.telegramChatId)) {
       log.info('chat changed: dropped the message ids of the old chat; open cards and inbox items are sent again');
       state.save();
@@ -90,8 +91,8 @@ export class Bot {
   // Sends a message about a task into its top-level task's topic. A deleted topic is made again once;
   // any other refusal of the topic send goes to the main chat once.
   // `build({ own })` returns { text, keyboard }; own is true when the message lands in the task's own topic.
-  async sendAbout(issue, build, { replyTo, kind } = {}) {
-    let target = await topicTarget(this, issue, { kind });
+  async sendAbout(issue, build, { replyTo } = {}) {
+    let target = await topicTarget(this, issue);
     const refusedInTopic = (err) => target.thread !== null && err instanceof TelegramError && err.code === 400;
     try {
       return await this.#sendInTopic(target, issue, build, replyTo);
@@ -99,7 +100,7 @@ export class Bot {
       if (!refusedInTopic(err)) throw err;
       if (threadGone(err)) {
         dropTopic(this, target.rootId);
-        target = await topicTarget(this, issue, { kind });
+        target = await topicTarget(this, issue);
         try {
           return await this.#sendInTopic(target, issue, build, replyTo);
         } catch (again) {
@@ -278,6 +279,8 @@ export class Bot {
       }
       return;
     }
+    // The bot's own service messages (a topic it created, a pinned view) are not worth a log line.
+    if (message && (isServiceMessage(message) || (this.botId !== null && senderId === this.botId))) return;
     if (senderId !== this.config.telegramUserId || chat?.id !== this.config.telegramChatId) {
       this.log.info('ignored an update from an unauthorized sender');
       return;
@@ -318,6 +321,7 @@ export class Bot {
       chat = await this.tg.getChat({ chat_id });
       if (chat.type !== 'supergroup' || chat.is_forum !== true) return off('not a forum');
       const me = await this.tg.getMe();
+      this.botId = me.id ?? null;
       member = await this.tg.getChatMember({ chat_id, user_id: me.id });
     } catch (err) {
       const settled = err instanceof TelegramError && !err.network && err.code >= 400 && err.code < 500 && err.code !== 429;

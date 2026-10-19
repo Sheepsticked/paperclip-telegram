@@ -4,7 +4,12 @@ import test from 'node:test';
 import { validateTelegramHtml } from './fakes/telegram.js';
 import { confirmPayload, startWorld, UI_BASE_URL } from './helpers.js';
 
+const GROUP_ID = -1001234567890;
+const TASK_URL = `${UI_BASE_URL}/TST/issues/TST-1`;
+const runUrlOf = (run, agentId = 'agent-1') => `${UI_BASE_URL}/TST/agents/${agentId}/runs/${run.id}`;
+
 const sentTexts = (w) => w.tg.sent().map((m) => m.text);
+const rowsOf = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => b.text));
 
 async function world(t, options) {
   const w = await startWorld(options);
@@ -12,13 +17,13 @@ async function world(t, options) {
   return w;
 }
 
-test('done message quotes the trimmed last agent comment and links to the task', async (t) => {
+test('done message quotes the last agent comment and links the task id', async (t) => {
   const w = await world(t);
   const bot = await w.primedBot();
   const issue = w.pc.addIssue({ title: 'Write the docs', status: 'in_progress', assigneeAgentId: 'agent-1' });
   await bot.pollOnce();
 
-  const body = ['line 1 <b>&</b>', 'line 2', 'line 3', 'line 4', 'line 5', 'line 6 is cut'].join('\n');
+  const body = ['line 1 <b>&</b>', 'line 2', 'line 3', 'line 4', 'line 5', 'line 6'].join('\n');
   w.pc.addComment(issue.id, { body, authorType: 'agent' });
   w.pc.addComment(issue.id, { body: 'thanks, looks good', authorType: 'user' });
   w.pc.setStatus(issue.id, 'done');
@@ -26,24 +31,70 @@ test('done message quotes the trimmed last agent comment and links to the task',
 
   const message = w.tg.findMessage('Done');
   assert.ok(message, 'a done message was sent');
-  assert.match(message.text, /^<b>Done<\/b> · TST-1 Write the docs\n/);
-  assert.match(message.text, /<blockquote>line 1 &lt;b&gt;&amp;&lt;\/b&gt;\nline 2\nline 3\nline 4\nline 5…<\/blockquote>/);
-  assert.ok(!message.text.includes('line 6'));
+  assert.equal(
+    message.text,
+    `<b>Done</b> · <a href="${TASK_URL}">TST-1</a> Write the docs\n<blockquote expandable>line 1 &lt;b&gt;&amp;&lt;/b&gt;\nline 2\nline 3\nline 4\nline 5\nline 6</blockquote>`,
+  );
+  assert.equal(validateTelegramHtml(message.text), null);
   assert.ok(!message.text.includes('thanks'));
-  assert.ok(message.text.includes(`<a href="${UI_BASE_URL}/TST/issues/TST-1">Open in Paperclip</a>`));
+  assert.deepEqual(rowsOf(w, message.message_id), [['Open task']]);
+  assert.equal(w.tg.buttons(message.message_id)[0].callback_data, `T:v:${issue.id}`);
 });
 
-test('a long comment is cut to 400 characters', async (t) => {
+test('a long comment is cut to 2000 characters', async (t) => {
   const w = await world(t);
   const bot = await w.primedBot();
   const issue = w.pc.addIssue({ title: 'Long report', status: 'in_progress' });
   await bot.pollOnce();
-  w.pc.addComment(issue.id, { body: 'x'.repeat(1000) });
+  w.pc.addComment(issue.id, { body: 'x'.repeat(2500) });
   w.pc.setStatus(issue.id, 'done');
   await bot.pollOnce();
-  const quote = /<blockquote>(.*)<\/blockquote>/s.exec(w.tg.findMessage('Done').text)[1];
-  assert.equal(Array.from(quote).length, 400);
+  const message = w.tg.findMessage('Done');
+  const quote = /<blockquote expandable>(.*)<\/blockquote>/s.exec(message.text)[1];
+  assert.equal(Array.from(quote).length, 2000);
   assert.ok(quote.endsWith('…'));
+});
+
+test('done and in-review messages in General link the id and carry an Open task button', async (t) => {
+  const w = await world(t);
+  const bot = await w.primedBot();
+  const finished = w.pc.addIssue({ title: 'Finished work', status: 'in_progress' });
+  const reviewed = w.pc.addIssue({ title: 'Reviewed work', status: 'in_progress' });
+  await bot.pollOnce();
+  w.pc.setStatus(finished.id, 'done');
+  w.pc.setStatus(reviewed.id, 'in_review');
+  await bot.pollOnce();
+
+  const link = (issue) => `<a href="${UI_BASE_URL}/TST/issues/${issue.identifier}">${issue.identifier}</a>`;
+  const done = w.tg.findMessage('Done');
+  const review = w.tg.findMessage('In review');
+  assert.equal(done.text, `<b>Done</b> · ${link(finished)} Finished work`);
+  assert.equal(review.text, `<b>In review</b> · ${link(reviewed)} Reviewed work`);
+  assert.deepEqual(rowsOf(w, done.message_id), [['Open task']]);
+  assert.deepEqual(rowsOf(w, review.message_id), [['Open task']]);
+  assert.equal(w.tg.buttons(review.message_id)[0].callback_data, `T:v:${reviewed.id}`);
+  assert.ok(!sentTexts(w).some((text) => text.includes('Open in Paperclip')));
+});
+
+test('done and in-review messages in the task\'s own topic are the kind word alone, with no buttons', async (t) => {
+  const w = await world(t, { telegram: { chatId: GROUP_ID, forum: true } });
+  const bot = await w.primedBot();
+  const finished = w.pc.addIssue({ title: 'Finished work', status: 'in_progress' });
+  const reviewed = w.pc.addIssue({ title: 'Reviewed work', status: 'in_progress' });
+  await bot.pollOnce();
+  w.pc.addComment(reviewed.id, { body: 'Ready for review.' });
+  w.pc.setStatus(finished.id, 'done');
+  w.pc.setStatus(reviewed.id, 'in_review');
+  await bot.pollOnce();
+
+  const inTopic = (issue) => w.tg.inTopic(bot.state.topics.get(issue.id).thread);
+  const done = inTopic(finished).at(-1);
+  const review = inTopic(reviewed).at(-1);
+  assert.equal(done.text, '<b>Done</b>');
+  assert.equal(review.text, '<b>In review</b>\n<blockquote>Ready for review.</blockquote>');
+  assert.deepEqual(rowsOf(w, done.message_id), []);
+  assert.deepEqual(rowsOf(w, review.message_id), []);
+  assert.equal(w.tg.sent().filter((m) => m.thread === null).length, 0, 'nothing went to General');
 });
 
 test('a task without any agent comment still gets a message', async (t) => {
@@ -68,8 +119,7 @@ test('in_review message is sent when no card is involved', async (t) => {
   await bot.pollOnce();
   const message = w.tg.findMessage('In review');
   assert.ok(message);
-  assert.match(message.text, /^<b>In review<\/b> · TST-1 Needs a look\n/);
-  assert.match(message.text, /Ready for review\./);
+  assert.equal(message.text, `<b>In review</b> · <a href="${TASK_URL}">TST-1</a> Needs a look\n<blockquote>Ready for review.</blockquote>`);
 });
 
 test('no in_review message when a card was sent in the same poll', async (t) => {
@@ -156,20 +206,35 @@ test('failed run is alerted once and routine error codes are skipped', async (t)
 
   await bot.pollOnce();
   await bot.pollOnce();
-  const alerts = sentTexts(w).filter((text) => text.includes('Run failed'));
+  const alerts = w.tg.sent().filter((m) => m.text.includes('Run failed'));
   assert.equal(alerts.length, 1);
-  assert.match(alerts[0], /^<b>Run failed<\/b> · TST-1 Flaky job\nDev: adapter_failed — The adapter exited\n/);
-  assert.ok(!alerts[0].includes('second line'));
-  assert.ok(alerts[0].includes(`<a href="${UI_BASE_URL}/TST/agents/agent-1/runs/${failed.id}">Open in Paperclip</a>`));
+  assert.equal(alerts[0].text, `<b><a href="${runUrlOf(failed)}">Run failed</a></b> · TST-1 Flaky job\nDev: adapter_failed — The adapter exited`);
+  assert.deepEqual(rowsOf(w, alerts[0].message_id), [['Open task']]);
+  assert.ok(!sentTexts(w).some((text) => text.includes('Open in Paperclip')));
   assert.equal(w.tg.callsTo('sendMessage').length, 1);
 });
 
-test('a failed run that has no task still alerts', async (t) => {
+test('a run failure alert in the task\'s own topic keeps the run link on the kind word and has no buttons', async (t) => {
+  const w = await world(t, { telegram: { chatId: GROUP_ID, forum: true } });
+  const bot = await w.primedBot();
+  const issue = w.pc.addIssue({ title: 'Flaky job', status: 'in_progress', assigneeAgentId: 'agent-1' });
+  const failed = w.pc.addFailedRun({ issueId: issue.id, errorCode: 'adapter_failed', error: 'The adapter exited' });
+  await bot.pollOnce();
+
+  const alert = w.tg.inTopic(bot.state.topics.get(issue.id).thread).find((m) => m.text.includes('Run failed'));
+  assert.equal(alert.text, `<b><a href="${runUrlOf(failed)}">Run failed</a></b>\nDev: adapter_failed — The adapter exited`);
+  assert.deepEqual(rowsOf(w, alert.message_id), []);
+  assert.ok(!sentTexts(w).some((text) => text.includes('Open in Paperclip')));
+});
+
+test('a failed run that has no task still alerts, with the kind word linking to the run', async (t) => {
   const w = await world(t);
   const bot = await w.primedBot();
-  w.pc.addFailedRun({ agentId: 'agent-1', errorCode: 'timeout', error: 'took too long' });
+  const failed = w.pc.addFailedRun({ agentId: 'agent-1', errorCode: 'timeout', error: 'took too long' });
   await bot.pollOnce();
-  assert.match(w.tg.findMessage('Run failed').text, /timeout — took too long/);
+  const alert = w.tg.findMessage('Run failed');
+  assert.equal(alert.text, `<b><a href="${runUrlOf(failed)}">Run failed</a></b> · Dev\ntimeout — took too long`);
+  assert.deepEqual(rowsOf(w, alert.message_id), []);
 });
 
 test('the routine error code list is configurable', async (t) => {
@@ -295,7 +360,8 @@ test('a long comment full of special characters stays valid HTML under the limit
   assert.ok(message, 'the message was accepted by the fake, which checks length and HTML');
   assert.ok(message.text.length <= 4096);
   assert.equal(validateTelegramHtml(message.text), null);
-  assert.ok(message.text.includes('Open in Paperclip'));
+  assert.ok(message.text.includes(`<a href="${TASK_URL}">TST-1</a>`));
+  assert.deepEqual(rowsOf(w, message.message_id), [['Open task']]);
 });
 
 test('the first-start card limit holds for later polls and restarts, and /status still lists the rest', async (t) => {

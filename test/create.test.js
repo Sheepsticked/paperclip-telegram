@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LEAD_AGENT_ID, startWorld } from './helpers.js';
+import { LEAD_AGENT_ID, UI_BASE_URL, startWorld } from './helpers.js';
 
 async function setup(t, options) {
   const w = await startWorld(options);
@@ -12,6 +12,13 @@ async function setup(t, options) {
 const creates = (w) => w.pc.requests.filter((r) => r.method === 'POST' && r.path.endsWith('/issues'));
 const rowsOf = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => b.text));
 const HOUR = 60 * 60 * 1000;
+const TASK_LINK = `<a href="${UI_BASE_URL}/TST/issues/TST-1">TST-1</a>`;
+
+// The rows a task view shows after More, for checking the Follow / Unfollow button.
+async function rowsAfterMore(w, bot, message) {
+  await bot.handleUpdate(w.tg.tapButton(message.message_id, 'More'));
+  return rowsOf(w, message.message_id);
+}
 
 test('/new @agent #project assigns the named agent and project', async (t) => {
   const { w, bot } = await setup(t);
@@ -81,10 +88,10 @@ test('/new answers with the task view and follows the new task', async (t) => {
   await bot.handleUpdate(update);
 
   const view = w.tg.lastMessage();
-  assert.match(view.text, /^<b>Created<\/b> · TST-1 Plan the launch$/m);
-  assert.match(view.text, /Assignee: Lead/);
+  assert.equal(view.text, `<b>${TASK_LINK}</b> Plan the launch\nTo do · Lead · updated just now\n<blockquote>Plan the launch</blockquote>`);
   assert.equal(view.replyTo, update.message.message_id);
-  assert.deepEqual(rowsOf(w, view.message_id).at(-1), ['Unfollow']);
+  assert.deepEqual(rowsOf(w, view.message_id), [['Done', 'More']]);
+  assert.ok((await rowsAfterMore(w, bot, view)).flat().includes('Unfollow'));
   const issueId = [...w.pc.issues.keys()][0];
   assert.ok(bot.state.isFollowing(issueId));
 });
@@ -94,7 +101,7 @@ test('a new task is not followed when auto-follow is off', async (t) => {
   bot.state.settings.autoFollowCreated = false;
   await bot.handleUpdate(w.tg.message('/new Quiet task'));
   assert.equal(bot.state.following.size, 0);
-  assert.deepEqual(rowsOf(w, w.tg.lastMessage().message_id).at(-1), ['Follow']);
+  assert.ok((await rowsAfterMore(w, bot, w.tg.lastMessage())).flat().includes('Follow'));
 });
 
 test('a task that already exists is shown but not followed again', async (t) => {
@@ -104,7 +111,7 @@ test('a task that already exists is shown but not followed again', async (t) => 
   const issueId = [...w.pc.issues.keys()][0];
   bot.state.unfollow(issueId);
   await bot.handleUpdate(update);
-  assert.match(w.tg.lastMessage().text, /^<b>Task<\/b> · TST-1 Only once\nAlready exists\n/);
+  assert.ok(w.tg.lastMessage().text.startsWith(`<b>${TASK_LINK}</b> Only once\nAlready exists\n`));
   assert.equal(bot.state.following.size, 0);
 });
 
@@ -113,7 +120,7 @@ test('/new still confirms when the new task cannot be read back', async (t) => {
   w.pc.failRequests('GET', /\/api\/issues\/[^/]+$/, 500);
   await bot.handleUpdate(w.tg.message('/new Created anyway'));
   const reply = w.tg.lastMessage();
-  assert.match(reply.text, /^<b>Created<\/b> · TST-1 Created anyway\n<a href="[^"]+">Open in Paperclip<\/a>$/);
+  assert.equal(reply.text, `<b>Created</b> · ${TASK_LINK} Created anyway`);
   assert.deepEqual(rowsOf(w, reply.message_id), [['Open task']]);
   assert.equal(creates(w).length, 1);
 });
@@ -148,7 +155,8 @@ test('For Lead creates the task from the original message and replies with the t
     },
   ]);
   const view = w.tg.sent().at(-1);
-  assert.match(view.text, /^<b>Created<\/b> · TST-1 Fix the login page$/m);
+  assert.ok(view.text.startsWith(`<b>${TASK_LINK}</b> Fix the login page\nTo do · Lead`));
+  assert.ok(!view.text.includes('Open in Paperclip'));
   assert.equal(view.replyTo, update.message.message_id);
   assert.equal(w.tg.messages.get(offer.message_id).text, 'Created for Lead');
   assert.deepEqual(rowsOf(w, offer.message_id), []);
