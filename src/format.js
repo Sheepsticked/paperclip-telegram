@@ -16,6 +16,7 @@ export const KINDS = [
   'Review',
   'Blocked',
   'Recovery',
+  'Join request',
 ];
 
 export const STATUS_NAMES = {
@@ -70,6 +71,9 @@ export function truncate(text, max) {
   if (max <= 1) return max === 1 ? '…' : '';
   return `${chars.slice(0, max - 1).join('').trimEnd()}…`;
 }
+
+// One line: whitespace runs collapse to a single space.
+export const flat = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
 
 export function firstLine(text) {
   return (

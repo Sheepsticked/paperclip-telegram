@@ -23,6 +23,7 @@ export const COMMANDS = [
   { command: 'status', description: 'What is running and what waits for you' },
   { command: 'following', description: 'Tasks you follow' },
   { command: 'agents', description: 'Agents and what they work on' },
+  { command: 'projects', description: 'Projects and their open tasks' },
   { command: 'settings', description: 'Notifications and mute' },
   { command: 'help', description: 'List the commands' },
 ];
@@ -55,6 +56,7 @@ export class Bot {
     this.agentsLoadedAt = 0;
     this.projects = [];
     this.projectsLoadedAt = 0;
+    this.projectStatsCache = null;
     this.armed = new Map();
     this.profileRegistered = false;
     this.topics = { on: false, canPin: false };

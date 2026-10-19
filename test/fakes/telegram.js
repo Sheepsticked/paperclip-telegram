@@ -6,6 +6,7 @@ const ENTITY = /^&(amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);/;
 const ICON_COLORS = [7322096, 16766590, 13338331, 9367192, 16749490, 16478047];
 const REACTIONS = ['\u{1F44D}', '\u{1F44E}', '\u2764', '\u{1F525}', '\u{1F389}'];
 const FULL_RIGHTS = { can_manage_topics: true, can_pin_messages: true };
+const BOT_DOWNLOAD_LIMIT = 20 * 1024 * 1024;
 
 // Mirrors Telegram's HTML parse mode: known tags only, balanced, with every & < > escaped.
 export function validateTelegramHtml(text) {
@@ -55,6 +56,10 @@ export async function startFakeTelegram({
   const updates = [];
   const waiters = new Set();
   const failures = new Map();
+  const files = new Map();
+  const downloads = [];
+  const downloadFailure = { status: null, drop: false };
+  let nextFileNumber = 1;
   let nextMessageId = 100;
   let nextUpdateId = 1;
   let commands = null;
@@ -209,6 +214,13 @@ export async function startFakeTelegram({
       description = params.description ?? '';
       return respond(res, 200, { ok: true, result: true });
     },
+    // A file the owner sent: unknown ids and files over the bot limit are refused like the real API does.
+    getFile(res, params) {
+      const file = files.get(params.file_id);
+      if (!file) return error(res, 400, 'Bad Request: invalid file_id');
+      if (file.size > BOT_DOWNLOAD_LIMIT) return error(res, 400, 'Bad Request: file is too big');
+      return respond(res, 200, { ok: true, result: { file_id: file.id, file_unique_id: `unique-${file.id}`, file_size: file.size, file_path: file.path } });
+    },
     getMe(res) {
       respond(res, 200, { ok: true, result: { id: botId, is_bot: true, first_name: 'Fake bot', username: 'fake_bot' } });
     },
@@ -289,6 +301,17 @@ export async function startFakeTelegram({
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
+      const download = /^\/file\/bot([^/]+)\/(.+)$/.exec(req.url);
+      if (download) {
+        downloads.push({ path: download[2], tokenOk: download[1] === token });
+        if (download[1] !== token) return error(res, 401, 'Unauthorized');
+        if (downloadFailure.drop) return req.socket.destroy();
+        if (downloadFailure.status) return respond(res, downloadFailure.status, { ok: false, error_code: downloadFailure.status, description: 'Injected download failure' });
+        const file = [...files.values()].find((entry) => entry.path === download[2]);
+        if (!file) return error(res, 404, 'Not Found');
+        res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': file.data.length });
+        return res.end(file.data);
+      }
       const match = /^\/bot([^/]+)\/(\w+)$/.exec(req.url);
       if (!match || match[1] !== token) return error(res, 401, 'Unauthorized');
       const method = match[2];
@@ -392,6 +415,39 @@ export async function startFakeTelegram({
       };
       userMessages.set(messageId, update.message);
       return update;
+    },
+    // A file the owner can send. `size` overrides the size Telegram reports (to test the bot limit without a huge body).
+    addFile({ name = 'notes.txt', data = 'file content', size, kind = 'document' } = {}) {
+      const bytes = Buffer.from(data);
+      const id = `file-${nextFileNumber}`;
+      const entry = { id, name, data: bytes, size: size ?? bytes.length, path: `${kind === 'photo' ? 'photos' : 'documents'}/file_${nextFileNumber}${name.includes('.') ? name.slice(name.lastIndexOf('.')) : ''}` };
+      nextFileNumber += 1;
+      files.set(id, entry);
+      return entry;
+    },
+    // A photo is sent in several sizes; the bot should take the largest.
+    photoUpdate(file, { caption, ...options } = {}) {
+      const thumb = api.addFile({ name: 'thumb.jpg', data: file.data.subarray(0, 4), kind: 'photo' });
+      const extra = {
+        photo: [
+          { file_id: thumb.id, file_unique_id: `unique-${thumb.id}`, file_size: thumb.size, width: 90, height: 90 },
+          { file_id: file.id, file_unique_id: `unique-${file.id}`, file_size: file.size, width: 1280, height: 960 },
+        ],
+        ...(caption ? { caption } : {}),
+      };
+      return api.message(undefined, { ...options, extra });
+    },
+    documentUpdate(file, { caption, mime = 'text/plain', ...options } = {}) {
+      const extra = { document: { file_id: file.id, file_unique_id: `unique-${file.id}`, file_name: file.name, mime_type: mime, file_size: file.size }, ...(caption ? { caption } : {}) };
+      return api.message(undefined, { ...options, extra });
+    },
+    downloads,
+    files,
+    failDownloads(status) {
+      downloadFailure.status = status;
+    },
+    dropDownloads(value = true) {
+      downloadFailure.drop = value;
     },
     tap(messageId, data, { from = userId, chat: chatOf = chatId } = {}) {
       const sent = messages.get(messageId);

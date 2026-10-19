@@ -1,13 +1,16 @@
 import { authorName } from './comments.js';
+import { docsKeyboard, sendDocument } from './docs.js';
 import { followIssue, unfollowIssue } from './follow.js';
-import { ago, button, escapeHtml, fitMessage, headline, issueUrl, link, statusName, truncate } from './format.js';
+import { ago, button, escapeHtml, fitMessage, flat, headline, issueUrl, link, statusName, truncate } from './format.js';
 import { PaperclipError } from './paperclip.js';
+import { ID_PREFIX, byPrefix } from './pick.js';
 import { ownTopic, threadOf } from './thread.js';
+
+export { ID_PREFIX, byPrefix };
 
 const COMMENT_COUNT = 3;
 const PICKER_PAGE = 8;
 const PICKER_AGENT_LIMIT = 40;
-export const ID_PREFIX = 8;
 const UNASSIGNABLE = new Set(['terminated', 'pending_approval']);
 
 // Progressively smaller text budgets used until the task view fits the Telegram limit.
@@ -24,8 +27,6 @@ const MOVES = {
   t: { status: 'todo', confirm: false, label: 'To do', done: 'To do' },
   x: { status: 'cancelled', confirm: true, label: 'Cancel', done: 'Cancelled' },
 };
-
-const flat = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
 
 // Parses "ABC-12", "abc-12" or "12" (the most common company prefix is used for a bare number).
 export function parseTaskRef(text, defaultPrefix) {
@@ -62,6 +63,7 @@ function composeTask(view, { kind, note, own, now, uiBaseUrl }, level) {
   const lines = [headline(kind, issue, { own, titleMax: level.title })];
   if (note) lines.push(escapeHtml(note));
   lines.push(`Status: ${escapeHtml(statusName(issue.status))}`);
+  if (issue.executionRunId) lines.push(`Running: ${escapeHtml(truncate(view.assignee !== 'Unassigned' ? view.assignee : (issue.executionAgentNameKey ?? 'An agent'), 60))}`);
   lines.push(`Assignee: ${escapeHtml(truncate(view.assignee, 60))}`);
   lines.push(`Project: ${escapeHtml(truncate(view.project ?? 'None', 60))}`);
   lines.push(`Priority: ${escapeHtml(issue.priority ?? 'medium')}`);
@@ -85,12 +87,15 @@ export function taskKeyboard(issue, { following, armed }) {
   if (issue.status !== 'done') moves.push(move('d'));
   if (issue.status !== 'todo') moves.push(move('t'));
   if (issue.status !== 'cancelled') moves.push(move('x'));
-  return [
+  const rows = [
     [button('Comment', `T:c:${id}`), button('Refresh', `T:r:${id}`)],
     moves,
     [button('Assign', `T:a:${id}`), button('Project', `T:p:${id}:0`)],
     [following ? button('Unfollow', `T:f:${id}`) : button('Follow', `T:f:${id}`)],
   ];
+  if (issue.documentSummaries?.length > 0) rows[3].push(button('Docs', `T:l:${id}`));
+  if (issue.executionRunId) rows.push([button(armed.has('s') ? 'Tap again to confirm' : 'Stop run', `T:s:${id}:${issue.executionRunId.slice(0, ID_PREFIX)}`)]);
+  return rows;
 }
 
 export function renderTask(bot, view, { kind = 'Task', note = null, own = false, armed = new Set() } = {}) {
@@ -122,14 +127,14 @@ async function showTask(bot, message, ref, view) {
 }
 
 // What the owner is told when Paperclip refuses or fails a button action.
-export async function reportActionFailure(bot, cq, err) {
+export async function reportActionFailure(bot, cq, err, notFound = 'Task not found') {
   if (!(err instanceof PaperclipError)) throw err;
   if (err.network) return bot.answer(cq.id, 'Paperclip unreachable, try again');
   if (err.status === 401) {
     await bot.paperclipFailed(err);
     return bot.answer(cq.id, 'Paperclip token rejected');
   }
-  if (err.status === 404) return bot.answer(cq.id, 'Task not found', true);
+  if (err.status === 404) return bot.answer(cq.id, notFound, true);
   const text = err.status >= 500 ? `Paperclip error: ${err.status}` : err.detail || `Paperclip error: ${err.status}`;
   return bot.answer(cq.id, text, true);
 }
@@ -148,14 +153,39 @@ async function moveStatus(bot, cq, issueId, op) {
   return bot.answer(cq.id, move.done);
 }
 
+// Stopping a run needs two taps; the second one checks that the run is still the one that was shown.
+async function stopRun(bot, cq, issueId, prefix) {
+  const messageId = cq.message.message_id;
+  if (!bot.isArmed(messageId, 's')) {
+    bot.arm(messageId, 's', () => showTask(bot, cq.message, issueId));
+    await showTask(bot, cq.message, issueId);
+    return bot.answer(cq.id, 'Tap again to confirm');
+  }
+  bot.disarm(messageId);
+  const { executionRunId: runId } = await bot.pc.getIssue(issueId);
+  if (!runId || !runId.startsWith(prefix)) {
+    await showTask(bot, cq.message, issueId);
+    return bot.answer(cq.id, 'The run already ended');
+  }
+  await bot.pc.cancelRun(runId);
+  await showTask(bot, cq.message, issueId);
+  return bot.answer(cq.id, 'Run stopped');
+}
+
+// Turns the buttons of the task view into one button per document.
+async function openDocs(bot, cq, issueId) {
+  const { documentSummaries } = await bot.pc.getIssue(issueId);
+  if (!documentSummaries?.length) {
+    await showTask(bot, cq.message, issueId);
+    return bot.answer(cq.id, 'No documents');
+  }
+  await bot.editKeyboard(cq.message.message_id, docsKeyboard(issueId, documentSummaries));
+  return bot.answer(cq.id);
+}
+
 export function assignableAgents(agents) {
   return agents.filter((agent) => !UNASSIGNABLE.has(agent.status)).sort((a, b) => a.name.localeCompare(b.name));
 }
-
-export const byPrefix = (items, prefix) => {
-  const found = items.filter((item) => item.id.startsWith(prefix));
-  return found.length === 1 ? found[0] : null;
-};
 
 async function openAgentPicker(bot, cq, issueId) {
   const agents = assignableAgents(await bot.agentRecords({ fresh: true })).slice(0, PICKER_AGENT_LIMIT);
@@ -256,6 +286,12 @@ export async function handleTaskCallback(bot, cq) {
     if (op === 'p') return await openProjectPicker(bot, cq, issueId, Number(arg) || 0);
     if (op === 'P') return await setProject(bot, cq, issueId, arg ?? '');
     if (op === 'f') return await toggleFollow(bot, cq, issueId);
+    if (op === 's') return await stopRun(bot, cq, issueId, arg ?? '');
+    if (op === 'l') return await openDocs(bot, cq, issueId);
+    if (op === 'D') {
+      await sendDocument(bot, cq, issueId, arg ?? '');
+      return undefined;
+    }
     if (op === 'b') {
       bot.disarm(cq.message.message_id);
       await showTask(bot, cq.message, issueId);

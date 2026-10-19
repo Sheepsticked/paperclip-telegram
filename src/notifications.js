@@ -2,11 +2,12 @@ import { refreshCard, sendCard } from './actions.js';
 import { pollFollowing } from './follow.js';
 import { escapeHtml, firstLine, headline, issueUrl, link, prefixOf, runUrl, taskButton, truncate, truncateLines } from './format.js';
 import { guarded, isUnauthorized } from './guard.js';
+import { INBOX_KINDS, isFreshInbox, sendInboxItem, syncInbox } from './inbox.js';
 import { PaperclipError } from './paperclip.js';
 import { allow, announceMuteEnd } from './settings.js';
 import { syncTopics } from './topics.js';
 
-const INITIAL_CARD_LIMIT = 10;
+const INITIAL_LIMIT = 10;
 const CHANGE_SUMMARY_THRESHOLD = 10;
 const ISSUE_PAGE = 200;
 const SEED_PAGE = 500;
@@ -53,14 +54,53 @@ async function sendFeedCard(bot, item, cache, sentIssueIds) {
   return true;
 }
 
-// Sends the cards that are new (at most `limit`) and returns the interaction ids left over.
-async function sendNewCards(bot, feedCards, cache, sentIssueIds, limit = Infinity) {
+// Feed items that have no message yet and are not skipped, in feed order: cards and inbox items.
+function freshEntries(bot, items) {
   const { state } = bot;
-  const fresh = feedCards.filter((item) => !state.cardByInteraction(item.subject.id) && !state.skippedCards.includes(item.subject.id));
-  for (const item of fresh.slice(0, limit)) {
-    await guarded(bot, `card ${item.relatedIssue?.identifier ?? item.subject.id}`, () => sendFeedCard(bot, item, cache, sentIssueIds));
+  const entries = [];
+  for (const item of items) {
+    if (item.sourceKind === 'issue_thread_interaction') {
+      if (!state.cardByInteraction(item.subject.id) && !state.skippedCards.includes(item.subject.id)) entries.push({ type: 'card', item });
+    } else if (INBOX_KINDS.has(item.sourceKind) && !item.dismissal?.isActive && isFreshInbox(bot, item)) {
+      entries.push({ type: 'inbox', item });
+    }
   }
-  return fresh.slice(limit).map((item) => item.subject.id);
+  return entries;
+}
+
+// A review that is not stalled has no buttons; it waits for the status messages so it can be left out when they cover it.
+const isPlainReview = (item) => item.sourceKind === 'review' && item.subject?.metadata?.reviewAttentionState !== 'stalled';
+
+// Sends the entries; plain reviews are returned for later.
+async function sendEntries(bot, entries, cache, sentIssueIds) {
+  const later = [];
+  for (const { type, item } of entries) {
+    if (type === 'card') {
+      await guarded(bot, `card ${item.relatedIssue?.identifier ?? item.subject.id}`, () => sendFeedCard(bot, item, cache, sentIssueIds));
+    } else if (isPlainReview(item)) {
+      later.push(item);
+    } else {
+      await guarded(bot, `${item.sourceKind} ${item.subject?.id}`, () => sendInboxItem(bot, item));
+    }
+  }
+  return later;
+}
+
+// Issues that already have a card, an approval message or an in-review message.
+function coveredIssueIds(bot, items, sentIssueIds, reviewedIssueIds) {
+  const { state } = bot;
+  const covered = new Set([...sentIssueIds, ...reviewedIssueIds, ...state.pendingCards().map((card) => card.issueId)]);
+  for (const record of state.openInbox()) if (record.kind === 'approval') [record.issue?.id, record.issueId].forEach((id) => id && covered.add(id));
+  for (const item of items) if (item.sourceKind === 'approval' && item.subject?.metadata?.issueId) covered.add(item.subject.metadata.issueId);
+  return covered;
+}
+
+async function sendReviews(bot, reviews, covered) {
+  for (const item of reviews) {
+    if (covered.has(item.subject?.id)) bot.state.skipInbox(item.dedupKey);
+    else await guarded(bot, `review ${item.subject?.identifier ?? item.subject?.id}`, () => sendInboxItem(bot, item));
+  }
+  bot.state.save();
 }
 
 async function syncPendingCards(bot, feedCards, cache) {
@@ -172,28 +212,35 @@ async function reportStatusChanges(bot, sentIssueIds) {
   });
 
   const quoted = new Set();
+  const reviewed = new Set();
   if (outgoing.length > CHANGE_SUMMARY_THRESHOLD) {
     const done = outgoing.filter((issue) => issue.status === 'done').length;
     await bot.send(`${done} done, ${outgoing.length - done} in review since the last check, see /status`);
-    for (const issue of outgoing) state.statuses.set(issue.id, issue.status);
+    for (const issue of outgoing) {
+      state.statuses.set(issue.id, issue.status);
+      if (issue.status === 'in_review') reviewed.add(issue.id);
+    }
   } else {
     for (const issue of outgoing.reverse()) {
       const quote = await sendStatusUpdate(bot, issue);
       if (quote) quoted.add(quote);
+      if (issue.status === 'in_review') reviewed.add(issue.id);
       state.statuses.set(issue.id, issue.status);
       state.save();
     }
   }
   await syncTopics(bot, updated);
   await pollFollowing(bot, updated, quoted);
+  return reviewed;
 }
 
-// One pass over Paperclip: new cards, closed cards, failed runs and done / in-review changes.
+// One pass over Paperclip: new and closed cards and inbox items, failed runs and done / in-review changes.
 export async function pollPaperclip(bot) {
   const { state } = bot;
   const startedAt = bot.now();
   state.pruneCards(startedAt);
   state.pruneOffers(startedAt);
+  state.pruneInbox(startedAt);
   await announceMuteEnd(bot);
 
   const firstRun = !state.baselineAt;
@@ -204,26 +251,34 @@ export async function pollPaperclip(bot) {
     state.save();
   }
 
-  const items = await bot.pc.listAttention(bot.config.companyId);
+  const { items, complete } = await bot.pc.attentionFeed(bot.config.companyId);
   const feedCards = items.filter((item) => item.sourceKind === 'issue_thread_interaction');
   const failedRuns = items.filter((item) => item.sourceKind === 'failed_run');
   const cache = new Map();
   const sentIssueIds = new Set();
+  let reviews;
 
   if (!state.initialSyncDone) {
-    const rest = await sendNewCards(bot, feedCards, cache, sentIssueIds, INITIAL_CARD_LIMIT);
-    for (const interactionId of rest) state.skipCard(interactionId);
+    const fresh = freshEntries(bot, items);
+    reviews = await sendEntries(bot, fresh.slice(0, INITIAL_LIMIT), cache, sentIssueIds);
+    const rest = fresh.slice(INITIAL_LIMIT);
+    for (const { type, item } of rest) {
+      if (type === 'card') state.skipCard(item.subject.id);
+      else state.skipInbox(item.dedupKey);
+    }
     for (const item of failedRuns) state.markRunAlerted(item.subject.id);
     state.initialSyncDone = true;
     state.save();
     if (rest.length > 0) await guarded(bot, 'the first-start summary', () => bot.send(`+${rest.length} more, see /status`));
   } else {
-    await sendNewCards(bot, feedCards, cache, sentIssueIds);
+    reviews = await sendEntries(bot, freshEntries(bot, items), cache, sentIssueIds);
     await alertFailedRuns(bot, failedRuns);
   }
 
   await syncPendingCards(bot, feedCards, cache);
-  if (!firstRun) await reportStatusChanges(bot, sentIssueIds);
+  await syncInbox(bot, items, complete);
+  const reviewed = firstRun ? new Set() : await reportStatusChanges(bot, sentIssueIds);
+  await sendReviews(bot, reviews, coveredIssueIds(bot, items, sentIssueIds, reviewed));
   state.lastPollAt = iso(startedAt);
   state.save();
 }

@@ -4,7 +4,9 @@ import path from 'node:path';
 const MAX_MESSAGES = 2000;
 const MAX_ALERTED_RUNS = 500;
 const MAX_SKIPPED_CARDS = 500;
+const MAX_SKIPPED_INBOX = 500;
 const RESOLVED_CARD_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_INBOX = 300;
 const MAX_FOLLOWING = 50;
 const MAX_OFFERS = 20;
 const OFFER_TTL_MS = 24 * 60 * 60 * 1000;
@@ -46,6 +48,22 @@ function loadRoots(saved) {
   return new Map(entries.slice(-MAX_ROOTS));
 }
 
+// Inbox records from a saved file; an entry that is not usable is dropped.
+function loadInbox(saved) {
+  const inbox = new Map();
+  for (const [key, record] of Object.entries(saved && typeof saved === 'object' ? saved : {})) {
+    const usable =
+      record &&
+      typeof record === 'object' &&
+      typeof record.kind === 'string' &&
+      typeof record.dedupKey === 'string' &&
+      (record.status === 'open' || record.status === 'resolved') &&
+      [record.messageIds, record.facts, record.options].every(Array.isArray);
+    if (usable) inbox.set(key, record);
+  }
+  return inbox;
+}
+
 // Persistent bot state, saved atomically (temp file, then rename) with mode 600.
 export class State {
   constructor(file, data = {}) {
@@ -57,6 +75,9 @@ export class State {
     this.identifiers = new Map(Object.entries(data.identifiers ?? {}));
     this.alertedRuns = data.alertedRuns ?? [];
     this.skippedCards = data.skippedCards ?? [];
+    this.inbox = loadInbox(data.inbox);
+    this.inboxCounter = Number.isInteger(data.inboxCounter) ? data.inboxCounter : 0;
+    this.skippedInbox = Array.isArray(data.skippedInbox) ? data.skippedInbox.filter((dedupKey) => typeof dedupKey === 'string') : [];
     this.statuses = new Map(Object.entries(data.statuses ?? {}));
     this.baselineAt = data.baselineAt ?? null;
     this.initialSyncDone = data.initialSyncDone ?? false;
@@ -121,6 +142,41 @@ export class State {
     if (this.skippedCards.length > MAX_SKIPPED_CARDS) this.skippedCards.splice(0, this.skippedCards.length - MAX_SKIPPED_CARDS);
   }
 
+  nextInboxKey() {
+    this.inboxCounter += 1;
+    return this.inboxCounter.toString(36);
+  }
+
+  // Inbox items left out of the first-start batch; they are not sent unless they leave the feed and come back.
+  skipInbox(dedupKey) {
+    if (this.skippedInbox.includes(dedupKey)) return;
+    this.skippedInbox.push(dedupKey);
+    if (this.skippedInbox.length > MAX_SKIPPED_INBOX) this.skippedInbox.splice(0, this.skippedInbox.length - MAX_SKIPPED_INBOX);
+  }
+
+  openInbox() {
+    return [...this.inbox.values()].filter((record) => record.status === 'open');
+  }
+
+  inboxByDedupKey(dedupKey) {
+    return this.openInbox().find((record) => record.dedupKey === dedupKey) ?? null;
+  }
+
+  inboxByNotePrompt(messageId) {
+    return this.openInbox().find((record) => record.notePromptMessageId === messageId) ?? null;
+  }
+
+  // Drops old resolved records, and the oldest ones when there are too many.
+  pruneInbox(now) {
+    for (const [key, record] of this.inbox) {
+      if (record.status === 'resolved' && record.resolvedAt && now - Date.parse(record.resolvedAt) > RESOLVED_CARD_TTL_MS) this.inbox.delete(key);
+    }
+    for (const [key, record] of this.inbox) {
+      if (this.inbox.size <= MAX_INBOX) break;
+      if (record.status === 'resolved') this.inbox.delete(key);
+    }
+  }
+
   pendingCards() {
     return [...this.cards.values()].filter((card) => card.status === 'pending');
   }
@@ -178,10 +234,11 @@ export class State {
     return this.following.delete(issueId);
   }
 
-  addOffer(text, messageId, updateId, nowMs, thread = null) {
+  // `file` is a Telegram file waiting to be attached to the new task; `agentId` is the agent picked so far.
+  addOffer(text, messageId, updateId, nowMs, thread = null, { file = null, agentId = null } = {}) {
     this.offerCounter += 1;
     const key = this.offerCounter.toString(36);
-    this.offers.set(key, { text, messageId, updateId, at: nowMs, thread });
+    this.offers.set(key, { text, messageId, updateId, at: nowMs, thread, file, agentId });
     while (this.offers.size > MAX_OFFERS) this.offers.delete(this.offers.keys().next().value);
     return key;
   }
@@ -231,6 +288,9 @@ export class State {
       identifiers: Object.fromEntries([...this.identifiers].filter(([issueId]) => referenced.has(issueId))),
       alertedRuns: this.alertedRuns,
       skippedCards: this.skippedCards,
+      inbox: Object.fromEntries(this.inbox),
+      inboxCounter: this.inboxCounter,
+      skippedInbox: this.skippedInbox,
       statuses: Object.fromEntries(this.statuses),
       baselineAt: this.baselineAt,
       initialSyncDone: this.initialSyncDone,

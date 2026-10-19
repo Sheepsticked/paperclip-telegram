@@ -326,6 +326,102 @@ test('State drops malformed topic entries from a hand-edited file', (t) => {
   assert.equal(State.load(path.join(tempDir(t), 'none.json')).topics.size, 0);
 });
 
+// A fetch stand-in that answers each call from `replies` (a status and a JSON body) and records the calls.
+function stubFetch(replies) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    const { status = 200, body } = replies[Math.min(calls.length, replies.length) - 1];
+    return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  };
+  return { fetchImpl, calls };
+}
+
+test('attentionFeed says whether the walk reached the end of the feed', async () => {
+  const page = (ids, nextCursor) => ({ body: { items: ids.map((id) => ({ id })), nextCursor } });
+  const make = (replies) => {
+    const stub = stubFetch(replies);
+    return { client: new PaperclipClient({ baseUrl: 'http://paperclip.test', token: 'pcp_board_x', fetchImpl: stub.fetchImpl }), calls: stub.calls };
+  };
+
+  const whole = make([page(['a'], 'c1'), page(['b'], null)]);
+  assert.deepEqual(await whole.client.attentionFeed('c'), { items: [{ id: 'a' }, { id: 'b' }], complete: true });
+  assert.ok(whole.calls[1].url.includes('cursor=c1'));
+
+  const stale = make([page(['a'], 'c1'), { status: 400, body: { error: 'cursor no longer matches' } }]);
+  assert.deepEqual(await stale.client.attentionFeed('c'), { items: [{ id: 'a' }], complete: false });
+
+  const capped = make([page(['a'], 'c1'), page(['b'], 'c2'), page(['c'], 'c3')]);
+  const result = await capped.client.attentionFeed('c', { maxPages: 2 });
+  assert.equal(result.items.length, 2);
+  assert.equal(result.complete, false);
+  assert.deepEqual(await make([page(['a'], null)]).client.listAttention('c'), [{ id: 'a' }]);
+});
+
+test('uploadAttachment sends one multipart file part and postComment sends the attachment ids', async () => {
+  const stub = stubFetch([{ status: 201, body: { id: 'att-1' } }, { status: 201, body: { id: 'com-1' } }, { status: 201, body: { id: 'com-2' } }]);
+  const client = new PaperclipClient({ baseUrl: 'http://paperclip.test', token: 'pcp_board_x', fetchImpl: stub.fetchImpl });
+
+  await client.uploadAttachment('c', 'i', { name: 'a.png', type: 'image/png', data: Buffer.from('abc') });
+  const { init } = stub.calls[0];
+  assert.equal(init.method, 'POST');
+  assert.ok(init.body instanceof FormData);
+  assert.ok(!('content-type' in init.headers), 'fetch sets the multipart boundary itself');
+  const file = init.body.get('file');
+  assert.deepEqual([file.name, file.type, file.size], ['a.png', 'image/png', 3]);
+  assert.deepEqual([...init.body.keys()], ['file']);
+
+  await client.postComment('i', 'Hello', { attachmentIds: ['att-1'] });
+  assert.deepEqual(JSON.parse(stub.calls[1].init.body), { body: 'Hello', attachmentIds: ['att-1'] });
+  await client.postComment('i', 'Plain');
+  assert.deepEqual(JSON.parse(stub.calls[2].init.body), { body: 'Plain' });
+});
+
+test('State keeps inbox records and skipped items across a save and drops unusable entries', (t) => {
+  const file = path.join(tempDir(t), 'state.json');
+  const state = new State(file);
+  const record = { key: state.nextInboxKey(), kind: 'approval', dedupKey: 'approval:1', status: 'open', messageIds: [5], facts: ['Type: Hire agent'], options: [], resolvedAt: null };
+  state.inbox.set(record.key, record);
+  state.skipInbox('join:2');
+  state.skipInbox('join:2');
+  state.save();
+
+  const loaded = State.load(file);
+  assert.deepEqual(loaded.inbox.get('1'), record);
+  assert.equal(loaded.nextInboxKey(), '2');
+  assert.deepEqual(loaded.skippedInbox, ['join:2']);
+  assert.equal(loaded.inboxByDedupKey('approval:1').key, '1');
+  assert.equal(loaded.inboxByDedupKey('approval:9'), null);
+
+  fs.writeFileSync(file, JSON.stringify({ inbox: { a: null, b: { kind: 'approval' }, c: { ...record, messageIds: 'x' }, d: { ...record, status: 'odd' }, e: record }, inboxCounter: 'x', skippedInbox: ['ok', 3, null] }));
+  const hand = State.load(file);
+  assert.deepEqual([...hand.inbox.keys()], ['e']);
+  assert.equal(hand.inboxCounter, 0);
+  assert.deepEqual(hand.skippedInbox, ['ok']);
+});
+
+test('State prunes resolved inbox records after a week and keeps open ones', (t) => {
+  const state = new State(path.join(tempDir(t), 'state.json'));
+  const now = Date.parse('2030-01-10T00:00:00Z');
+  const base = { kind: 'approval', messageIds: [], facts: [], options: [] };
+  state.inbox.set('1', { ...base, dedupKey: 'a', status: 'resolved', resolvedAt: '2030-01-01T00:00:00Z' });
+  state.inbox.set('2', { ...base, dedupKey: 'b', status: 'resolved', resolvedAt: '2030-01-09T00:00:00Z' });
+  state.inbox.set('3', { ...base, dedupKey: 'c', status: 'open', resolvedAt: null });
+  state.pruneInbox(now);
+  assert.deepEqual([...state.inbox.keys()], ['2', '3']);
+  assert.deepEqual(state.openInbox().map((record) => record.dedupKey), ['c']);
+});
+
+test('State keeps the file and the chosen agent of an offer', (t) => {
+  const file = path.join(tempDir(t), 'state.json');
+  const state = new State(file);
+  const key = state.addOffer('text', 5, 6, 0, null, { file: { fileId: 'f', name: 'a.png', mime: 'image/png', size: 3 }, agentId: 'agent-1' });
+  state.save();
+  const offer = State.load(file).offers.get(key);
+  assert.deepEqual(offer.file, { fileId: 'f', name: 'a.png', mime: 'image/png', size: 3 });
+  assert.equal(offer.agentId, 'agent-1');
+});
+
 test('parseTaskRef accepts identifiers in any case and bare numbers with a default prefix', () => {
   assert.equal(parseTaskRef('TST-12'), 'TST-12');
   assert.equal(parseTaskRef(' tst-012 '), 'TST-12');

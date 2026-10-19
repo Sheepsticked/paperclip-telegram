@@ -1,5 +1,7 @@
 import { handleCallback } from './actions.js';
+import { handleAgentCallback } from './agents.js';
 import { handleOfferCallback } from './create.js';
+import { handleInboxCallback } from './inbox.js';
 import { handleListCallback } from './lists.js';
 import { handleSettingsCallback } from './settings.js';
 import { handleTaskCallback } from './tasks.js';
@@ -10,6 +12,8 @@ const HANDLERS = {
   L: handleListCallback,
   S: handleSettingsCallback,
   O: handleOfferCallback,
+  I: handleInboxCallback,
+  G: handleAgentCallback,
 };
 
 export function routeCallback(bot, cq) {

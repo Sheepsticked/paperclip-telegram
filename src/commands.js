@@ -1,8 +1,12 @@
 import { findCardByMessage, findCardByReasonPrompt, handleReasonReply, handleTextAnswer, hasOpenTextQuestion, reportFailure } from './actions.js';
-import { NEW_USAGE, createTask, offerTask, parseNewArgs, resolveTargets } from './create.js';
+import { commandAgents } from './agents.js';
+import { NEW_USAGE, askProjectForNew, createTask, offerTask, parseNewArgs, resolveTargets } from './create.js';
+import { attachToTask, fileOf } from './files.js';
 import { headline, issueUrl, link } from './format.js';
-import { commandAgents, commandFind, commandFollowing, commandStatus, commandTasks } from './lists.js';
+import { handleNoteReply } from './inbox.js';
+import { commandFind, commandFollowing, commandStatus, commandTasks } from './lists.js';
 import { PaperclipError } from './paperclip.js';
+import { commandProjects } from './projects.js';
 import { commandSettings } from './settings.js';
 import { guessPrefix, parseTaskRef, sendTaskView } from './tasks.js';
 import { isServiceMessage, replyTarget, threadOf, where } from './thread.js';
@@ -16,6 +20,7 @@ const HELP_COMMANDS = [
   '/status — what is running and what waits for you',
   '/following — tasks you follow',
   '/agents — agents and what they work on',
+  '/projects — projects and their open tasks',
   '/settings — notifications and mute',
   '/help — this list',
   '',
@@ -44,6 +49,7 @@ async function commandNew(bot, update, rest) {
   if (!parsed.text) return reply(bot, msg, NEW_USAGE);
   const { targets, error } = await resolveTargets(bot, parsed);
   if (error) return reply(bot, msg, error);
+  if (targets.project === null && (await askProjectForNew(bot, update, { text: parsed.text, agent: targets.agent }))) return undefined;
   await createTask(bot, { updateId: update.update_id, text: parsed.text, ...where(bot, msg), ...targets });
   return undefined;
 }
@@ -70,6 +76,7 @@ const HANDLERS = {
   status: (bot, update) => commandStatus(bot, update.message),
   following: (bot, update) => commandFollowing(bot, update.message),
   agents: (bot, update) => commandAgents(bot, update.message),
+  projects: (bot, update) => commandProjects(bot, update.message),
   settings: (bot, update) => commandSettings(bot, update.message),
 };
 
@@ -99,9 +106,21 @@ async function postComment(bot, msg, issue) {
   return reply(bot, msg, lines.join('\n'), issue);
 }
 
-// Precedence: a decline reason, then an open text question, then a plain comment on the task.
+// The task a reply belongs to: the one its message was about, the card's, or the topic's.
+function taskOfReply(bot, msg, replyTo) {
+  const card = findCardByMessage(bot.state, replyTo);
+  return bot.state.issueForMessage(replyTo) ?? (card ? { id: card.issueId, identifier: card.identifier } : topicTask(bot, msg));
+}
+
+// Precedence: a note for a stalled review, a decline reason, an open text question, then a plain comment on the task.
 async function handleReply(bot, msg, replyTo) {
   const text = typeof msg.text === 'string' ? msg.text.trim() : '';
+
+  const noteRecord = bot.state.inboxByNotePrompt(replyTo);
+  if (noteRecord) {
+    if (!text) return reply(bot, msg, 'Only text replies are supported');
+    return handleNoteReply(bot, noteRecord, msg);
+  }
 
   const reasonCard = findCardByReasonPrompt(bot.state, replyTo);
   if (reasonCard) {
@@ -115,7 +134,7 @@ async function handleReply(bot, msg, replyTo) {
     return handleTextAnswer(bot, card, msg);
   }
 
-  const issue = bot.state.issueForMessage(replyTo) ?? (card ? { id: card.issueId, identifier: card.identifier } : topicTask(bot, msg));
+  const issue = taskOfReply(bot, msg, replyTo);
   if (!issue) return reply(bot, msg, "I don't know which task this is");
   if (!text) return reply(bot, msg, 'Only text replies are supported');
   return postComment(bot, msg, issue);
@@ -127,11 +146,25 @@ function topicTask(bot, msg) {
   return rootId ? { id: rootId, identifier: bot.state.topics.get(rootId).identifier } : null;
 }
 
+// A photo or file: it goes to the task the message replies to or is written under; with a caption alone it offers a new task.
+async function handleFile(bot, update, file) {
+  const msg = update.message;
+  const caption = typeof msg.caption === 'string' ? msg.caption.trim() : '';
+  const replyTo = replyTarget(msg);
+  const issue = replyTo ? taskOfReply(bot, msg, replyTo) : topicTask(bot, msg);
+  if (issue) return attachToTask(bot, msg, issue, file, caption);
+  if (replyTo) return reply(bot, msg, "I don't know which task this is");
+  if (!caption) return reply(bot, msg, 'Add a caption to make a task, or reply to a task message to attach it');
+  return offerTask(bot, update, { text: caption, file });
+}
+
 export async function handleMessage(bot, update) {
   const msg = update.message;
   if (isServiceMessage(msg) || msg.from?.is_bot) return undefined;
   const command = typeof msg.text === 'string' ? parseCommand(msg.text) : null;
   if (command) return runCommand(bot, update, command);
+  const file = fileOf(msg);
+  if (file) return handleFile(bot, update, file);
   const target = replyTarget(msg);
   if (target) return handleReply(bot, msg, target);
   if (typeof msg.text === 'string' && msg.text.trim()) {

@@ -178,7 +178,7 @@ test('/following lists followed tasks as buttons', async (t) => {
   assert.deepEqual(rowsOf(w, list.message_id), [['TST-2 · Second followed'], ['TST-1 · First followed']]);
 });
 
-test('/agents lists agents with what they work on', async (t) => {
+test('/agents lists every agent as a button with its status and work', async (t) => {
   const { w, bot } = await setup(t);
   w.pc.addAgent({ name: 'Idle <Helper>', status: 'paused' });
   w.pc.addIssue({ title: 'Build the API', status: 'in_progress', assigneeAgentId: 'agent-1' });
@@ -186,12 +186,10 @@ test('/agents lists agents with what they work on', async (t) => {
 
   await bot.handleUpdate(w.tg.message('/agents'));
   const reply = w.tg.lastMessage();
-  assert.match(reply.text, /^<b>Agents<\/b>$/m);
-  assert.match(reply.text, /^- <b>Dev<\/b> — idle, 1 in progress$/m);
-  assert.match(reply.text, /^- <b>Idle &lt;Helper&gt;<\/b> — paused$/m);
-  assert.match(reply.text, /^- <b>Lead<\/b> — idle$/m);
+  assert.equal(reply.text, '<b>Agents</b> (3)');
+  assert.deepEqual(rowsOf(w, reply.message_id), [['Dev · Idle · 1 in progress'], ['Idle <Helper> · Paused'], ['Lead · Idle']]);
+  assert.deepEqual(w.tg.buttons(reply.message_id)[0].callback_data, 'G:v:agent-1');
   assert.equal(validateTelegramHtml(reply.text), null);
-  assert.deepEqual(rowsOf(w, reply.message_id), [['Dev: TST-1 · Build the API']]);
   // The agents route refuses query parameters, so the bot must not send any.
   const agentRequests = w.pc.requests.filter((r) => r.path.endsWith('/agents'));
   assert.ok(agentRequests.length > 0);

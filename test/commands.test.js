@@ -119,14 +119,14 @@ test('a reply without text is declined', async (t) => {
   const { w, bot } = await setup(t);
   await bot.handleUpdate(w.tg.message('/new Photo task'));
   const confirmation = w.tg.lastMessage();
-  await bot.handleUpdate(w.tg.message(undefined, { replyTo: confirmation.message_id, extra: { photo: [{ file_id: 'x' }] } }));
+  await bot.handleUpdate(w.tg.message(undefined, { replyTo: confirmation.message_id, extra: { sticker: { file_id: 'x' } } }));
   assert.equal(w.tg.lastMessage().text, 'Only text replies are supported');
   assert.equal(posts(w, '/comments').length, 0);
 });
 
 test('a message without text and without a reply gets a hint', async (t) => {
   const { w, bot } = await setup(t);
-  await bot.handleUpdate(w.tg.message(undefined, { extra: { photo: [{ file_id: 'x' }] } }));
+  await bot.handleUpdate(w.tg.message(undefined, { extra: { sticker: { file_id: 'x' } } }));
   assert.match(w.tg.lastMessage().text, /Send text to create a task, or reply to a task message/);
   assert.equal(w.pc.requests.filter((r) => r.method === 'POST').length, 0);
 });

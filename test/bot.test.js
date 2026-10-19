@@ -128,7 +128,7 @@ test('the menu lists the commands in order and the bot profile text is set once'
 
   assert.deepEqual(
     w.tg.commands.map((c) => c.command),
-    ['new', 'task', 'tasks', 'find', 'status', 'following', 'agents', 'settings', 'help'],
+    ['new', 'task', 'tasks', 'find', 'status', 'following', 'agents', 'projects', 'settings', 'help'],
   );
   assert.ok(w.tg.shortDescription.length > 0 && w.tg.shortDescription.length <= 120);
   assert.ok(w.tg.description.length > 0 && w.tg.description.length <= 512);

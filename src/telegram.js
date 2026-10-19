@@ -112,6 +112,39 @@ export class TelegramClient {
     return this.call('getMe');
   }
 
+  getFile(params) {
+    return this.call('getFile', params);
+  }
+
+  // Downloads a file by the path getFile returned. The URL carries the bot token, so errors name only
+  // the method and a short reason; a file over `maxBytes` is refused while it streams.
+  async downloadFile(filePath, { maxBytes, timeoutMs = 60_000 } = {}) {
+    const fail = (details) => new TelegramError('downloadFile', details);
+    let response;
+    try {
+      response = await this.#fetch(`${this.#baseUrl}/file/bot${this.#token}/${filePath}`, { signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err) {
+      throw fail({ network: true, description: err?.cause?.code ?? err?.name ?? 'network error' });
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw fail({ status: response.status, code: response.status, description: response.statusText || 'download failed' });
+    }
+    const chunks = [];
+    let size = 0;
+    try {
+      for await (const chunk of response.body) {
+        size += chunk.length;
+        if (maxBytes !== undefined && size > maxBytes) throw fail({ status: 413, code: 413, description: 'file is too big' });
+        chunks.push(chunk);
+      }
+    } catch (err) {
+      if (err instanceof TelegramError) throw err;
+      throw fail({ network: true, description: err?.cause?.code ?? err?.name ?? 'network error' });
+    }
+    return Buffer.concat(chunks);
+  }
+
   getChat(params) {
     return this.call('getChat', params);
   }

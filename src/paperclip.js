@@ -10,6 +10,7 @@ export class PaperclipError extends Error {
 }
 
 const ATTENTION_PAGE_LIMIT = 100;
+const UPLOAD_TIMEOUT_MS = 120_000;
 
 // Board-key client. It never sends a run id header, so the owner's comments stay human comments.
 export class PaperclipClient {
@@ -25,18 +26,22 @@ export class PaperclipClient {
     this.#timeoutMs = timeoutMs;
   }
 
-  async request(method, path, { query, body } = {}) {
+  // `body` is sent as JSON; `form` is a FormData sent as multipart (fetch sets the content type and boundary).
+  async request(method, path, { query, body, form, timeoutMs } = {}) {
     const search = query ? new URLSearchParams(Object.entries(query).filter(([, v]) => v !== undefined && v !== null)).toString() : '';
     const target = `${path}${search ? `?${search}` : ''}`;
     const headers = { authorization: `Bearer ${this.#token}`, accept: 'application/json' };
     if (body !== undefined) headers['content-type'] = 'application/json';
+    let payload;
+    if (form !== undefined) payload = form;
+    else if (body !== undefined) payload = JSON.stringify(body);
     let response;
     try {
       response = await this.#fetch(`${this.#baseUrl}${target}`, {
         method,
         headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(this.#timeoutMs),
+        body: payload,
+        signal: AbortSignal.timeout(timeoutMs ?? this.#timeoutMs),
       });
     } catch (err) {
       throw new PaperclipError(method, path, { network: true, detail: err?.cause?.code ?? err?.name ?? 'network error' });
@@ -61,9 +66,11 @@ export class PaperclipClient {
   }
 
   // Pages through the attention feed; a cursor that went stale mid-walk keeps the pages already read.
-  async listAttention(companyId, { maxPages = 5 } = {}) {
+  // `complete` is false when the walk stopped before the end, so an absent item proves nothing.
+  async attentionFeed(companyId, { maxPages = 5 } = {}) {
     const items = [];
     let cursor;
+    let complete = false;
     for (let page = 0; page < maxPages; page += 1) {
       let feed;
       try {
@@ -75,10 +82,17 @@ export class PaperclipClient {
         throw err;
       }
       items.push(...(feed?.items ?? []));
-      if (!feed?.nextCursor) break;
+      if (!feed?.nextCursor) {
+        complete = true;
+        break;
+      }
       cursor = feed.nextCursor;
     }
-    return items;
+    return { items, complete };
+  }
+
+  async listAttention(companyId, options) {
+    return (await this.attentionFeed(companyId, options)).items;
   }
 
   listIssues(companyId, query) {
@@ -118,8 +132,8 @@ export class PaperclipClient {
     return this.request('GET', `/api/issues/${issueId}/comments`, { query });
   }
 
-  postComment(issueId, body) {
-    return this.request('POST', `/api/issues/${issueId}/comments`, { body: { body } });
+  postComment(issueId, body, { attachmentIds } = {}) {
+    return this.request('POST', `/api/issues/${issueId}/comments`, { body: { body, ...(attachmentIds?.length ? { attachmentIds } : {}) } });
   }
 
   listAgents(companyId) {
@@ -128,5 +142,74 @@ export class PaperclipClient {
 
   createIssue(companyId, body) {
     return this.request('POST', `/api/companies/${companyId}/issues`, { body });
+  }
+
+  getApproval(approvalId) {
+    return this.request('GET', `/api/approvals/${approvalId}`);
+  }
+
+  approve(approvalId) {
+    return this.request('POST', `/api/approvals/${approvalId}/approve`, { body: {} });
+  }
+
+  rejectApproval(approvalId) {
+    return this.request('POST', `/api/approvals/${approvalId}/reject`, { body: {} });
+  }
+
+  getDecision(decisionId) {
+    return this.request('GET', `/api/decisions/${decisionId}`);
+  }
+
+  decide(decisionId, body) {
+    return this.request('POST', `/api/decisions/${decisionId}/decide`, { body });
+  }
+
+  dismissDecision(decisionId) {
+    return this.request('POST', `/api/decisions/${decisionId}/dismiss`, { body: {} });
+  }
+
+  stalledReviewDecision(issueId, body) {
+    return this.request('POST', `/api/issues/${issueId}/stalled-review-decision`, { body });
+  }
+
+  getAgent(agentId) {
+    return this.request('GET', `/api/agents/${agentId}`);
+  }
+
+  pauseAgent(agentId) {
+    return this.request('POST', `/api/agents/${agentId}/pause`);
+  }
+
+  resumeAgent(agentId) {
+    return this.request('POST', `/api/agents/${agentId}/resume`);
+  }
+
+  // The empty body is valid; the answer is a run row, or `{ status: "skipped" }` when nothing was started.
+  invokeAgent(agentId) {
+    return this.request('POST', `/api/agents/${agentId}/heartbeat/invoke`, { body: {} });
+  }
+
+  // Newest first; `summary` leaves out the bulky result fields.
+  listRuns(companyId, query) {
+    return this.request('GET', `/api/companies/${companyId}/heartbeat-runs`, { query: { summary: 'true', ...query } });
+  }
+
+  cancelRun(runId) {
+    return this.request('POST', `/api/heartbeat-runs/${runId}/cancel`);
+  }
+
+  // Every document of the task with its body.
+  listDocuments(issueId) {
+    return this.request('GET', `/api/issues/${issueId}/documents`);
+  }
+
+  getDocument(issueId, key) {
+    return this.request('GET', `/api/issues/${issueId}/documents/${encodeURIComponent(key)}`);
+  }
+
+  uploadAttachment(companyId, issueId, { name, type, data }) {
+    const form = new FormData();
+    form.append('file', new Blob([data], { type }), name);
+    return this.request('POST', `/api/companies/${companyId}/issues/${issueId}/attachments`, { form, timeoutMs: UPLOAD_TIMEOUT_MS });
   }
 }
