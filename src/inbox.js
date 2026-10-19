@@ -169,7 +169,7 @@ function compose(record, ctx, level, rich = false) {
   if (record.whyNow && level.why > 0) lines.push(esc(truncate(record.whyNow, level.why)));
   if (level.body > 0) {
     for (const fact of record.facts) lines.push(esc(truncate(fact, 120)));
-    if (record.body) lines.push('', rich ? richBody(record.body, level.body, { uiBaseUrl: ctx.uiBaseUrl, fullUrl: url }) : escapeHtml(truncate(record.body, level.body)));
+    if (record.body) lines.push('', rich ? richBody(record.body, level.body, { uiBaseUrl: ctx.uiBaseUrl, fullUrl: url, hardBreaks: true }) : escapeHtml(truncate(record.body, level.body)));
     const described = record.options.some((option) => option.description);
     if (level.options > 0 && (described || record.needsInput)) {
       const options = record.options.map((option) => `- ${esc(truncate(option.label, 60))}${option.description ? `: ${esc(truncate(option.description, level.options))}` : ''}`);

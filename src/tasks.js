@@ -101,7 +101,7 @@ function composeTask(view, { note, own, now, uiBaseUrl }, level, rich = false) {
   }
   const comment = view.comment;
   const showComment = !own && level.comment > 0 && comment;
-  const last = showComment ? (rich ? richBody(comment.body, level.comment, { uiBaseUrl, fullUrl: `${url}#comment-${comment.id}` }) : quote(comment.body, level.comment)) : '';
+  const last = showComment ? (rich ? richBody(comment.body, level.comment, { uiBaseUrl, fullUrl: `${url}#comment-${comment.id}`, hardBreaks: true }) : quote(comment.body, level.comment)) : '';
   if (last) lines.push(`<b>${esc(truncate(view.author, 60))}</b>`, last);
   return rich ? richJoin(lines) : lines.join('\n');
 }

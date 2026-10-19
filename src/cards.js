@@ -164,7 +164,7 @@ function questionLabel(q) {
 function composeText(card, uiBaseUrl, level, rich = false) {
   const esc = rich ? escapeRich : escapeHtml;
   const url = cardUrl(uiBaseUrl, card.identifier, card.interactionId);
-  const context = { uiBaseUrl, fullUrl: url };
+  const context = { uiBaseUrl, fullUrl: url, hardBreaks: true };
   const lines = [];
   const issue = { identifier: card.identifier, title: card.issueTitle };
   lines.push(headline(CARD_KIND, issue, { own: card.own, titleMax: level.title, url, esc }));

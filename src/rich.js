@@ -221,9 +221,14 @@ export function cleanMarkdown(markdown, uiBaseUrl) {
 
 // --- cutting --------------------------------------------------------------------------------
 
-// A line cut to `max` characters at a space where possible, never inside an entity or after a lone backslash.
+// A line cut to `max` UTF-16 units (whole characters only) at a space where possible, never inside an entity or
+// after a lone backslash.
 function cutLine(line, max) {
-  let cut = Array.from(line).slice(0, max).join('');
+  let cut = '';
+  for (const char of line) {
+    if (cut.length + char.length > max) break;
+    cut += char;
+  }
   const space = cut.lastIndexOf(' ');
   if (space > cut.length * 0.6) cut = cut.slice(0, space);
   return closeSpan(cut.replace(/&#?\w*$/, '').replace(/(?<!\\)(\\\\)*\\$/, '$1').trimEnd(), line);
@@ -322,9 +327,92 @@ function summaryOf(first, next) {
 
 const quoteLines = (lines) => lines.map((line) => (line.trim() ? `> ${line}` : '>')).join('\n');
 
-// A short body as a quote; a longer one (over 3 lines or 300 characters) folded under its first line.
-export function foldMarkdown(markdown) {
+const ENDS_IN_BREAK = /(?: {2}|(?<!\\)(?:\\\\)*\\)$/;
+const LIST_MARKER = /^[ \t]*(?:[-*+]|\d{1,9}[.)])(?=[ \t]|$)/;
+
+// The column that `text` ends at, a tab moving to the next multiple of 4.
+function widthOf(text) {
+  let width = 0;
+  for (const char of text) width += char === '\t' ? 4 - (width % 4) : 1;
+  return width;
+}
+
+// Whether each line of a run of paragraph lines ends inside a code span; a span can run over several lines.
+function endsInSpan(lines) {
+  const text = lines.join('\n');
+  const spans = [];
+  for (let i = 0; i < text.length; ) {
+    if (text[i] === '\\') {
+      i += 2;
+    } else if (text[i] !== '`') {
+      i += 1;
+    } else {
+      const size = backtickRun(text, i);
+      const close = closingRun(text, i + size, size);
+      if (close >= 0) spans.push([i, close]);
+      i = close >= 0 ? close + size : i + size;
+    }
+  }
+  let end = -1;
+  return lines.map((line) => {
+    end += line.length + 1;
+    return spans.some(([open, close]) => open < end && end < close);
+  });
+}
+
+// Which lines are text, that is not blank, not in or around a fenced code block and not indented code. An indented
+// line is code when it starts four columns past the text of the list item it is in (none: past the left margin)
+// and does not continue a paragraph.
+function textLines(lines) {
+  let fence = null;
+  let offset = 0;
+  let paragraph = false;
+  return lines.map((line) => {
+    const before = fence;
+    fence = fenceAfter(fence, line);
+    const text = before === null && fence === null && line.trim() !== '';
+    const marker = text ? LIST_MARKER.exec(line) : null;
+    const indent = widthOf(/^[ \t]*/.exec(line)[0]);
+    if (text && !paragraph && !marker && indent < offset) offset = 0;
+    const code = text && !paragraph && indent >= offset + 4;
+    if (text && !code && marker) {
+      const gap = /^ */.exec(line.slice(marker[0].length))[0].length;
+      offset = widthOf(marker[0]) + (gap >= 1 && gap <= 4 ? gap : 1);
+    }
+    paragraph = text && !code;
+    return paragraph;
+  });
+}
+
+// Ends every non-blank line that a non-blank line follows with two spaces, so a single newline shows as a line
+// break (as Paperclip shows it in a comment). Code, fenced or indented, and the end of a line inside a code span
+// stay as written.
+export function withHardBreaks(markdown) {
   const lines = markdown.split('\n');
+  const text = textLines(lines);
+  const inSpan = lines.map(() => false);
+  for (let start = 0; start < lines.length; start += 1) {
+    if (!text[start]) continue;
+    let end = start;
+    while (text[end + 1]) end += 1;
+    endsInSpan(lines.slice(start, end + 1)).forEach((flag, offset) => {
+      inSpan[start + offset] = flag;
+    });
+    start = end;
+  }
+  return lines
+    .map((line, index) => {
+      const next = lines[index + 1];
+      if (!text[index] || inSpan[index] || next === undefined || next.trim() === '' || ENDS_IN_BREAK.test(line)) return line;
+      return `${line.trimEnd()}  `;
+    })
+    .join('\n');
+}
+
+// A short body as a quote; a longer one (over 3 lines or 300 characters) folded under its first line.
+// `hardBreaks` turns a single newline into a line break first.
+export function foldMarkdown(markdown, hardBreaks = false) {
+  const lines = (hardBreaks ? withHardBreaks(markdown) : markdown).split('\n');
   const filled = lines.filter((line) => line.trim() !== '').length;
   if (filled <= FOLD_LINES && length(markdown) <= FOLD_CHARS) return quoteLines(lines);
   const index = lines.findIndex((line) => line.trim() !== '');
@@ -333,19 +421,22 @@ export function foldMarkdown(markdown) {
   return `<details><summary>${summary}</summary>\n\n${rest}\n\n</details>`;
 }
 
-// Context for the helpers below: `uiBaseUrl` makes relative links absolute, `fullUrl` is where the full text lives.
+// Context for the helpers below: `uiBaseUrl` makes relative links absolute, `fullUrl` is where the full text lives,
+// `hardBreaks` shows a single newline as a line break (comments do in Paperclip; descriptions and documents do not).
 
 // Paperclip Markdown as a block of a rich message: cleaned, cut to `max` characters and folded or quoted.
 // An empty text or a budget of 0 gives an empty string.
-export function richBody(markdown, max, { uiBaseUrl, fullUrl = null }) {
+export function richBody(markdown, max, { uiBaseUrl, fullUrl = null, hardBreaks = false }) {
   const clean = trimBlank(cleanMarkdown(markdown, uiBaseUrl));
-  return clean && max > 0 ? foldMarkdown(cutMarkdown(clean, max, fullUrl)) : '';
+  return clean && max > 0 ? foldMarkdown(cutMarkdown(clean, max, fullUrl), hardBreaks) : '';
 }
 
 // The same, as plain paragraphs: cleaned and cut but neither folded nor quoted.
-export function richText(markdown, max, { uiBaseUrl, fullUrl = null }) {
+export function richText(markdown, max, { uiBaseUrl, fullUrl = null, hardBreaks = false }) {
   const clean = trimBlank(cleanMarkdown(markdown, uiBaseUrl));
-  return clean && max > 0 ? cutMarkdown(clean, max, fullUrl) : '';
+  if (!clean || max <= 0) return '';
+  const cut = cutMarkdown(clean, max, fullUrl);
+  return hardBreaks ? withHardBreaks(cut) : cut;
 }
 
 // --- documents ------------------------------------------------------------------------------
@@ -365,10 +456,12 @@ export function estimateBlocks(markdown) {
   return blocks;
 }
 
-const fits = (text, chars, blocks) => length(text) <= chars && estimateBlocks(text) <= blocks;
+// Lengths here are UTF-16 units, the stricter count, so a part that fits is never over the limit Telegram checks.
+const fits = (text, chars, blocks) => text.length <= chars && estimateBlocks(text) <= blocks;
 
-// Lines packed into pieces that fit; a code block cut by a split is closed and opened again.
-function packLines(lines, chars, blocks) {
+// Lines packed into pieces that fit; a code block cut by a split is closed and opened again. A line longer than
+// a piece is cut, and `onCut` is called.
+function packLines(lines, chars, blocks, onCut) {
   const pieces = [];
   let current = [];
   let fence = null;
@@ -378,7 +471,9 @@ function packLines(lines, chars, blocks) {
   };
   for (const line of lines) {
     // Room is kept for a code block to be closed and opened again around the line.
-    const text = length(line) > chars - 10 ? cutLine(line, chars - 10) : line;
+    const tooLong = line.length > chars - 10;
+    if (tooLong) onCut();
+    const text = tooLong ? cutLine(line, chars - 10) : line;
     const after = fenceAfter(fence, text);
     if (current.length > 0 && !fits([...current, text, ...(after ? [after] : [])].join('\n'), chars, blocks)) flush();
     current.push(text);
@@ -406,10 +501,12 @@ function sections(markdown) {
 }
 
 // Splits a document into messages that each fit the rich limits, cutting at headings first, then at blank
-// lines, then at lines. `room` is what the first message keeps free for its title.
+// lines, then at lines. `room` is what the first message keeps free for its title. `cut` is true when a line
+// was too long for a message and its end was dropped.
 export function splitAtHeadings(markdown, { chars = RICH_LIMIT - 200, blocks = RICH_BLOCK_LIMIT - 50, room = 0 } = {}) {
   const parts = [];
   let current = '';
+  let cut = false;
   const limitOf = () => (parts.length === 0 ? chars - room : chars);
   const add = (piece) => {
     const joined = current ? `${current}\n\n${piece}` : piece;
@@ -441,9 +538,9 @@ export function splitAtHeadings(markdown, { chars = RICH_LIMIT - 200, blocks = R
     if (paragraph.length > 0) paragraphs.push(paragraph.join('\n'));
     for (const text of paragraphs) {
       if (fits(text, limitOf(), blocks)) add(text);
-      else for (const piece of packLines(text.split('\n'), limitOf(), blocks)) add(piece);
+      else for (const piece of packLines(text.split('\n'), limitOf(), blocks, () => { cut = true; })) add(piece);
     }
   }
   if (current) parts.push(current);
-  return parts.map(closeFence);
+  return { parts: parts.map(closeFence), cut };
 }

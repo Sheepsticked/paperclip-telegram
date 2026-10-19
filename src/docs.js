@@ -56,9 +56,9 @@ const asPlain = (markdown) => markdown.replace(/&lt;/g, '<').replace(/&amp;/g, '
 // message on (null when it was the first, so the whole document goes as written); null when all went through.
 async function sendRichDocument(bot, { title, body, url, thread, issue }) {
   const head = `<b>${escapeRich(truncate(title, 200))}</b>`;
-  const pieces = splitAtHeadings(cleanMarkdown(body, bot.config.uiBaseUrl), { room: Array.from(head).length + 2 });
+  const { parts: pieces, cut: dropped } = splitAtHeadings(cleanMarkdown(body, bot.config.uiBaseUrl), { room: head.length + 2 });
   const parts = pieces.slice(0, MAX_PARTS);
-  const cut = pieces.length > MAX_PARTS;
+  const cut = dropped || pieces.length > MAX_PARTS;
   for (const [index, part] of parts.entries()) {
     const closing = cut && index === parts.length - 1 ? `\n\n${fullTextLink(url)}` : '';
     const sent = await bot.sendRich(`${index === 0 ? `${head}\n\n` : ''}${part}${closing}`, { thread, issue });

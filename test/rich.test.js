@@ -12,10 +12,13 @@ import {
   richBody,
   richJoin,
   splitAtHeadings,
+  withHardBreaks,
 } from '../src/rich.js';
 import { validateRichMarkdown } from './fakes/telegram.js';
 
 const BASE = 'https://paperclip.example.com';
+// A character outside the BMP: one code point, two UTF-16 units.
+const ASTRAL = '\u{20000}';
 const FULL = `${BASE}/TST/issues/TST-1#comment-c1`;
 const body = (markdown, max = 4000) => richBody(markdown, max, { uiBaseUrl: BASE, fullUrl: FULL });
 const rows = (count, prefix = 'row') => Array.from({ length: count }, (_, i) => `${prefix} ${i + 1}`);
@@ -126,6 +129,77 @@ test('a longer body folds under its first line as plain text, cut to 80 characte
   assert.equal(body('a_b *c* & <d>\nb\nc\nd'), '<details><summary>a\\_b c &amp; &lt;d&gt;</summary>\n\nb\nc\nd\n\n</details>');
 });
 
+test('withHardBreaks ends a line that a text line follows with two spaces', () => {
+  assert.equal(withHardBreaks('Cause: a\nDid: b\nBack to Lead'), 'Cause: a  \nDid: b  \nBack to Lead');
+  assert.equal(withHardBreaks('one\n\ntwo\nthree\n\nfour'), 'one\n\ntwo  \nthree\n\nfour');
+  assert.equal(withHardBreaks('- one\n- two\n- three'), '- one  \n- two  \n- three');
+  assert.equal(withHardBreaks('# Title\ntext'), '# Title  \ntext');
+  assert.equal(withHardBreaks('single line'), 'single line');
+  assert.equal(withHardBreaks(''), '');
+});
+
+test('withHardBreaks leaves a line that already breaks alone and tidies other trailing blanks', () => {
+  assert.equal(withHardBreaks('a  \nb'), 'a  \nb');
+  assert.equal(withHardBreaks('a\\\nb'), 'a\\\nb');
+  assert.equal(withHardBreaks('a\\\\\nb'), 'a\\\\  \nb');
+  assert.equal(withHardBreaks('a \nb'), 'a  \nb');
+  assert.equal(withHardBreaks('a\t\nb'), 'a  \nb');
+});
+
+test('withHardBreaks adds nothing inside fenced or indented code', () => {
+  assert.equal(withHardBreaks('```js\nconst a = 1;\nconst b = 2;\n```\nafter'), '```js\nconst a = 1;\nconst b = 2;\n```\nafter');
+  assert.equal(withHardBreaks('intro\n~~~\nx\ny\n~~~\nafter\nmore'), 'intro  \n~~~\nx\ny\n~~~\nafter  \nmore');
+  assert.equal(withHardBreaks('text\n\n    code one\n    code two\n\nafter'), 'text\n\n    code one\n    code two\n\nafter');
+  assert.equal(withHardBreaks('\tcode one\n\tcode two'), '\tcode one\n\tcode two');
+  assert.equal(withHardBreaks('- item\n    continued\nnext'), '- item  \n    continued  \nnext');
+  assert.equal(withHardBreaks('```\nnever closed\nstill code'), '```\nnever closed\nstill code');
+  assert.equal(withHardBreaks('a ```x``` b\nnext'), 'a ```x``` b  \nnext');
+});
+
+test('withHardBreaks leaves the end of a line inside a code span that runs over lines', () => {
+  assert.equal(withHardBreaks('use `first\nsecond` here\nnext'), 'use `first\nsecond` here  \nnext');
+  assert.equal(withHardBreaks('a `x\ny` b `z`\nnext'), 'a `x\ny` b `z`  \nnext');
+  assert.equal(withHardBreaks('a ``x ` \ny`` b\nnext'), 'a ``x ` \ny`` b  \nnext');
+  assert.equal(withHardBreaks('an `open one\nsecond\nthird'), 'an `open one  \nsecond  \nthird');
+  assert.equal(withHardBreaks('one \\`two\nthree'), 'one \\`two  \nthree');
+});
+
+test('withHardBreaks breaks the lines of a paragraph that is indented inside a list item', () => {
+  assert.equal(withHardBreaks('- item\n\n    Cause: a\n    Did: b'), '- item\n\n    Cause: a  \n    Did: b');
+  assert.equal(withHardBreaks('1. item\n\n   Cause: a\n   Did: b'), '1. item\n\n   Cause: a  \n   Did: b');
+  assert.equal(withHardBreaks('- a\n  - b\n  - c'), '- a  \n  - b  \n  - c');
+  assert.equal(withHardBreaks('- item\n\n      code a\n      code b'), '- item\n\n      code a\n      code b');
+  assert.equal(withHardBreaks('- item\n\ntext\n\n    code a\n    code b'), '- item\n\ntext\n\n    code a\n    code b');
+  assert.equal(withHardBreaks('- a\n  - b\n\n  para one\n  para two\n\n      code'), '- a  \n  - b\n\n  para one  \n  para two\n\n      code');
+});
+
+test('foldMarkdown with hard breaks breaks the lines of a quote and of the folded text, not the summary', () => {
+  assert.equal(foldMarkdown('one\ntwo\nthree', true), '> one  \n> two  \n> three');
+  assert.equal(foldMarkdown('one\n\ntwo\nthree', true), '> one\n>\n> two  \n> three');
+  assert.equal(foldMarkdown('# Report\nb\nc\nd', true), '<details><summary>Report</summary>\n\nb  \nc  \nd\n\n</details>');
+  assert.equal(
+    foldMarkdown('see [the task](https://example.com/a) now\nb\nc\nd', true),
+    '<details><summary>see the task now</summary>\n\nsee [the task](https://example.com/a) now  \nb  \nc  \nd\n\n</details>',
+  );
+  assert.equal(foldMarkdown('```\na\nb\n```\nafter\nmore', true), '<details><summary>Show all</summary>\n\n```\na\nb\n```\nafter  \nmore\n\n</details>');
+});
+
+test('the breaks do not move a body over the fold thresholds', () => {
+  const lines = Array.from({ length: 3 }, () => 'x'.repeat(98));
+  assert.equal(lines.join('\n').length, 296);
+  assert.equal(foldMarkdown(lines.join('\n'), true), lines.map((line, i) => `> ${line}${i < 2 ? '  ' : ''}`).join('\n'));
+});
+
+test('richBody breaks lines only when asked to', () => {
+  const text = 'Cause: a\nDid: b';
+  assert.equal(body(text), '> Cause: a\n> Did: b');
+  assert.equal(richBody(text, 4000, { uiBaseUrl: BASE, fullUrl: FULL, hardBreaks: true }), '> Cause: a  \n> Did: b');
+  const cut = richBody(['intro', ...rows(500)].join('\n'), 400, { uiBaseUrl: BASE, fullUrl: FULL, hardBreaks: true });
+  assert.ok(cut.startsWith('<details><summary>intro</summary>\n\nrow 1  \nrow 2  \n'), cut);
+  assert.ok(cut.endsWith(`\n\n[Full text in Paperclip](${FULL})\n\n</details>`), 'the link stands apart');
+  assert.equal(validateRichMarkdown(cut), null);
+});
+
 test('a body that opens with a code block, a table or a list folds under Show all with the whole body inside', () => {
   for (const first of ['```js', '| a | b |\n|---|---|', '- item', '1. item', '    indented code']) {
     const text = `${first}\nrest\nmore\nlines`;
@@ -164,13 +238,14 @@ test('estimateBlocks counts paragraphs, list and quote items and code blocks', (
 
 test('splitAtHeadings keeps a short document whole', () => {
   const text = '# One\n\nfirst\n\n## Two\n\nsecond';
-  assert.deepEqual(splitAtHeadings(text), [text]);
+  assert.deepEqual(splitAtHeadings(text), { parts: [text], cut: false });
 });
 
 test('splitAtHeadings cuts a long document at headings and keeps every part within the limits', () => {
   const section = (title) => `## ${title}\n\n${Array.from({ length: 200 }, (_, i) => `${title} paragraph ${i} ${'x'.repeat(80)}`).join('\n\n')}`;
   const text = ['Intro text', section('Alpha'), section('Beta'), section('Gamma')].join('\n\n');
-  const parts = splitAtHeadings(text, { room: 100 });
+  const { parts, cut } = splitAtHeadings(text, { room: 100 });
+  assert.equal(cut, false);
   assert.ok(parts.length >= 3, `${parts.length} parts`);
   for (const part of parts) {
     assert.ok(Array.from(part).length <= RICH_LIMIT - 200, 'within the character limit');
@@ -186,7 +261,7 @@ test('splitAtHeadings cuts a long document at headings and keeps every part with
 
 test('splitAtHeadings does not take a # line in a code block for a heading and reopens a code block it cuts', () => {
   const code = ['```', ...Array.from({ length: 300 }, (_, i) => `# not a heading ${i} ${'y'.repeat(120)}`), '```'].join('\n');
-  const parts = splitAtHeadings(`## Code\n\n${code}`, { chars: 20000 });
+  const { parts } = splitAtHeadings(`## Code\n\n${code}`, { chars: 20000 });
   assert.ok(parts.length >= 2);
   for (const part of parts) {
     assert.equal(validateRichMarkdown(part), null, 'every part closes its code block');
@@ -196,13 +271,13 @@ test('splitAtHeadings does not take a # line in a code block for a heading and r
 });
 
 test('splitAtHeadings closes a code block that the document leaves open', () => {
-  const parts = splitAtHeadings('## Code\n\n```\nnever closed\nstill code');
+  const { parts } = splitAtHeadings('## Code\n\n```\nnever closed\nstill code');
   assert.deepEqual(parts, ['## Code\n\n```\nnever closed\nstill code\n```']);
 });
 
 test('splitAtHeadings keeps room for the lines it closes and opens a code block around', () => {
   const code = ['```', ...Array.from({ length: 200 }, (_, i) => `line ${i} ${'z'.repeat(50)}`), '```'].join('\n');
-  for (const part of splitAtHeadings(code, { chars: 700 })) {
+  for (const part of splitAtHeadings(code, { chars: 700 }).parts) {
     assert.ok(Array.from(part).length <= 700, `${Array.from(part).length} characters`);
     assert.equal(validateRichMarkdown(part), null);
   }
@@ -210,7 +285,38 @@ test('splitAtHeadings keeps room for the lines it closes and opens a code block 
 
 test('splitAtHeadings splits by blocks when a document has many short lines', () => {
   const text = Array.from({ length: 1200 }, (_, i) => `line ${i}`).join('\n\n');
-  const parts = splitAtHeadings(text);
+  const { parts } = splitAtHeadings(text);
   assert.ok(parts.length >= 3);
   for (const part of parts) assert.ok(estimateBlocks(part) <= RICH_BLOCK_LIMIT - 50);
+});
+
+test('splitAtHeadings reports a line too long for a message and drops its end', () => {
+  const line = 'word '.repeat(8000);
+  const { parts, cut } = splitAtHeadings(`# Title\n\n${line}`);
+  assert.equal(cut, true);
+  assert.ok(parts.length >= 1);
+  for (const part of parts) {
+    assert.ok(part.length <= RICH_LIMIT - 200, `${part.length} units`);
+    assert.equal(validateRichMarkdown(part), null);
+  }
+  assert.ok(parts.join('\n\n').length < line.length, 'the end of the line is gone');
+  assert.equal(splitAtHeadings('# Title\n\nshort').cut, false);
+});
+
+test('splitAtHeadings counts UTF-16 units, so a part with many astral characters still fits a message', () => {
+  const text = Array.from({ length: 400 }, () => ASTRAL.repeat(80)).join('\n');
+  assert.equal(Array.from(text).length, 400 * 80 + 399);
+  const { parts, cut } = splitAtHeadings(text, { room: 40 });
+  assert.equal(cut, false);
+  assert.ok(parts.length >= 2, `${parts.length} parts`);
+  assert.ok(parts[0].length <= RICH_LIMIT - 200 - 40, `${parts[0].length} units`);
+  for (const part of parts) assert.ok(part.length <= RICH_LIMIT - 200, `${part.length} units`);
+  assert.equal(parts.join('\n').length, text.length, 'nothing is lost');
+});
+
+test('a line of astral characters is cut at a whole character', () => {
+  const { parts } = splitAtHeadings(ASTRAL.repeat(40000), { chars: 1001 });
+  assert.equal(parts.length, 1);
+  assert.ok(parts[0].length <= 991, `${parts[0].length} units`);
+  assert.equal(parts[0], ASTRAL.repeat(parts[0].length / 2));
 });

@@ -42,7 +42,7 @@ async function sendFollowComment(bot, issue, comment) {
     const head = headline(author, issue, { own, url });
     const text = fitMessage((max) => [head, quote(comment.body, max)].filter(Boolean).join('\n'), QUOTE_LEVELS);
     const richHead = headline(author, issue, { own, url, esc: escapeRich });
-    const context = { uiBaseUrl, fullUrl: `${url}#comment-${comment.id}` };
+    const context = { uiBaseUrl, fullUrl: `${url}#comment-${comment.id}`, hardBreaks: true };
     const rich = fitMessage((max) => richJoin([richHead, richBody(comment.body, max, context)]), RICH_QUOTE_LEVELS, RICH_LIMIT);
     return { text, rich, keyboard: openRows(issue.id, own) };
   });

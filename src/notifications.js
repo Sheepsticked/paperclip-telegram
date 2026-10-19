@@ -247,7 +247,7 @@ async function sendStatusUpdate(bot, issue) {
     const fitted = { text: fitMessage(text, QUOTE_LEVELS, alert ? ALERT_LIMIT : MESSAGE_LIMIT), keyboard: openRows(issue.id, own) };
     if (!comment) return fitted;
     const richHead = headline(kind, issue, { own, url, esc: escapeRich });
-    const context = { uiBaseUrl, fullUrl: `${url}#comment-${comment.id}` };
+    const context = { uiBaseUrl, fullUrl: `${url}#comment-${comment.id}`, hardBreaks: true };
     let richQuoted = false;
     const rich = fitMessage(
       (max) => {

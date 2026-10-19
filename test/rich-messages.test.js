@@ -17,6 +17,8 @@ const GROUP = { telegram: { chatId: GROUP_ID }, config: { topics: 'off', richMes
 const FORUM = { telegram: { chatId: GROUP_ID, forum: true }, config: { richMessages: 'auto' } };
 const HOUR = 60 * 60 * 1000;
 const REFUSED = 'rich message refused, sent as plain text';
+// A character outside the BMP: one code point, two UTF-16 units.
+const ASTRAL = '\u{20000}';
 const SWITCHED_OFF = 'rich messages refused 3 times in a row, sending plain messages from now on';
 
 async function setup(t, options = RICH, botOptions) {
@@ -53,11 +55,11 @@ async function commentMessage(w, bot, issue, body) {
 const SAMPLES = [
   ['bold text', 'Fixed **the bug** now.', '> Fixed **the bug** now.'],
   ['italic text', 'Looks *fine* and _good_.', '> Looks *fine* and _good_.'],
-  ['a list', '- one\n- two\n- three', '> - one\n> - two\n> - three'],
-  ['a task list', '- [x] write\n- [ ] ship', '> - [x] write\n> - [ ] ship'],
+  ['a list', '- one\n- two\n- three', '> - one  \n> - two  \n> - three'],
+  ['a task list', '- [x] write\n- [ ] ship', '> - [x] write  \n> - [ ] ship'],
   ['a heading', '## Result\n\nAll good.', '> ## Result\n>\n> All good.'],
   ['a code block', '```js\nconst a = 1;\n```', '> ```js\n> const a = 1;\n> ```'],
-  ['a table', '| a | b |\n|---|---|\n| 1 | 2 |', '> | a | b |\n> |---|---|\n> | 1 | 2 |'],
+  ['a table', '| a | b |\n|---|---|\n| 1 | 2 |', '> | a | b |  \n> |---|---|  \n> | 1 | 2 |'],
   ['a quote', '> quoted words', '> > quoted words'],
   ['a relative Paperclip link', 'See [the task](/TST/issues/TST-2).', `> See [the task](${UI_BASE_URL}/TST/issues/TST-2).`],
   ['an absolute link', 'See [docs](https://example.com/a?b=c).', '> See [docs](https://example.com/a?b=c).'],
@@ -97,7 +99,7 @@ test('a comment over 3 lines folds under its first line', async (t) => {
   const lines = ['**Summary** of the work', 'line two', 'line three', 'line four', 'line five'];
   const { message } = await commentMessage(w, bot, issue, lines.join('\n'));
 
-  assert.equal(message.text, `${HEAD}\n\n<details><summary>Summary of the work</summary>\n\nline two\nline three\nline four\nline five\n\n</details>`);
+  assert.equal(message.text, `${HEAD}\n\n<details><summary>Summary of the work</summary>\n\nline two  \nline three  \nline four  \nline five\n\n</details>`);
   assert.equal(validateRichMarkdown(message.text), null);
 });
 
@@ -109,7 +111,7 @@ test('a comment over 300 characters folds, and the summary is the first line cut
 
   const summary = /<summary>(.*)<\/summary>/.exec(message.text)[1];
   assert.ok(Array.from(summary).length <= 80 && summary.endsWith('…'), summary);
-  assert.ok(message.text.includes(`\n\n${first}\n${'x'.repeat(300)}\n\n</details>`), 'the whole first line is inside as well');
+  assert.ok(message.text.includes(`\n\n${first}  \n${'x'.repeat(300)}\n\n</details>`), 'the whole first line is inside as well');
 });
 
 test('a long comment that starts with a code block folds under Show all', async (t) => {
@@ -135,6 +137,87 @@ test('a comment cut inside a code block closes the block and ends with a link to
     `${HEAD}\n\n<details><summary>Show all</summary>\n\n\`\`\`\n${kept.join('\n')}\n\`\`\`\n\n[Full text in Paperclip](${ISSUE_URL}#comment-${comment.id})\n\n</details>`,
   );
   assert.equal(validateRichMarkdown(message.text), null);
+});
+
+// --- line breaks --------------------------------------------------------------------------------
+
+test('a comment with single newlines keeps each line on its own line', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await followed(w, bot);
+  const { message } = await commentMessage(w, bot, issue, 'Cause: the cache\nDid: cleared it\nBack to Lead');
+
+  assert.equal(message.text, `${HEAD}\n\n> Cause: the cache  \n> Did: cleared it  \n> Back to Lead`);
+  assert.equal(validateRichMarkdown(message.text), null);
+});
+
+test('a folded comment breaks its lines inside the fold and keeps the summary as it was', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await followed(w, bot);
+  const { message } = await commentMessage(w, bot, issue, '**Summary** of the work\nCause: a\nDid: b\n\nNext: c\nThen: d');
+
+  assert.equal(message.text, `${HEAD}\n\n<details><summary>Summary of the work</summary>\n\nCause: a  \nDid: b\n\nNext: c  \nThen: d\n\n</details>`);
+  assert.equal(validateRichMarkdown(message.text), null);
+});
+
+test('a comment adds no spaces inside fenced or indented code and breaks the lines around it', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await followed(w, bot);
+  const { message: fenced } = await commentMessage(w, bot, issue, 'Ran:\n```sh\nls -l\npwd\n```\nand then:\n- one\n- two');
+  assert.equal(fenced.text, `${HEAD}\n\n<details><summary>Ran:</summary>\n\n\`\`\`sh\nls -l\npwd\n\`\`\`\nand then:  \n- one  \n- two\n\n</details>`);
+
+  const { message: indented } = await commentMessage(w, bot, issue, 'Output:\n\n    first line\n    second line\n\nDone\nfine');
+  assert.equal(indented.text, `${HEAD}\n\n<details><summary>Output:</summary>\n\n    first line\n    second line\n\nDone  \nfine\n\n</details>`);
+  for (const message of [fenced, indented]) assert.equal(validateRichMarkdown(message.text), null);
+});
+
+test('a comment cut with a link to the full text keeps the link apart from the last broken line', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await followed(w, bot);
+  const rows = Array.from({ length: 800 }, (_, i) => `line ${i + 1} of the report`);
+  const { message, comment } = await commentMessage(w, bot, issue, `Report\n${rows.join('\n')}`);
+
+  assert.ok(message.text.includes('\n\nline 1 of the report  \nline 2 of the report  \n'));
+  assert.ok(message.text.endsWith(`\n\n[Full text in Paperclip](${ISSUE_URL}#comment-${comment.id})\n\n</details>`));
+  assert.equal(validateRichMarkdown(message.text), null);
+});
+
+test('a Done message quotes its comment with line breaks', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = w.pc.addIssue({ title: 'Write the docs', status: 'in_progress', assigneeAgentId: 'agent-1' });
+  await bot.pollOnce();
+  w.pc.addComment(issue.id, { body: 'Did: a\nNext: b' });
+  w.pc.setStatus(issue.id, 'done');
+  await bot.pollOnce();
+
+  const done = w.tg.sent().find((message) => message.text.startsWith('<b>Done</b>'));
+  assert.ok(done.text.endsWith('\n\n> Did: a  \n> Next: b'), done.text);
+});
+
+test('a task view breaks the lines of its last comment but not of its description', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await followed(w, bot, { description: 'Goal one\nGoal two' });
+  w.pc.addComment(issue.id, { body: 'Cause: a\nDid: b' });
+  await bot.handleUpdate(w.tg.message(`/task ${issue.identifier}`));
+  const view = w.tg.lastMessage();
+
+  assert.equal(view.rich, true);
+  assert.ok(view.text.includes('\n\n> Goal one\n> Goal two\n'), view.text);
+  assert.ok(view.text.endsWith('\n> Cause: a  \n> Did: b'), view.text);
+  assert.equal(validateRichMarkdown(view.text), null);
+});
+
+test('a card breaks the lines of its prompt and details, and a decision those of its text', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = w.pc.addIssue({ title: 'Ship v2', status: 'in_review', assigneeAgentId: 'agent-1' });
+  w.pc.addInteraction(issue.id, { kind: 'request_confirmation', payload: confirmPayload({ prompt: 'Deploy now?\nIt is ready.', detailsMarkdown: 'Build: ok\nTests: ok' }) });
+  w.pc.addDecision({ issueId: issue.id, title: 'Pick', body: 'Way A\nWay B' });
+  await bot.pollOnce();
+
+  const card = w.tg.findMessage('Deploy now?');
+  assert.ok(card.text.endsWith('Deploy now?  \nIt is ready.\n\n> Build: ok  \n> Tests: ok'), card.text);
+  const decision = w.tg.findMessage('Way A');
+  assert.ok(decision.text.includes('\n\n> Way A  \n> Way B'), decision.text);
+  for (const message of [card, decision]) assert.equal(validateRichMarkdown(message.text), null);
 });
 
 // --- which messages go rich ---------------------------------------------------------------------
@@ -606,6 +689,48 @@ test('a document of more than three parts ends with a link to the full text', as
   assert.ok(parts[2].text.endsWith(`\n\n[Full text in Paperclip](${ISSUE_URL}#document-plan)`));
   assert.ok(!parts[0].text.includes('Full text in Paperclip'));
   for (const part of parts) assert.equal(validateRichMarkdown(part.text), null);
+});
+
+test('a document keeps single newlines as they are', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = w.pc.addIssue({ title: 'Docs', status: 'todo' });
+  w.pc.addDocument(issue.id, { key: 'plan', title: 'Plan', body: '# Plan\nline one\nline two\n\n- a\n- b' });
+  const [part] = await openDocument(w, bot, issue, 'Plan');
+
+  assert.equal(part.text, '<b>Plan</b>\n\n# Plan\nline one\nline two\n\n- a\n- b');
+});
+
+test('a document with a line longer than a message ends with a link to the full text', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = w.pc.addIssue({ title: 'Docs', status: 'todo' });
+  w.pc.addDocument(issue.id, { key: 'plan', title: 'Plan', body: `# Plan\n\n${'word '.repeat(8000)}` });
+  const parts = await openDocument(w, bot, issue, 'Plan');
+
+  assert.ok(parts.length >= 1 && parts.length <= 3);
+  assert.ok(parts.every((part) => part.rich));
+  assert.ok(parts.at(-1).text.endsWith(`\n\n[Full text in Paperclip](${ISSUE_URL}#document-plan)`));
+  assert.equal(parts.filter((part) => part.text.includes('Full text in Paperclip')).length, 1);
+  for (const part of parts) {
+    assert.ok(part.text.length <= 32768, `${part.text.length} units`);
+    assert.equal(validateRichMarkdown(part.text), null);
+  }
+});
+
+test('a document of mostly astral characters goes out whole, every part within the UTF-16 limit', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = w.pc.addIssue({ title: 'Docs', status: 'todo' });
+  const lines = Array.from({ length: 400 }, () => ASTRAL.repeat(80));
+  assert.ok(Array.from(lines.join('\n')).length <= 32000 + 400);
+  w.pc.addDocument(issue.id, { key: 'plan', title: 'Plan', body: lines.join('\n') });
+  const parts = await openDocument(w, bot, issue, 'Plan');
+
+  assert.ok(parts.length >= 2 && parts.length <= 3, `${parts.length} parts`);
+  assert.ok(parts.every((part) => part.rich));
+  for (const part of parts) assert.ok(part.text.length <= 32768, `${part.text.length} units`);
+  assert.ok(!parts.at(-1).text.includes('Full text in Paperclip'));
+  const sent = parts.map((part) => part.text.replace('<b>Plan</b>\n\n', '')).join('\n').split('\n');
+  assert.equal(sent.length, 400, 'every line arrived');
+  assert.equal(plainSends(w).filter((call) => call.params.text.includes(ASTRAL)).length, 0);
 });
 
 test('a document is plain text when Telegram refuses the first rich part', async (t) => {
