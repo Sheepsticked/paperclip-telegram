@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mentioned, unmentioned } from './alerts.js';
 import { choiceQuestion, confirmPayload, questionsPayload, startWorld, textQuestion, UI_BASE_URL } from './helpers.js';
 
 // One issue with one pending card, already sent to the fake chat.
@@ -500,9 +501,9 @@ test('a card in a task\'s own topic has no task id and no Open task; a subtask c
   const thread = bot.state.topics.get(parent.id).thread;
   const own = w.tg.inTopic(thread).find((m) => m.text.includes('Start the job?'));
   const sub = w.tg.inTopic(thread).find((m) => m.text.includes('Ship the step?'));
-  assert.match(own.text, /^<b>Question<\/b>\nStart the job\?$/);
+  assert.equal(own.text, `${mentioned('Question', w.tg.userId)}\nStart the job?`);
   assert.deepEqual(labels(w, own), ['Deploy', 'Hold']);
   assert.ok(!w.tg.buttons(own.message_id).some((b) => b.text === TASK_BUTTON));
-  assert.match(sub.text, /^<b>Question<\/b> · <a href="[^"]+#interaction-[^"]+">TST-2<\/a> Small step\nShip the step\?$/);
+  assert.match(unmentioned(sub.text), /^<b>Question<\/b> · <a href="[^"]+#interaction-[^"]+">TST-2<\/a> Small step\nShip the step\?$/);
   assert.equal(w.tg.buttons(sub.message_id).at(-1).text, TASK_BUTTON);
 });

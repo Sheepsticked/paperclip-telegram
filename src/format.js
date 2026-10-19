@@ -2,6 +2,13 @@ export const MESSAGE_LIMIT = 4096;
 export const CALLBACK_DATA_LIMIT = 64;
 const BUTTON_LABEL_MAX = 60;
 
+// An inline mention of a user; Telegram turns it into a `text_mention` entity.
+export const mentionLink = (userId, label) => `<a href="tg://user?id=${userId}">${label}</a>`;
+// What the mention adds to an alert, for the longest user id a config accepts.
+export const MENTION_ROOM = mentionLink(Number.MAX_SAFE_INTEGER, '').length;
+// The length an alert is built to, so the mention still fits the Telegram limit.
+export const ALERT_LIMIT = MESSAGE_LIMIT - MENTION_ROOM;
+
 export const STATUS_NAMES = {
   backlog: 'Backlog',
   todo: 'To do',
@@ -141,11 +148,22 @@ export function runUrl(uiBaseUrl, prefix, agentId, runId) {
   return `${uiBaseUrl}/${prefix}/agents/${agentId}/runs/${runId}`;
 }
 
-// Tries build(level) from the roomiest level down and returns the first result that fits.
-export function fitMessage(build, levels) {
+const BOLD_WORD = /^<b>([^<]+)<\/b>/;
+
+// The message with its leading bold word turned into a mention of the user; null when it does not start with an
+// unlinked bold word or the mention would push it over the Telegram limit.
+export function withMention(html, userId) {
+  const bold = BOLD_WORD.exec(html);
+  if (!bold) return null;
+  const text = `<b>${mentionLink(userId, bold[1])}</b>${html.slice(bold[0].length)}`;
+  return text.length <= MESSAGE_LIMIT ? text : null;
+}
+
+// Tries build(level) from the roomiest level down and returns the first result within `limit`.
+export function fitMessage(build, levels, limit = MESSAGE_LIMIT) {
   for (const level of levels) {
     const html = build(level);
-    if (html.length <= MESSAGE_LIMIT) return html;
+    if (html.length <= limit) return html;
   }
   throw new Error('message does not fit the Telegram limit at any level');
 }

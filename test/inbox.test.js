@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { validateTelegramHtml } from './fakes/telegram.js';
+import { mentioned } from './alerts.js';
 import { UI_BASE_URL, confirmPayload, startWorld, waitFor } from './helpers.js';
 
 async function setup(t, options, botOptions) {
@@ -452,7 +453,7 @@ test('blocker, recovery and join request items are text with a link and no actio
   assert.deepEqual(rowsOf(w, recovery.message_id), [['Open task']]);
 
   const join = startsWith(w, '<b>Join request</b>');
-  assert.equal(join.text.split('\n')[0], `<b><a href="${UI_BASE_URL}/TST/settings/access">Join request</a></b> · Helper &lt;bot&gt;`);
+  assert.equal(join.text.split('\n')[0], `<b>Join request</b> · <a href="${UI_BASE_URL}/TST/settings/access">Helper &lt;bot&gt;</a>`);
   assert.ok(join.text.includes('Join request is pending approval.'));
   assert.deepEqual(rowsOf(w, join.message_id), []);
   for (const message of [block, recovery, join]) {
@@ -734,7 +735,7 @@ test('an inbox item about a task goes into that task topic, and one without a ta
 
   const approval = startsWith(w, '<b>Approval</b>');
   assert.equal(approval.thread, thread);
-  assert.equal(approval.text.split('\n')[0], '<b>Approval</b>', 'line 1 is the kind alone inside its own topic');
+  assert.equal(approval.text.split('\n')[0], mentioned('Approval', w.tg.userId), 'line 1 is the kind alone inside its own topic');
   assert.deepEqual(rowsOf(w, approval.message_id), [['Approve', 'Reject']], 'and there is no Open task button');
   const join = startsWith(w, '<b>Join request</b>');
   assert.equal(join.thread, null);
@@ -806,7 +807,7 @@ test('decision options and Dismiss have no colour', async (t) => {
   assert.deepEqual(styledRows(w, message.message_id), [['Postgres'], ['Wipe it'], ['Dismiss'], ['Open task']]);
 });
 
-test('line 1 links the task id when the item has a task and the kind word when it has none', async (t) => {
+test('line 1 links the task id when the item has a task and the title when it has none', async (t) => {
   const { w, bot } = await setup(t);
   const issue = w.pc.addIssue({ title: 'Staffing', status: 'in_progress' });
   const withTask = w.pc.addApproval({ issueId: issue.id, payload: { title: 'Hire' } });
@@ -817,9 +818,9 @@ test('line 1 links the task id when the item has a task and the kind word when i
   const first = w.tg.sent().find((m) => m.text.includes(`approvals/${withTask.id}`));
   assert.equal(first.text.split('\n')[0], `<b>Approval</b> · <a href="${UI_BASE_URL}/TST/approvals/${withTask.id}">TST-1</a> Staffing`);
   const second = w.tg.sent().find((m) => m.text.includes(`approvals/${without.id}`));
-  assert.equal(second.text.split('\n')[0], `<b><a href="${UI_BASE_URL}/TST/approvals/${without.id}">Approval</a></b> · No task here`);
+  assert.equal(second.text.split('\n')[0], `<b>Approval</b> · <a href="${UI_BASE_URL}/TST/approvals/${without.id}">No task here</a>`);
   const join = startsWith(w, '<b>Join request</b>');
-  assert.equal(join.text.split('\n')[0], `<b><a href="${UI_BASE_URL}/TST/settings/access">Join request</a></b> · Joiner`);
+  assert.equal(join.text.split('\n')[0], `<b>Join request</b> · <a href="${UI_BASE_URL}/TST/settings/access">Joiner</a>`);
   for (const message of [first, second, join]) assert.equal(validateTelegramHtml(message.text), null);
 });
 
@@ -832,11 +833,11 @@ test('inside its own topic an item has no Open task button; a subtask item in th
 
   const own = w.tg.sent().find((m) => m.text.includes('Waiting for a key.'));
   assert.equal(own.thread, thread);
-  assert.equal(own.text.split('\n')[0], '<b>Blocked</b>');
+  assert.equal(own.text.split('\n')[0], mentioned('Blocked', w.tg.userId));
   assert.deepEqual(rowsOf(w, own.message_id), []);
 
   const sub = w.tg.sent().find((m) => m.text.includes('Waiting for access.'));
   assert.equal(sub.thread, thread);
-  assert.equal(sub.text.split('\n')[0], `<b>Blocked</b> · <a href="${UI_BASE_URL}/TST/issues/TST-2">TST-2</a> Small step`);
+  assert.equal(sub.text.split('\n')[0], `${mentioned('Blocked', w.tg.userId)} · <a href="${UI_BASE_URL}/TST/issues/TST-2">TST-2</a> Small step`);
   assert.deepEqual(rowsOf(w, sub.message_id), [['Open task']]);
 });

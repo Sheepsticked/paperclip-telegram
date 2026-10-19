@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import { validateTelegramHtml } from './fakes/telegram.js';
+import { mentioned } from './alerts.js';
 import { confirmPayload, startWorld, UI_BASE_URL } from './helpers.js';
 
 const GROUP_ID = -1001234567890;
@@ -90,7 +91,7 @@ test('done and in-review messages in the task\'s own topic are the kind word alo
   const inTopic = (issue) => w.tg.inTopic(bot.state.topics.get(issue.id).thread);
   const done = inTopic(finished).at(-1);
   const review = inTopic(reviewed).at(-1);
-  assert.equal(done.text, '<b>Done</b>');
+  assert.equal(done.text, mentioned('Done', w.tg.userId));
   assert.equal(review.text, '<b>In review</b>\n<blockquote>Ready for review.</blockquote>');
   assert.deepEqual(rowsOf(w, done.message_id), []);
   assert.deepEqual(rowsOf(w, review.message_id), []);
@@ -192,7 +193,7 @@ test('more than ten changes in one poll become one summary line', async (t) => {
   for (let i = 0; i < 9; i += 1) w.pc.addIssue({ title: `Done ${i}`, status: 'done' });
   for (let i = 0; i < 3; i += 1) w.pc.addIssue({ title: `Review ${i}`, status: 'in_review' });
   await bot.pollOnce();
-  assert.deepEqual(sentTexts(w), ['9 done, 3 in review since the last check, see /status']);
+  assert.deepEqual(sentTexts(w), ['<b>9 done</b>, 3 in review since the last check, see /status']);
   await bot.pollOnce();
   assert.equal(w.tg.callsTo('sendMessage').length, 1);
 });
@@ -208,13 +209,13 @@ test('failed run is alerted once and routine error codes are skipped', async (t)
   await bot.pollOnce();
   const alerts = w.tg.sent().filter((m) => m.text.includes('Run failed'));
   assert.equal(alerts.length, 1);
-  assert.equal(alerts[0].text, `<b><a href="${runUrlOf(failed)}">Run failed</a></b> · TST-1 Flaky job\nDev: adapter_failed — The adapter exited`);
+  assert.equal(alerts[0].text, `<b>Run failed</b> · <a href="${UI_BASE_URL}/TST/issues/TST-1">TST-1</a> Flaky job\n<a href="${runUrlOf(failed)}">Dev</a>: adapter_failed — The adapter exited`);
   assert.deepEqual(rowsOf(w, alerts[0].message_id), [['Open task']]);
   assert.ok(!sentTexts(w).some((text) => text.includes('Open in Paperclip')));
   assert.equal(w.tg.callsTo('sendMessage').length, 1);
 });
 
-test('a run failure alert in the task\'s own topic keeps the run link on the kind word and has no buttons', async (t) => {
+test('a run failure alert in the task\'s own topic keeps the run link on the agent name and has no buttons', async (t) => {
   const w = await world(t, { telegram: { chatId: GROUP_ID, forum: true } });
   const bot = await w.primedBot();
   const issue = w.pc.addIssue({ title: 'Flaky job', status: 'in_progress', assigneeAgentId: 'agent-1' });
@@ -222,18 +223,18 @@ test('a run failure alert in the task\'s own topic keeps the run link on the kin
   await bot.pollOnce();
 
   const alert = w.tg.inTopic(bot.state.topics.get(issue.id).thread).find((m) => m.text.includes('Run failed'));
-  assert.equal(alert.text, `<b><a href="${runUrlOf(failed)}">Run failed</a></b>\nDev: adapter_failed — The adapter exited`);
+  assert.equal(alert.text, `${mentioned('Run failed', w.tg.userId)}\n<a href="${runUrlOf(failed)}">Dev</a>: adapter_failed — The adapter exited`);
   assert.deepEqual(rowsOf(w, alert.message_id), []);
   assert.ok(!sentTexts(w).some((text) => text.includes('Open in Paperclip')));
 });
 
-test('a failed run that has no task still alerts, with the kind word linking to the run', async (t) => {
+test('a failed run that has no task still alerts, with the agent name linking to the run', async (t) => {
   const w = await world(t);
   const bot = await w.primedBot();
   const failed = w.pc.addFailedRun({ agentId: 'agent-1', errorCode: 'timeout', error: 'took too long' });
   await bot.pollOnce();
   const alert = w.tg.findMessage('Run failed');
-  assert.equal(alert.text, `<b><a href="${runUrlOf(failed)}">Run failed</a></b> · Dev\ntimeout — took too long`);
+  assert.equal(alert.text, `<b>Run failed</b> · <a href="${runUrlOf(failed)}">Dev</a>\ntimeout — took too long`);
   assert.deepEqual(rowsOf(w, alert.message_id), []);
 });
 

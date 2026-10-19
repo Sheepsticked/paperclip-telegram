@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import { followIssue } from '../src/follow.js';
+import { mentioned } from './alerts.js';
 import { confirmPayload, startWorld, UI_BASE_URL } from './helpers.js';
 
 const GROUP_ID = -1001234567890;
@@ -49,7 +50,7 @@ test('replay in a forum group: each thing is said once, the topic is closed and 
   const steps = story(w, bot, issue);
   await steps.review();
   await steps.questionAndComment();
-  const card = w.tg.findMessage('<b>Question</b>');
+  const card = w.tg.findMessage('>Question</a></b>');
   const cardRows = rowsOf(w, card.message_id);
   await bot.handleUpdate(w.tg.tapButton(card.message_id, 'Deploy'));
   await steps.lastComment();
@@ -65,7 +66,7 @@ test('replay in a forum group: each thing is said once, the topic is closed and 
       '<b>Question</b>\nDeploy the change?\n\nConfirmed',
       '<b>Dev</b>\n<blockquote>Merge is waiting for your answer.</blockquote>',
       '<b>Dev</b>\n<blockquote>Done. The change is merged.</blockquote>',
-      '<b>Done</b>',
+      mentioned('Done', w.tg.userId),
     ],
   );
   assert.deepEqual(messages.map((m) => rowsOf(w, m.message_id)), [[['Done [success]', 'More']], [], [], [], [], []]);
@@ -125,7 +126,7 @@ test('a done message keeps its quote when that comment was not shown before', as
 
   const thread = bot.state.topics.get(issue.id).thread;
   const texts = w.tg.inTopic(thread).map((m) => m.text);
-  assert.equal(texts.at(-1), '<b>Done</b>\n<blockquote>Finished: all checks pass.</blockquote>');
+  assert.equal(texts.at(-1), `${mentioned('Done', w.tg.userId)}\n<blockquote>Finished: all checks pass.</blockquote>`);
   assert.equal(texts.filter((text) => text.includes('Finished')).length, 1, 'the follow message for that comment is skipped');
   assert.ok(bot.state.hasShown(w.pc.comments.at(-1).id));
 });

@@ -1,6 +1,6 @@
 import { routeCallback } from './callbacks.js';
 import { handleMessage } from './commands.js';
-import { MESSAGE_LIMIT, truncate } from './format.js';
+import { MESSAGE_LIMIT, truncate, withMention } from './format.js';
 import { pollPaperclip } from './notifications.js';
 import { PaperclipClient, PaperclipError } from './paperclip.js';
 import { SerialQueue } from './queue.js';
@@ -64,6 +64,8 @@ export class Bot {
     this.ignoredChats = new Set();
     this.topicCheck = null;
     this.botId = null;
+    this.mentionDropped = false;
+    this.mentionAccepted = false;
     if (state.adoptChat(config.telegramChatId)) {
       log.info('chat changed: dropped the message ids of the old chat; open cards and inbox items are sent again');
       state.save();
@@ -71,12 +73,14 @@ export class Bot {
   }
 
   // Every outgoing message goes to the one configured chat; `thread` picks a topic (none means the main chat).
-  // A message is silent unless `alert` is set, which is for the few that need the owner.
+  // A message is silent unless `alert` is set, which is for the few that need the owner. In a group an alert
+  // also mentions the owner, so it still pops up when the group is muted.
   async send(html, { keyboard, replyTo, forceReply, issue, thread, alert = false } = {}) {
     if (html.length > MESSAGE_LIMIT) throw new Error('refusing to send a message over the Telegram limit');
+    const mentioned = alert ? this.#mentionOwner(html) : null;
     const params = {
       chat_id: this.config.telegramChatId,
-      text: html,
+      text: mentioned ?? html,
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
     };
@@ -86,8 +90,31 @@ export class Bot {
     if (forceReply) params.reply_markup = { force_reply: true, input_field_placeholder: typeof forceReply === 'string' ? forceReply : 'Reason' };
     if (replyTo) params.reply_parameters = { message_id: replyTo, allow_sending_without_reply: true };
     const sent = await this.tg.sendMessage(params);
+    if (mentioned) this.#checkMention(sent);
     if (issue) this.state.mapMessage(sent.message_id, issue.id, issue.identifier);
     return sent.message_id;
+  }
+
+  // The alert with the owner mention, or null in a private chat and for an alert that cannot carry one.
+  #mentionOwner(html) {
+    const owner = this.config.telegramUserId;
+    if (this.config.telegramChatId === owner) return null;
+    const text = withMention(html, owner);
+    if (text === null) this.log.warn('alert without an owner mention');
+    return text;
+  }
+
+  // Telegram reports the mention back as an entity; log it once when it comes through and once when it is dropped.
+  #checkMention(sent) {
+    const owner = this.config.telegramUserId;
+    const kept = Array.isArray(sent?.entities) && sent.entities.some((entity) => entity.type === 'text_mention' && entity.user?.id === owner);
+    if (kept && !this.mentionAccepted) {
+      this.mentionAccepted = true;
+      this.log.info('owner mention accepted');
+    } else if (!kept && !this.mentionDropped) {
+      this.mentionDropped = true;
+      this.log.warn('Telegram dropped the owner mention');
+    }
   }
 
   // Sends a message about a task into its top-level task's topic. A deleted topic is made again once;
@@ -260,7 +287,7 @@ export class Bot {
       this.state.lastAuthAlertAt = this.now();
       this.state.save();
       try {
-        await this.send('Paperclip token rejected: create a new board key', { alert: true });
+        await this.send('<b>Token rejected</b>\nCreate a new Paperclip board key', { alert: true });
       } catch (sendErr) {
         this.log.warn('could not send the token alert', { error: sendErr.message });
       }

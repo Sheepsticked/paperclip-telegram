@@ -1,5 +1,5 @@
 import { reportFailure } from './actions.js';
-import { button, escapeHtml, fitMessage, flat, headline, issueUrl, kindWord, openRows, truncate, truncateLines } from './format.js';
+import { ALERT_LIMIT, MESSAGE_LIMIT, button, escapeHtml, fitMessage, flat, headline, issueUrl, kindWord, link, openRows, truncate, truncateLines } from './format.js';
 import { guarded } from './guard.js';
 import { PaperclipError } from './paperclip.js';
 import { reportActionFailure } from './tasks.js';
@@ -151,11 +151,15 @@ function compose(record, ctx, level) {
   const { issue } = record;
   const url = recordUrl(record, ctx.uiBaseUrl);
   const lines = [];
+  let openLine = null;
   if (issue) {
     lines.push(headline(HEAD[record.kind], issue, { own: ctx.own, titleMax: level.title, url }));
     if (record.title && record.title !== issue.title) lines.push(`<b>${escapeHtml(truncate(record.title, 200))}</b>`);
   } else {
-    lines.push(`${kindWord(HEAD[record.kind], url)}${record.title ? ` · ${escapeHtml(truncate(record.title, level.title))}` : ''}`);
+    const title = record.title ? truncate(record.title, level.title) : '';
+    lines.push(`${kindWord(HEAD[record.kind])}${title ? ` · ${url ? link(url, title) : escapeHtml(title)}` : ''}`);
+    // The kind word stays free for the owner mention; without a title the link goes on a last line.
+    if (!title && url) openLine = link(url, 'Open in Paperclip');
   }
   if (record.whyNow && level.why > 0) lines.push(escapeHtml(truncate(record.whyNow, level.why)));
   if (level.body > 0) {
@@ -175,6 +179,7 @@ function compose(record, ctx, level) {
     if (record.notePromptMessageId) lines.push('', 'Waiting for the note (reply to the prompt below).');
   }
   if (record.resolution) lines.push('', escapeHtml(record.resolution));
+  if (openLine) lines.push(...(lines.length > 1 ? ['', openLine] : [openLine]));
   return lines.join('\n');
 }
 
@@ -203,7 +208,8 @@ function keyboardFor(record, armed) {
 function renderInbox(bot, record, messageId = null) {
   const armed = messageId ? bot.armedOps(messageId) : new Set();
   const context = { own: record.own, uiBaseUrl: bot.config.uiBaseUrl };
-  return { text: fitMessage((level) => compose(record, context, level), LEVELS), keyboard: keyboardFor(record, armed) };
+  const limit = needsOwner(record) ? ALERT_LIMIT : MESSAGE_LIMIT;
+  return { text: fitMessage((level) => compose(record, context, level), LEVELS, limit), keyboard: keyboardFor(record, armed) };
 }
 
 async function editOne(bot, record, messageId) {

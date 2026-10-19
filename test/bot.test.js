@@ -173,12 +173,12 @@ test('a Paperclip 401 is logged and alerted once, however often it repeats', asy
   const bot = w.makeBot();
   const stop = runLoops(bot);
 
-  await waitFor(() => w.tg.findMessage('Paperclip token rejected'), { label: 'token alert' });
+  await waitFor(() => w.tg.findMessage('Token rejected'), { label: 'token alert' });
   const before = w.sleeps.length;
   await waitFor(() => w.sleeps.length >= before + 5, { label: 'more failed polls' });
   await stop();
 
-  const alerts = w.tg.sent().filter((m) => m.text.includes('Paperclip token rejected'));
+  const alerts = w.tg.sent().filter((m) => m.text.includes('Token rejected'));
   assert.equal(alerts.length, 1);
   assert.ok(w.logs.err.some((line) => line.includes('401')));
   assert.ok(!w.allLogText().includes(w.tokens.paperclip));

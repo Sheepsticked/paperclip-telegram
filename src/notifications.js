@@ -1,6 +1,6 @@
 import { refreshCard, sendCard } from './actions.js';
 import { pollFollowing } from './follow.js';
-import { QUOTE_LEVELS, escapeHtml, firstLine, fitMessage, headline, issueUrl, kindWord, openRows, prefixOf, quote, runUrl, truncate } from './format.js';
+import { ALERT_LIMIT, MESSAGE_LIMIT, QUOTE_LEVELS, escapeHtml, firstLine, fitMessage, headline, issueUrl, kindWord, link, openRows, prefixOf, quote, runUrl, truncate } from './format.js';
 import { guarded, isTelegramOutage, isUnauthorized } from './guard.js';
 import { INBOX_KINDS, isFreshInbox, itemIssueId, sendInboxItem, syncInbox } from './inbox.js';
 import { PaperclipError } from './paperclip.js';
@@ -164,17 +164,16 @@ async function sendRunAlert(bot, item) {
   const agent = meta.agentName ?? (await bot.agentName(meta.agentId)) ?? 'An agent';
   const reason = truncate(firstLine(meta.error ?? meta.retryExhaustedReason ?? item.detail?.failureReasonExcerpt ?? ''), 200);
   const detail = [meta.errorCode, reason].filter(Boolean).join(' — ');
-  const url = runUrl(bot.config.uiBaseUrl, runPrefix(item), meta.agentId, item.subject.id);
-  const compose = (head, body) => [head, ...body.filter(Boolean).map(escapeHtml)].join('\n');
+  const agentLink = link(runUrl(bot.config.uiBaseUrl, runPrefix(item), meta.agentId, item.subject.id), truncate(agent, 80));
   if (!issue) {
-    await bot.send(compose(`${kindWord('Run failed', url)} · ${escapeHtml(truncate(agent, 80))}`, [detail]), { alert: true });
+    await bot.send([`${kindWord('Run failed')} · ${agentLink}`, escapeHtml(detail)].filter(Boolean).join('\n'), { alert: true });
     return;
   }
-  const who = [truncate(agent, 80), detail].filter(Boolean).join(': ');
+  const who = `${agentLink}${detail ? `: ${escapeHtml(detail)}` : ''}`;
   await bot.sendAbout(
     issue,
     ({ own }) => ({
-      text: compose(headline('Run failed', issue, { own, kindUrl: url }), [who]),
+      text: `${headline('Run failed', issue, { own, url: issueUrl(bot.config.uiBaseUrl, issue.identifier) })}\n${who}`,
       keyboard: openRows(issue.id, own),
     }),
     { alert: true },
@@ -231,6 +230,7 @@ async function sendStatusUpdate(bot, issue) {
   const kind = issue.status === 'done' ? 'Done' : 'In review';
   const found = await lastAgentComment(bot, issue.id);
   const comment = found && !bot.state.hasShown(found.id) ? found : null;
+  const alert = isTopLevelDone(issue);
   let quoted = false;
   const build = ({ own }) => {
     const head = headline(kind, issue, { own, url: issueUrl(bot.config.uiBaseUrl, issue.identifier) });
@@ -240,9 +240,9 @@ async function sendStatusUpdate(bot, issue) {
       return [head, body].filter(Boolean).join('\n');
     };
     // The last build is the one that fits, so `quoted` describes the sent text.
-    return { text: fitMessage(text, QUOTE_LEVELS), keyboard: openRows(issue.id, own) };
+    return { text: fitMessage(text, QUOTE_LEVELS, alert ? ALERT_LIMIT : MESSAGE_LIMIT), keyboard: openRows(issue.id, own) };
   };
-  await bot.sendAbout(issue, build, { alert: isTopLevelDone(issue) });
+  await bot.sendAbout(issue, build, { alert });
   if (quoted) bot.state.noteShown(comment.id);
 }
 
@@ -338,7 +338,7 @@ async function reportStatusChanges(bot, sentIssueIds) {
   const reviewed = new Set();
   if (outgoing.length > CHANGE_SUMMARY_THRESHOLD) {
     const done = outgoing.filter((issue) => issue.status === 'done').length;
-    await bot.send(`${done} done, ${outgoing.length - done} in review since the last check, see /status`, { alert: outgoing.some(isTopLevelDone) });
+    await bot.send(`<b>${done} done</b>, ${outgoing.length - done} in review since the last check, see /status`, { alert: outgoing.some(isTopLevelDone) });
     for (const issue of outgoing) {
       state.statuses.set(issue.id, issue.status);
       state.statusRetries.delete(issue.id);

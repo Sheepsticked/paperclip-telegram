@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isAlertKind, unexpectedLoud } from './alerts.js';
+import { isAlertKind, mentioned, unexpectedLoud } from './alerts.js';
 import { startFakeTelegram } from './fakes/telegram.js';
 import { confirmPayload, startWorld } from './helpers.js';
 import { PaperclipError } from '../src/paperclip.js';
@@ -35,17 +35,21 @@ test('the suite-wide check lets alert kinds through and names any other loud mes
     '<b>Blocked</b> · TST-1 Title',
     '<b>Recovery</b> · TST-1 Title',
     '<b><a href="https://example.com/x">Join request</a></b> · Helper',
-    '<b><a href="https://example.com/x">Run failed</a></b> · Dev',
+    '<b>Run failed</b> · <a href="https://example.com/x">Dev</a>',
+    '<b><a href="tg://user?id=1001">Run failed</a></b> · Dev',
     '<b>Done</b>',
-    'Paperclip token rejected: create a new board key',
-    '3 done, 9 in review since the last check, see /status',
+    '<b>Token rejected</b>\nCreate a new Paperclip board key',
+    '<b><a href="tg://user?id=1001">Token rejected</a></b>\nCreate a new Paperclip board key',
+    '<b>3 done</b>, 9 in review since the last check, see /status',
   ];
   for (const text of alerts) assert.ok(isAlertKind(entry(text)), text);
 
   const stalled = { inline_keyboard: [[{ text: 'Approve' }, { text: 'Request changes' }]] };
   assert.ok(isAlertKind(entry('<b>Review</b> · TST-1 Title', stalled)));
   assert.ok(!isAlertKind(entry('<b>Review</b> · TST-1 Title', { inline_keyboard: [[{ text: 'Open task' }]] })));
-  assert.ok(!isAlertKind(entry('0 done, 12 in review since the last check, see /status')));
+  assert.ok(!isAlertKind(entry('<b>0 done</b>, 12 in review since the last check, see /status')));
+  assert.ok(!isAlertKind(entry('Paperclip token rejected: create a new board key')));
+  assert.ok(!isAlertKind(entry('3 done, 9 in review since the last check, see /status')));
 
   const loud = [entry('<b>Dev</b> · TST-1 Title\nquote'), entry('<b>Done</b>'), entry('<b>In review</b>'), entry('Usage: /task &lt;ID&gt;\nsecond line')];
   assert.deepEqual(unexpectedLoud(loud), ['<b>Dev</b> · TST-1 Title', '<b>In review</b>', 'Usage: /task &lt;ID&gt;']);
@@ -155,7 +159,7 @@ test('in a forum group the subtask Done in the parent topic is silent and the pa
   assert.equal(done.length, 2);
   assert.ok(done[0].text.includes('Child work'));
   assert.equal(done[0].silent, true);
-  assert.equal(done[1].text, '<b>Done</b>');
+  assert.equal(done[1].text, mentioned('Done', w.tg.userId));
   assert.equal(done[1].silent, false);
 });
 
@@ -168,7 +172,7 @@ test('the summary of many changes makes a sound only when a top-level task is do
   await bot.pollOnce();
   const summary = w.tg.sent().filter((m) => m.text.includes('since the last check'));
   assert.equal(summary.length, 1);
-  assert.equal(summary[0].text, '7 done, 4 in review since the last check, see /status');
+  assert.equal(summary[0].text, '<b>7 done</b>, 4 in review since the last check, see /status');
   assert.equal(summary[0].silent, true, 'finished subtasks and reviews alone stay silent');
 
   for (let i = 0; i < 4; i += 1) w.pc.addIssue({ title: `Late review ${i}`, status: 'in_review' });
@@ -176,7 +180,7 @@ test('the summary of many changes makes a sound only when a top-level task is do
   w.pc.addIssue({ title: 'Finished work', status: 'done' });
   await bot.pollOnce();
   const second = w.tg.sent().filter((m) => m.text.includes('since the last check')).at(-1);
-  assert.equal(second.text, '7 done, 4 in review since the last check, see /status');
+  assert.equal(second.text, '<b>7 done</b>, 4 in review since the last check, see /status');
   assert.equal(second.silent, false, 'a finished top-level task in it makes the summary loud');
 });
 
@@ -185,7 +189,7 @@ test('a summary of reviews only stays silent', async (t) => {
   for (let i = 0; i < 12; i += 1) w.pc.addIssue({ title: `Review ${i}`, status: 'in_review' });
   await bot.pollOnce();
   const summary = w.tg.lastMessage();
-  assert.equal(summary.text, '0 done, 12 in review since the last check, see /status');
+  assert.equal(summary.text, '<b>0 done</b>, 12 in review since the last check, see /status');
   assert.equal(summary.silent, true);
 });
 
@@ -208,7 +212,7 @@ test('a message sent again after its topic was deleted keeps its sound', async (
   assert.equal(w.tg.callsTo('createForumTopic').length, 3);
   const note = triesFor(w, 'Second note');
   assert.ok(note.length >= 2 && note.every(Boolean), 'the refused try and the resend are silent');
-  const done = triesFor(w, '<b>Done</b>');
+  const done = triesFor(w, '>Done</a></b>');
   assert.ok(done.length >= 2 && done.every((silent) => !silent), 'the refused try and the resend make a sound');
 });
 
@@ -225,7 +229,7 @@ test('a message that falls back to the main chat keeps its sound', async (t) => 
   await bot.pollOnce();
 
   const note = w.tg.sent().find((m) => m.text.includes('Closing note'));
-  const done = w.tg.sent().find((m) => m.text.startsWith('<b>Done</b>'));
+  const done = w.tg.sent().find((m) => m.text.startsWith(mentioned('Done', w.tg.userId)));
   assert.equal(note?.thread, null, 'the note reached the main chat');
   assert.equal(done?.thread, null, 'Done reached the main chat');
   assert.equal(note.silent, true);
@@ -282,7 +286,7 @@ test('a failed run makes a sound, with or without a task', async (t) => {
 test('the rejected-token alert makes a sound', async (t) => {
   const { w, bot } = await setup(t);
   assert.equal(await bot.paperclipFailed(new PaperclipError('GET', '/x', { status: 401 })), true);
-  assert.equal(w.tg.findMessage('Paperclip token rejected').silent, false);
+  assert.equal(w.tg.findMessage('Token rejected').silent, false);
 });
 
 test('command replies, lists, settings and the first-start summary are silent', async (t) => {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ICON_COLORS, iconColor, topicName } from '../src/topics.js';
+import { unmentioned } from './alerts.js';
 import { UI_BASE_URL, confirmPayload, startWorld } from './helpers.js';
 
 const GROUP_ID = -1001234567890;
@@ -523,7 +524,7 @@ test('a card for a subtask is sent into the topic of its top-level task', async 
   const thread = bot.state.topics.get(parent.id).thread;
   const card = w.tg.inTopic(thread).find((m) => m.text.includes('Ship it?'));
   assert.ok(card, 'the card is in the parent topic');
-  assert.match(card.text, new RegExp(`^<b>Question</b> · <a href="[^"]+#interaction-[^"]+">TST-2</a> Small step$`, 'm'));
+  assert.match(unmentioned(card.text), /^<b>Question<\/b> · <a href="[^"]+#interaction-[^"]+">TST-2<\/a> Small step$/m);
   assert.deepEqual(rowsOf(w, card.message_id).at(-1), ['Open task'], 'a card for a subtask is not in its own topic');
 });
 

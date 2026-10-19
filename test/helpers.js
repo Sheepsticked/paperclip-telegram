@@ -6,7 +6,7 @@ import { loadSettings } from '../src/config.js';
 import { createLogger } from '../src/log.js';
 import { State } from '../src/state.js';
 import { defaultSleep } from '../src/telegram.js';
-import { unexpectedLoud } from './alerts.js';
+import { mentionProblems, unexpectedLoud } from './alerts.js';
 import { startFakePaperclip } from './fakes/paperclip.js';
 import { startFakeTelegram } from './fakes/telegram.js';
 
@@ -103,7 +103,7 @@ export async function startWorld({ config: overrides = {}, telegram = {}, paperc
       await bot.pollOnce();
       return bot;
     },
-    // Closes everything, then fails when the bot wrote an emoji anywhere in the test.
+    // Closes everything, then fails when the bot wrote an emoji, made a sound it should not have, or got the owner mention wrong.
     async close() {
       for (const bot of bots) bot.stop();
       await tg.close();
@@ -116,6 +116,8 @@ export async function startWorld({ config: overrides = {}, telegram = {}, paperc
       }
       const loud = unexpectedLoud(tg.loudSends());
       if (loud.length > 0) throw new Error(`the bot sent messages with a sound that should be silent:\n${loud.join('\n')}`);
+      const mentions = mentionProblems(tg.calls, tg.userId);
+      if (mentions.length > 0) throw new Error(`the owner mention is wrong:\n${mentions.join('\n')}`);
     },
   };
   return world;

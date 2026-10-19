@@ -116,7 +116,7 @@ If Paperclip rejects the key (HTTP 401), the log says so and the bot sends one T
 
 ## What you see and what the buttons do
 
-Line 1 of a task message is `Kind · ID Title` with the kind in bold and the id linked to the task (or, for a card or inbox item, to that card or item) in Paperclip. Inside the task's own topic line 1 is only the kind, and the pinned task view there links the task. A message without a task links its kind word instead, and the run-failed alert links to the run. A comment's kind is the agent's name. There is no separate link line.
+Line 1 of a task message is `Kind · ID Title` with the kind in bold and the id linked to the task (or, for a card or inbox item, to that card or item) in Paperclip. Inside the task's own topic line 1 is only the kind, and the pinned task view there links the task. A message without a task links its title instead (or ends with an **Open in Paperclip** link when it has no title), and the run-failed alert links to the agent's name. A comment's kind is the agent's name. There is no separate link line.
 
 Quoted text (the last agent comment, a description) is cut at 2000 characters with `…` and is folded in Telegram when it is longer than 3 lines or 300 characters.
 
@@ -137,7 +137,7 @@ When a card is answered, in the bot or in Paperclip, its message loses the butto
 
 ### Inbox items
 
-Everything else in the attention feed that waits for you gets one message: the kind and the task on line 1, the title, the reason it needs you, and an **Open task** button when it belongs to a task and the message is not in that task's own topic. The task id (or the kind word, for an item without a task) links to the item in Paperclip. These messages are always sent; the toggles and the mute do not stop them.
+Everything else in the attention feed that waits for you gets one message: the kind and the task on line 1, the title, the reason it needs you, and an **Open task** button when it belongs to a task and the message is not in that task's own topic. The task id (or the title, for an item without a task) links to the item in Paperclip. These messages are always sent; the toggles and the mute do not stop them.
 
 | Kind | Message | Buttons |
 | --- | --- | --- |
@@ -154,7 +154,7 @@ When an item leaves the feed (answered here or in Paperclip, or dismissed in Pap
 | --- | --- |
 | **Done** | A task changed to `done`. It quotes the last agent comment, unless a message in this chat already showed that comment. |
 | **In review** | A task changed to `in_review`, with the same quote rule as **Done**. Not sent when a card for the same task was just sent or is still waiting. |
-| **Run failed** | A run failed; the kind word links to the run. One alert per run. Runs that end for routine reasons (cancelled, paused, and so on) are skipped. |
+| **Run failed** | A run failed; the agent's name links to the run. One alert per run. Runs that end for routine reasons (cancelled, paused, and so on) are skipped. |
 | The agent's name | A new comment from an agent on a task you follow (see below). |
 | `+N more, see /status` | More than 10 cards and inbox items were waiting when the bot first started, after an upgrade that added new kinds of inbox items, or after `telegramChatId` changed. The extra ones are not sent later; `/status` lists them. |
 | `N done, M in review since the last check, see /status` | More than 10 tasks changed in one poll (for example after the bot was stopped for a while). |
@@ -228,6 +228,11 @@ Each new comment of a followed task is one message: the agent's name in bold as 
 `/settings` has a toggle for each kind of message (done, in review, failed run, followed comments) and for following the tasks you create, plus **Mute 1 h**, **Mute 8 h** and **Unmute**. A toggle reads `Done messages · On` (green) or `Done messages · Off`. While muted, those messages are not sent; when the mute ends, one line says how many were hidden. Cards that need an answer and inbox items are always sent.
 
 Only what needs you makes a sound: cards, approvals, decisions, stalled reviews, blocked tasks, recovery items, join requests, a failed run, **Done** of a top-level task and a rejected Paperclip token. The summary line for many changes makes a sound only when it counts a finished top-level task. Everything else is delivered silently: agent comments, **In review**, **Done** of a subtask, task views, replies to your commands and lists. The mute and the toggles above decide what is sent at all; they do not change the sound.
+
+To get a pop-up only when you are needed, mute the group in Telegram.
+Every message that makes a sound mentions you: its bold first word (for example **Question**, **Done** or **Run failed**) links to your profile, and Telegram still notifies a muted chat about mentions of you.
+Everything else only raises the unread count.
+A private chat gets no mention.
 
 ### Commands
 

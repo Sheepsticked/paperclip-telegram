@@ -136,7 +136,7 @@ test('a full run serves the owner, never prints a token, and stops cleanly on SI
 
   // Provoke the error paths that log: a rejected Paperclip key, then the Telegram API going away.
   w.pc.setUnauthorized(true);
-  await waitFor(() => w.tg.findMessage('Paperclip token rejected'), { label: 'token alert' });
+  await waitFor(() => w.tg.findMessage('Token rejected'), { label: 'token alert' });
   await waitFor(() => output.err.includes('401'), { label: '401 log line' });
   w.pc.setUnauthorized(false);
   await w.tg.close();

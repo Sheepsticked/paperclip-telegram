@@ -37,6 +37,39 @@ export function validateTelegramHtml(text) {
   return stack.length ? `Can't find end tag for "${stack.at(-1)}"` : null;
 }
 
+// The `text_mention` entities Telegram reports for inline user links; other entity types are not modelled.
+// Offsets and lengths count UTF-16 units of the text with its tags removed and its entities decoded.
+export function mentionEntities(html) {
+  const entities = [];
+  let offset = 0;
+  let open = null;
+  for (let i = 0; i < html.length; ) {
+    const rest = html.slice(i);
+    const tag = /^<(\/?)([A-Za-z][\w-]*)([^<>]*)>/.exec(rest);
+    if (tag) {
+      const [whole, closing, name, attrs] = tag;
+      const user = /href="tg:\/\/user\?id=(\d+)"/.exec(attrs);
+      if (name === 'a' && !closing) open = user ? { id: Number(user[1]), offset } : null;
+      if (name === 'a' && closing && open) {
+        entities.push({ type: 'text_mention', offset: open.offset, length: offset - open.offset, user: { id: open.id, is_bot: false, first_name: 'Owner' } });
+        open = null;
+      }
+      i += whole.length;
+      continue;
+    }
+    const ref = ENTITY.exec(rest);
+    if (ref) {
+      const numeric = /^#(x)?([0-9a-fA-F]+)$/.exec(ref[1]);
+      offset += numeric ? String.fromCodePoint(parseInt(numeric[2], numeric[1] ? 16 : 10)).length : 1;
+      i += ref[0].length;
+      continue;
+    }
+    offset += 1;
+    i += 1;
+  }
+  return entities;
+}
+
 // A stand-in for the Telegram Bot API that records every call and checks what the real API checks.
 // With `forum: true` the chat is a supergroup with topics and the bot an admin holding `botRights`.
 export async function startFakeTelegram({
@@ -67,6 +100,7 @@ export async function startFakeTelegram({
   let nextFileNumber = 1;
   let nextMessageId = firstMessageId;
   let nextUpdateId = 1;
+  let dropMentions = false;
   let commands = null;
   let shortDescription = null;
   let description = null;
@@ -169,7 +203,18 @@ export async function startFakeTelegram({
       };
       messages.set(message.message_id, message);
       sends.push({ messageId: message.message_id, text: params.text, markup: params.reply_markup ?? null, silent: message.silent });
-      respond(res, 200, { ok: true, result: { message_id: message.message_id, chat: message.chat, date: 0, text: message.text, ...(thread ? { message_thread_id: thread, is_topic_message: true } : {}) } });
+      const entities = dropMentions || params.parse_mode !== 'HTML' ? [] : mentionEntities(params.text);
+      respond(res, 200, {
+        ok: true,
+        result: {
+          message_id: message.message_id,
+          chat: message.chat,
+          date: 0,
+          text: message.text,
+          ...(entities.length > 0 ? { entities } : {}),
+          ...(thread ? { message_thread_id: thread, is_topic_message: true } : {}),
+        },
+      });
     },
     editMessageText(res, params) {
       if (!checkMessage(res, params)) return;
@@ -385,6 +430,10 @@ export async function startFakeTelegram({
       messages.clear();
       topics.clear();
       nextMessageId = 100;
+    },
+    // Makes the fake answer sends without the mention entities, as when Telegram does not keep a mention.
+    dropMentions(value = true) {
+      dropMentions = value;
     },
     setForum(value) {
       chat.isForum = value;

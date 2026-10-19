@@ -1,4 +1,4 @@
-import { button, cardUrl, escapeHtml, fitMessage, headline, openRows, truncate } from './format.js';
+import { ALERT_LIMIT, button, cardUrl, escapeHtml, fitMessage, headline, openRows, truncate } from './format.js';
 
 export const MAX_CHECKBOX_OPTIONS = 30;
 export const MAX_FORM_QUESTIONS = 20;
@@ -227,7 +227,7 @@ function keyboardFor(card) {
 }
 
 export function renderCard(card, uiBaseUrl) {
-  const html = fitMessage((level) => composeText(card, uiBaseUrl, level), LEVELS);
+  const html = fitMessage((level) => composeText(card, uiBaseUrl, level), LEVELS, ALERT_LIMIT);
   return { text: html, keyboard: keyboardFor(card) };
 }
 

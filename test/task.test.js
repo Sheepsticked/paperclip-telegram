@@ -615,7 +615,7 @@ test('in-review and failed-run messages carry the task button, a run without a t
   assert.deepEqual(rowsOf(w, failed.message_id), [['Open task']]);
   assert.deepEqual(rowsOf(w, orphan.message_id), []);
   assert.equal(w.tg.buttons(failed.message_id)[0].callback_data, `T:v:${issue.id}`);
-  assert.match(failed.text, new RegExp(`^<b><a href="${UI_BASE_URL}/TST/agents/agent-1/runs/[^"]+">Run failed</a></b> · TST-1 Long job\\n`), 'the kind word links to the run');
+  assert.match(failed.text, new RegExp(`^<b>Run failed</b> · <a href="${UI_BASE_URL}/TST/issues/TST-1">TST-1</a> Long job\\n<a href="${UI_BASE_URL}/TST/agents/agent-1/runs/[^"]+">Dev</a>: `), 'the agent name links to the run');
   assert.ok(!failed.text.includes('Open in Paperclip'));
 
   await tap(w, bot, failed, 'Open task');
