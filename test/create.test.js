@@ -135,7 +135,7 @@ test('plain text offers to create a task and creates nothing yet', async (t) => 
   const offer = w.tg.lastMessage();
   assert.equal(offer.text, 'Create a task from this?');
   assert.equal(offer.replyTo, update.message.message_id);
-  assert.deepEqual(rowsOf(w, offer.message_id), [['For Chief', 'Other agent', 'Cancel']]);
+  assert.deepEqual(rowsOf(w, offer.message_id), [['For Chief', 'Cancel'], ['Other agent']]);
   assert.equal(creates(w).length, 0);
   assert.equal(bot.state.offers.size, 1);
 });
@@ -170,7 +170,7 @@ test('For Lead creates the task from the original message and replies with the t
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'This offer has expired');
 });
 
-test('Other agent shows a picker, Back returns, and the chosen agent gets the task', async (t) => {
+test('Other agent shows a picker, Back returns, and the chosen agent gets the task after For', async (t) => {
   const { w, bot } = await setup(t);
   w.pc.addAgent({ name: 'Retired', status: 'terminated' });
   await bot.handleUpdate(w.tg.message('Review the budget'));
@@ -179,11 +179,14 @@ test('Other agent shows a picker, Back returns, and the chosen agent gets the ta
   await bot.handleUpdate(w.tg.tapButton(offer.message_id, 'Other agent'));
   assert.deepEqual(rowsOf(w, offer.message_id), [['Dev'], ['Lead'], ['◀ Back']]);
   await bot.handleUpdate(w.tg.tapButton(offer.message_id, 'Back'));
-  assert.deepEqual(rowsOf(w, offer.message_id), [['For Lead', 'Other agent', 'Cancel']]);
+  assert.deepEqual(rowsOf(w, offer.message_id), [['For Lead', 'Cancel'], ['Other agent']]);
   assert.equal(creates(w).length, 0);
 
   await bot.handleUpdate(w.tg.tapButton(offer.message_id, 'Other agent'));
   await bot.handleUpdate(w.tg.tapButton(offer.message_id, 'Dev'));
+  assert.deepEqual(rowsOf(w, offer.message_id), [['For Dev', 'Cancel'], ['Other agent']], 'picking an agent goes back to the offer');
+  assert.equal(creates(w).length, 0);
+  await bot.handleUpdate(w.tg.tapButton(offer.message_id, 'For Dev'));
   assert.equal(creates(w)[0].body.assigneeAgentId, 'agent-1');
   assert.match(w.tg.messages.get(offer.message_id).text, outcomePattern('Created', `${TASK_LINK} for Dev`, { before: OFFER }));
 });

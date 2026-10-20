@@ -168,7 +168,7 @@ When the bot settles a message in place (a card is answered or closed, an inbox 
 | Part | Content |
 | --- | --- |
 | Kind (bold) | Card: `Confirmed`, `Declined` or `Answered`; with `in Paperclip` added when it was settled there; `Closed` when the card ended without an answer. Inbox item: `Approved`, `Rejected`, `Decided`, `Dismissed`, `Changes requested`, `Sent back`, or `Resolved in Paperclip` when it was settled elsewhere. Offer: `Created`, `Cancelled` or `Expired`. |
-| Detail | The accept or decline label, unless it only repeats the kind (`Confirm`, `Yes`, `OK`, `Decline`, `No`); the decline reason (200 characters at most); for a card with one question, the picked answers, joined with commas (120 characters at most; a written answer is not shown), and the card no longer shows them under the question; a card with several questions keeps each answer under its question, and its line has no detail; for a card closed without an answer, why (`replaced by a comment`, `expired`, `task closed`); for a decision, the chosen option; for a created task, its id as a link, then who it is for and the project. |
+| Detail | The accept or decline label, unless it only repeats the kind (`Confirm`, `Yes`, `OK`, `Decline`, `No`); the decline reason (200 characters at most); for a card with one question, the picked answers, joined with commas (120 characters at most; a written answer is not shown), and the card no longer shows them under the question; a card with several questions keeps each answer under its question, and its line has no detail; for a card closed without an answer, why (`replaced by a comment`, `expired`, `task closed`); for a decision, the chosen option; for a created task, its id as a link, then who it is for, the project and the model and level picked for it. |
 | Time | When it was settled (for a card settled in Paperclip, the time Paperclip recorded), as a Telegram date-time entity that clients show relative to now ("2 minutes ago"). Clients that do not know the entity show the UTC time. |
 
 A settled message keeps the text it had; when a very long card has no room left for the whole line, the detail is dropped first. Live views (the task view, the board, lists, pickers, settings and a button waiting for its second tap) have no outcome line. A message saved by an older version with a plain closing line shows that line highlighted, without a time.
@@ -241,6 +241,26 @@ Model and reasoning level are the agent's default for every task; the model list
 
 When no default project is set in the config and there is a project to pick, `/new` without `#project` and the plain-text offer ask "Which project?" before the task is created: the projects, most recently active first (8 per page), **No project** and **Cancel**. `/new #project ...` skips the question. The waiting text is kept for 24 hours, like an offer.
 
+### New tasks
+
+Plain text, a captioned file or a voice note in General offers "Create a task from this?". The offer is a small composer; nothing is created until you tap **For \<agent>**.
+
+| Row | Buttons |
+| --- | --- |
+| 1 | **For \<agent>** creates the task for that agent (the lead agent at first); **Cancel** drops the offer. |
+| 2 | **Other agent** lists the agents. A tap on one goes back to the offer with **For \<that agent>**; it does not create anything. |
+| 3 | **Model · name** and **Reasoning · level**, for the agent's adapter: **Model** when the adapter lists models, **Reasoning** when the model the task will run with has levels (none for Haiku, for example). |
+| last | The button that reads a voice note again in another language (see [Voice notes](#voice-notes)). |
+
+The labels show what the task will run with: the value picked here, else the agent's own, else `Default`. **Model** turns the buttons into **Agent default** and one button per model (the picked one blue with ✓); **Reasoning** into **Default**, which hands the level back to the agent, and the levels the model allows. A pick is saved on the offer and the offer's buttons come back with a short note (`Model: Claude Sonnet 5.5`, `Reasoning: High`). The pickers are the ones of the agent view and of **More** on a task, and a tap on a button of a list that changed since says `List changed, try again`.
+
+- Picking a model that does not allow the picked level drops the level.
+- Another agent with the same adapter type keeps the model; the level stays while the model the task will run with allows it. Another adapter type drops both and says `Model and reasoning reset for <agent>`.
+- Nothing picked: the task is created as before. With a pick, the task is created with an adapter override of its own (`assigneeAdapterOverrides`) holding only the model and the adapter's level key, built the way **More** builds it: an agent level that the picked model does not allow is blanked in the override. The agent itself is never changed.
+- The settled offer names what was picked: `Created · ID for Dev in Web · Claude Sonnet 5.5 · High`.
+- The project question still follows **For \<agent>** when there is a project to pick, and keeps the picks. `/new` without `#project` asks it at once and holds the **Model** and **Reasoning** buttons of the named agent (or of the lead agent) above **No project** and **Cancel**; `/new ... #project ...` creates the task at once with no picks.
+- The picks are saved with the offer, so they survive a restart and expire with it after 24 hours. Reading a voice note again in another language starts a new offer without them.
+
 ### Photos and files
 
 Send a photo or a file as a reply to a bot message about a task, or inside the task's topic, and the bot attaches it to the task: it uploads the file, posts a comment that carries it (your caption, or `Attachment: <file name>`) and replies `Attached to ID`. Telegram lets a bot download up to 20 MB and Paperclip accepts up to 10 MB; a file over a limit is refused with a message. Telegram compresses photos, so send a file to keep the original.
@@ -309,8 +329,8 @@ A private chat gets no mention.
 
 | Command | What it does |
 | --- | --- |
-| `/new [@agent] [#project] <text>` | Creates a task. The first line is the title (100 characters at most), the whole text is the description. `@agent` is an agent's URL key or name without spaces; `#project` is a project's URL key or name. The default is the lead agent and `newTaskProjectId`. Without `#project` (and without a default project) it first asks which project. An unknown name gets a reply that lists the valid ones, and nothing is created. Sending the same message twice does not create a second task. |
-| plain text | Offers "Create a task from this?" with **For \<lead>**, **Other agent** and **Cancel**, then asks for the project. An offer expires after 24 hours. In a task topic, plain text is a comment instead. |
+| `/new [@agent] [#project] <text>` | Creates a task. The first line is the title (100 characters at most), the whole text is the description. `@agent` is an agent's URL key or name without spaces; `#project` is a project's URL key or name. The default is the lead agent and `newTaskProjectId`. Without `#project` (and without a default project) it first asks which project, with buttons for the model and reasoning level. An unknown name gets a reply that lists the valid ones, and nothing is created. Sending the same message twice does not create a second task. |
+| plain text | Offers "Create a task from this?" with the agent, model and reasoning level to pick (see [New tasks](#new-tasks)), then asks for the project. An offer expires after 24 hours. In a task topic, plain text is a comment instead. |
 | voice note | Turns it into text on this machine and shows it before it is used: an offer for a new task in General, **Send** and **Cancel** in a task topic or as a reply. See [Voice notes](#voice-notes). |
 | photo or file | Attaches it to the task of the message it replies to, or of the topic it is written in. With a caption and no task it offers a new task. See [Photos and files](#photos-and-files). |
 | `/task <ID>` | Opens a task. In a task topic, without an ID, it opens that topic's task. |

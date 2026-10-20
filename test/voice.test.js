@@ -241,7 +241,7 @@ test('a voice note in General becomes the task offer with the transcript, and th
   assert.equal(w.tg.sent().length, known + 1, 'the offer edits the reply instead of sending another message');
   assert.equal(offer.text, 'Heard:\n<blockquote>Draw the logo in blue</blockquote>\nCreate a task from this?');
   assert.equal(offer.replyTo, update.message.message_id);
-  assert.deepEqual(labels(w, reply.message_id), ['For Lead', 'Other agent', 'Cancel']);
+  assert.deepEqual(labels(w, reply.message_id), ['For Lead', 'Cancel', 'Other agent']);
   assert.equal(bot.state.offers.size, 1);
   assert.equal(posts(w, '/issues').length, 0);
 
@@ -914,7 +914,7 @@ test('a task offer made from a note names its language and reads the note again;
   const { update, placeholder } = await dictate(ctx, { mode: 'text', text: 'Draw the logo in blue', texts: { ru: 'Нарисуйте логотип синим' }, delayMs: 150 });
   const id = placeholder.message_id;
   assert.equal(textOf(w, id), offerIn('English', 'Draw the logo in blue'));
-  assert.deepEqual(rows(w, id), [['For Lead', 'Other agent', 'Cancel'], ['Russian']]);
+  assert.deepEqual(rows(w, id), [['For Lead', 'Cancel'], ['Other agent'], ['Russian']]);
   assert.deepEqual(styles(w, id), { 'For Lead': null, 'Other agent': null, Cancel: null, Russian: null });
   assert.deepEqual(Object.values(JSON.parse(fs.readFileSync(w.statePath, 'utf8')).offers)[0].voice, {
     fileId: 'file-1',
@@ -933,7 +933,7 @@ test('a task offer made from a note names its language and reads the note again;
 
   await settled(bot);
   assert.equal(textOf(w, id), offerIn('Russian', 'Нарисуйте логотип синим'));
-  assert.deepEqual(rows(w, id), [['For Lead', 'Other agent', 'Cancel'], ['English']]);
+  assert.deepEqual(rows(w, id), [['For Lead', 'Cancel'], ['Other agent'], ['English']]);
   assert.equal(w.tg.sent().length, known, 'the same message is edited');
   assert.equal(bot.state.offers.size, 1);
   assert.deepEqual(flagLanguages(ctx), ['en', 'ru']);
@@ -956,7 +956,31 @@ test('the language row of an offer comes back with Back from the agent list', as
   await bot.handleUpdate(w.tg.tapButton(id, 'Other agent'));
   assert.ok(!rows(w, id).flat().includes('Russian'));
   await bot.handleUpdate(w.tg.tapButton(id, 'Back'));
-  assert.deepEqual(rows(w, id), [['For Lead', 'Other agent', 'Cancel'], ['Russian']]);
+  assert.deepEqual(rows(w, id), [['For Lead', 'Cancel'], ['Other agent'], ['Russian']]);
+});
+
+test('the model row of a note offer sits above the language row, and reading again starts without the picks', async (t) => {
+  const ctx = await setup(t, { voice: EN_RU });
+  const { w, bot } = ctx;
+  w.pc.models.claude_local = [
+    { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
+    { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' },
+  ];
+  Object.assign(w.pc.agents.find((agent) => agent.id === 'agent-lead'), { adapterType: 'claude_local', adapterConfig: { model: 'claude-opus-5-5' } });
+  await bot.agentRecords({ fresh: true });
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Draw the logo', texts: { ru: 'Нарисуйте логотип' }, delayMs: 150 });
+  const id = placeholder.message_id;
+  assert.deepEqual(rows(w, id), [['For Lead', 'Cancel'], ['Other agent'], ['Model · Claude Opus 5.5', 'Reasoning · Default'], ['Russian']]);
+
+  await bot.handleUpdate(w.tg.tapButton(id, 'Model ·'));
+  await bot.handleUpdate(w.tg.tapButton(id, 'Sonnet'));
+  assert.deepEqual(rows(w, id)[2], ['Model · Claude Sonnet 5.5', 'Reasoning · Default']);
+  assert.deepEqual(rows(w, id).at(-1), ['Russian']);
+
+  await bot.handleUpdate(w.tg.tapButton(id, 'Russian'));
+  await settled(bot);
+  assert.equal(textOf(w, id), offerIn('Russian', 'Нарисуйте логотип'));
+  assert.deepEqual(rows(w, id), [['For Lead', 'Cancel'], ['Other agent'], ['Model · Claude Opus 5.5', 'Reasoning · Default'], ['English']]);
 });
 
 test('an offer made from a note can be read again after a restart', async (t) => {
@@ -1139,7 +1163,7 @@ test('a late tap on the buttons of an earlier reading changes nothing once the n
     assert.equal(w.tg.callbackAnswers.at(-1).text, 'Already handled');
   }
   assert.equal(textOf(w, offerId), shownOffer);
-  assert.deepEqual(rows(w, offerId), [['For Lead', 'Other agent', 'Cancel'], ['English']]);
+  assert.deepEqual(rows(w, offerId), [['For Lead', 'Cancel'], ['Other agent'], ['English']]);
   assert.equal(bot.state.offers.size, 1);
   assert.equal(posts(w, '/issues').length, 0);
 });
@@ -1205,7 +1229,7 @@ test('with one language the note names it and is read in it, but there is no swi
   assert.deepEqual(rows(w, placeholder.message_id), [['Send', 'Cancel']]);
   const general = await dictate(ctx, { mode: 'text', text: 'A task' });
   assert.equal(textOf(w, general.placeholder.message_id), offerIn('Russian', 'A task'));
-  assert.deepEqual(rows(w, general.placeholder.message_id), [['For Lead', 'Other agent', 'Cancel']]);
+  assert.deepEqual(rows(w, general.placeholder.message_id), [['For Lead', 'Cancel'], ['Other agent']]);
   assert.deepEqual(flagLanguages(ctx), ['ru', 'ru']);
 });
 
@@ -1225,7 +1249,7 @@ test('without languages the v10 messages stay: no row in /settings, no language 
   assert.deepEqual(rows(w, placeholder.message_id), [['Send', 'Cancel']]);
   const general = await dictate(ctx, { mode: 'text', text: 'A task' });
   assert.equal(textOf(w, general.placeholder.message_id), 'Heard:\n<blockquote>A task</blockquote>\nCreate a task from this?');
-  assert.deepEqual(rows(w, general.placeholder.message_id), [['For Lead', 'Other agent', 'Cancel']]);
+  assert.deepEqual(rows(w, general.placeholder.message_id), [['For Lead', 'Cancel'], ['Other agent']]);
   assert.equal(Object.values(JSON.parse(fs.readFileSync(w.statePath, 'utf8')).offers)[0].voice, null);
 
   // A button from an earlier config does nothing now.

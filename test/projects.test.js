@@ -307,6 +307,7 @@ test('plain text goes agent choice, then project, then create', async (t) => {
 
   await tap(w, bot, offer, 'Other agent');
   await tap(w, bot, offer, 'Dev');
+  await tap(w, bot, offer, 'For Dev');
   assert.equal(creates(w).length, 0);
   assert.equal(w.tg.messages.get(offer.message_id).text, `${OFFER}\n\nWhich project?`);
   assert.deepEqual(rowsOf(w, offer.message_id).at(-1), ['No project', 'Cancel']);

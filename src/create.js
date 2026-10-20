@@ -2,6 +2,8 @@ import { FileProblem, attachFile } from './files.js';
 import { followIssue } from './follow.js';
 import { TRANSCRIPT_LEVELS, button, escapeHtml, firstLine, fitMessage, headline, issueUrl, quote, taskButton, truncate } from './format.js';
 import { languageName, noteLanguage, readAgainButtons, voiceLanguages } from './languages.js';
+import { STALE_LIST, modelHash, reasoningLabel } from './models.js';
+import { carryPicks, chooseModel, chooseReasoning, controlsRow, modelPickerRows, offerOverride, offerRun, pickedWords, reasoningPickerRows } from './offer-model.js';
 import { makeOutcome, outcomeBlock } from './outcome.js';
 import { PaperclipError } from './paperclip.js';
 import { ID_PREFIX, byPrefix } from './pick.js';
@@ -77,7 +79,8 @@ async function openTopic(bot, issue, thread) {
 }
 
 // Creates the task, follows it when asked to, gives it a topic and replies with its task view.
-export async function createTask(bot, { updateId, text, agent = null, project = null, replyTo, thread = null }) {
+// `override` is the task's own adapter override (model and reasoning level), sent when there is one.
+export async function createTask(bot, { updateId, text, agent = null, project = null, override = null, replyTo, thread = null }) {
   const body = {
     title: truncate(firstLine(text), NEW_TITLE_LIMIT),
     description: text,
@@ -86,6 +89,7 @@ export async function createTask(bot, { updateId, text, agent = null, project = 
   };
   const projectId = project?.id ?? bot.config.newTaskProjectId;
   if (projectId) body.projectId = projectId;
+  if (override) body.assigneeAdapterOverrides = override;
   const issue = await bot.pc.createIssue(bot.config.companyId, body);
 
   if (!issue.deduplicated && bot.state.settings.autoFollowCreated) {
@@ -116,10 +120,14 @@ export async function createTask(bot, { updateId, text, agent = null, project = 
   return issue;
 }
 
-// The offer's buttons; an offer made from a voice note adds a row with a button per other language.
-function offerKeyboard(bot, key, leadName, offer = null) {
-  const rows = [[button(`For ${leadName}`, `O:y:${key}`), button('Other agent', `O:o:${key}`), button('Cancel', `O:x:${key}`)]];
-  const again = offer?.voice ? readAgainButtons(bot, 'o', key, offer.voice.language) : [];
+// The offer's buttons: the agent it goes to and Cancel, Other agent, and the Model and Reasoning of the agent's
+// adapter. An offer made from a voice note adds a row with a button per other language.
+async function offerKeyboard(bot, key, offer) {
+  const run = await offerRun(bot, offer);
+  const rows = [[button(`For ${truncate(run.agent?.name ?? 'Lead', 30)}`, `O:y:${key}`), button('Cancel', `O:x:${key}`)], [button('Other agent', `O:o:${key}`)]];
+  const controls = controlsRow(key, run);
+  if (controls.length > 0) rows.push(controls);
+  const again = offer.voice ? readAgainButtons(bot, 'o', key, offer.voice.language) : [];
   return again.length > 0 ? [...rows, again] : rows;
 }
 
@@ -132,7 +140,7 @@ export async function offerTask(bot, update, { text, file = null } = {}) {
   const msg = update.message;
   const key = bot.state.addOffer(text ?? msg.text.trim(), msg.message_id, update.update_id, bot.now(), threadOf(bot, msg), { file, prompt: OFFER_PROMPT });
   bot.state.save();
-  await bot.send(OFFER_PROMPT, { ...where(bot, msg), keyboard: offerKeyboard(bot, key, await leadName(bot)) });
+  await bot.send(OFFER_PROMPT, { ...where(bot, msg), keyboard: await offerKeyboard(bot, key, bot.state.offers.get(key)) });
 }
 
 // Turns the "Transcribing…" reply to a voice note into the offer to create a task from its transcript.
@@ -143,7 +151,7 @@ export async function offerFromVoice(bot, job, text) {
   bot.state.save();
   const offer = bot.state.offers.get(key);
   try {
-    await bot.edit(job.messageId, withOfferText(bot, offer, null, (html) => html), offerKeyboard(bot, key, await leadName(bot), offer));
+    await bot.edit(job.messageId, withOfferText(bot, offer, null, (html) => html), await offerKeyboard(bot, key, offer));
   } catch (err) {
     bot.state.offers.delete(key);
     bot.state.save();
@@ -151,12 +159,16 @@ export async function offerFromVoice(bot, job, text) {
   }
 }
 
+// True for the offer `/new` makes to ask the project: its message is the question itself.
+const isNewQuestion = (offer) => offer?.prompt === PROJECT_QUESTION;
+
 // The project question is skipped when the config names a project or there is none to pick.
 async function shouldAskProject(bot) {
   return !bot.config.newTaskProjectId && (await bot.projectList()).length > 0;
 }
 
-async function projectQuestion(bot, key, page) {
+// The project buttons, paged. The question of `/new` also holds the Model and Reasoning buttons of its agent.
+async function projectQuestion(bot, key, page, offer) {
   const projects = await orderedProjects(bot);
   const pages = Math.max(1, Math.ceil(projects.length / PROJECT_PAGE));
   const current = Math.min(Math.max(page, 0), pages - 1);
@@ -168,6 +180,8 @@ async function projectQuestion(bot, key, page) {
       ...(current < pages - 1 ? [button('▶', `O:g:${key}:${current + 1}`)] : []),
     ]);
   }
+  const controls = isNewQuestion(offer) ? controlsRow(key, await offerRun(bot, offer)) : [];
+  if (controls.length > 0) rows.push(controls);
   rows.push([button('No project', `O:n:${key}`), button('Cancel', `O:x:${key}`)]);
   return rows;
 }
@@ -179,7 +193,7 @@ export async function askProjectForNew(bot, update, { text, agent }) {
   const msg = update.message;
   const key = bot.state.addOffer(text, msg.message_id, update.update_id, bot.now(), threadOf(bot, msg), { agentId: agent?.id ?? null, prompt: PROJECT_QUESTION });
   bot.state.save();
-  await bot.send(PROJECT_QUESTION, { ...where(bot, msg), keyboard: await projectQuestion(bot, key, 0) });
+  await bot.send(PROJECT_QUESTION, { ...where(bot, msg), keyboard: await projectQuestion(bot, key, 0, bot.state.offers.get(key)) });
   return true;
 }
 
@@ -247,12 +261,19 @@ function withOfferText(bot, offer, message, build) {
   return fitMessage((level) => build(`Heard${language}:\n${quote(offer.heard, level)}\n${escapeHtml(offer.prompt ?? OFFER_PROMPT)}`), TRANSCRIPT_LEVELS);
 }
 
+// The buttons an offer message shows now: the project question of `/new`, else the offer's own.
+const offerRows = (bot, key, offer) => (isNewQuestion(offer) ? projectQuestion(bot, key, 0, offer) : offerKeyboard(bot, key, offer));
+
+// Creates the task for the picked agent, with the model and level picked on the offer.
 async function createFromOffer(bot, cq, key, offer, agent, project) {
-  const issue = await createTask(bot, { updateId: offer.updateId, text: offer.text, agent, project, replyTo: offer.messageId, thread: offer.thread ?? null });
+  // The agent's configuration is read again, so the override fits what it is now.
+  const run = await offerRun(bot, offer, offer.model || offer.reasoning ? { fresh: true } : undefined);
+  const override = offerOverride(run);
+  const issue = await createTask(bot, { updateId: offer.updateId, text: offer.text, agent, project, override, replyTo: offer.messageId, thread: offer.thread ?? null });
   bot.state.offers.delete(key);
   bot.state.save();
   markSettled(bot, cq.message.message_id);
-  const forWho = `for ${agent ? agent.name : await leadName(bot)}${project ? ` in ${truncate(project.name, 60)}` : ''}`;
+  const forWho = [`for ${agent ? agent.name : await leadName(bot)}${project ? ` in ${truncate(project.name, 60)}` : ''}`, ...pickedWords(run)].join(' · ');
   const ref = issue.identifier ? { label: issue.identifier, url: issueUrl(bot.config.uiBaseUrl, issue.identifier) } : null;
   const below = offer.file ? await attachOfferFile(bot, issue, offer.file) : null;
   const outcome = makeOutcome('Created', forWho, bot.now(), ref);
@@ -262,11 +283,9 @@ async function createFromOffer(bot, cq, key, offer, agent, project) {
 
 // The agent is chosen: ask for the project when there is a choice, else create the task.
 async function afterAgent(bot, cq, key, offer, agent) {
-  offer.agentId = agent?.id ?? null;
-  bot.state.save();
   if (!(await shouldAskProject(bot))) return createFromOffer(bot, cq, key, offer, agent, null);
   const asking = withOfferText(bot, offer, cq.message, (html) => `${html}\n\n${PROJECT_QUESTION}`);
-  await bot.edit(cq.message.message_id, asking, await projectQuestion(bot, key, 0));
+  await bot.edit(cq.message.message_id, asking, await projectQuestion(bot, key, 0, offer));
   return bot.answer(cq.id);
 }
 
@@ -280,13 +299,37 @@ export async function expiredOffer(bot, cq) {
   return bot.edit(cq.message.message_id, settledPlain(promptOf(null, cq.message), makeOutcome('Expired', null, bot.now())), []);
 }
 
+// The agent the offer is for: null for Lead, else its record; undefined when the picked agent cannot take it any more.
+async function assigneeOf(bot, offer) {
+  if (!offer.agentId) return null;
+  return (await agentFor(bot, offer.agentId)) ?? undefined;
+}
+
 export async function handleOfferCallback(bot, cq) {
-  const [, op, key, arg] = String(cq.data).split(':');
+  const [, op, key, arg, hash] = String(cq.data).split(':');
   const offer = bot.state.getOffer(key, bot.now());
   if (!offer) return expiredOffer(bot, cq);
   const messageId = cq.message.message_id;
+  // Puts the offer's buttons back, with a note for the tap.
+  const redraw = async (note, alert = false) => {
+    await bot.editKeyboard(messageId, await offerRows(bot, key, offer));
+    return bot.answer(cq.id, note, alert);
+  };
+  // A picked agent that is gone: Lead takes its place and the buttons say so.
+  const agentGone = () => {
+    offer.agentId = null;
+    bot.state.save();
+    return redraw('Agent not found', true);
+  };
   try {
-    if (op === 'y') return await afterAgent(bot, cq, key, offer, null);
+    if (op === 'y' || op === 'j' || op === 'n') {
+      const agent = await assigneeOf(bot, offer);
+      if (agent === undefined) return await agentGone();
+      if (op === 'y') return await afterAgent(bot, cq, key, offer, agent);
+      const project = op === 'j' ? byPrefix(await bot.projectList(), arg ?? '') : null;
+      if (op === 'j' && !project) return await bot.answer(cq.id, 'Project not found', true);
+      return await createFromOffer(bot, cq, key, offer, agent, project);
+    }
     if (op === 'x') {
       bot.state.offers.delete(key);
       bot.state.save();
@@ -295,10 +338,7 @@ export async function handleOfferCallback(bot, cq) {
       await bot.edit(messageId, withOfferText(bot, offer, cq.message, (html) => settledHtml(html, outcome)), []);
       return await bot.answer(cq.id);
     }
-    if (op === 'b') {
-      await bot.editKeyboard(messageId, offerKeyboard(bot, key, await leadName(bot), offer));
-      return await bot.answer(cq.id);
-    }
+    if (op === 'b') return await redraw();
     if (op === 'o') {
       const agents = assignableAgents(await bot.agentRecords({ fresh: true })).slice(0, OFFER_AGENT_LIMIT);
       const rows = agents.map((agent) => [button(agent.name, `O:a:${key}:${agent.id.slice(0, ID_PREFIX)}`)]);
@@ -309,19 +349,47 @@ export async function handleOfferCallback(bot, cq) {
     if (op === 'a') {
       const agent = byPrefix(assignableAgents(await bot.agentRecords({ fresh: true })), arg ?? '');
       if (!agent) return await bot.answer(cq.id, 'Agent not found', true);
-      return await afterAgent(bot, cq, key, offer, agent);
+      const note = carryPicks(offer, agent);
+      offer.agentId = agent.id;
+      bot.state.save();
+      return await redraw(note ?? undefined);
     }
     if (op === 'g') {
-      await bot.editKeyboard(messageId, await projectQuestion(bot, key, Number(arg) || 0));
+      await bot.editKeyboard(messageId, await projectQuestion(bot, key, Number(arg) || 0, offer));
       return await bot.answer(cq.id);
     }
-    if (op === 'j' || op === 'n') {
-      const project = op === 'j' ? byPrefix(await bot.projectList(), arg ?? '') : null;
-      if (op === 'j' && !project) return await bot.answer(cq.id, 'Project not found', true);
-      return await createFromOffer(bot, cq, key, offer, await agentFor(bot, offer.agentId), project);
-    }
+    if (['m', 'M', 'r', 'R'].includes(op)) return await pickModelOrReasoning(bot, cq, key, offer, redraw, { op, arg, hash });
   } catch (err) {
     return reportActionFailure(bot, cq, err);
   }
   return bot.answer(cq.id, 'Unknown action');
+}
+
+// The Model and Reasoning pickers of an offer: `m` and `r` open them in the offer message, `M` and `R` save a pick.
+// A model pick is the index in the model list and the hash of its id, so a list that changed since is noticed.
+async function pickModelOrReasoning(bot, cq, key, offer, redraw, { op, arg, hash }) {
+  const run = await offerRun(bot, offer);
+  if (!run.agent?.adapterType) return redraw(STALE_LIST);
+  const show = async (rows) => {
+    await bot.editKeyboard(cq.message.message_id, rows);
+    return bot.answer(cq.id);
+  };
+  if (op === 'm') return run.models.length === 0 ? redraw('No models to choose from') : show(modelPickerRows(key, run, arg === undefined ? undefined : Number(arg) || 0));
+  if (op === 'r') return run.values.length === 0 ? redraw('No reasoning levels for this model') : show(reasoningPickerRows(key, run));
+  if (op === 'M') {
+    let model = null;
+    if (arg !== '-') {
+      const models = await bot.models.list(run.agent.adapterType, { fresh: true });
+      model = /^\d+$/.test(arg ?? '') ? models[Number(arg)] : undefined;
+      if (!model || modelHash(model.id) !== hash) return redraw(STALE_LIST);
+    }
+    chooseModel(offer, run, model?.id ?? '');
+    bot.state.save();
+    return redraw(`Model: ${truncate(model?.label ?? 'Agent default', 100)}`);
+  }
+  const value = arg === '-' ? '' : (arg ?? '');
+  if (run.values.length === 0 || (value && !run.values.includes(value))) return redraw(STALE_LIST);
+  chooseReasoning(offer, run, value);
+  bot.state.save();
+  return redraw(`Reasoning: ${value ? reasoningLabel(value) : 'Default'}`);
 }

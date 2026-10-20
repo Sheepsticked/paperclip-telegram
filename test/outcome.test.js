@@ -525,6 +525,7 @@ test('an offer that is created keeps its text and ends with Created, the linked 
 
   await tap(w, bot, offer, 'Other agent');
   await tap(w, bot, offer, 'Dev');
+  await tap(w, bot, offer, 'For Dev');
   assert.equal(textOf(w, offer), `${OFFER}\n\nWhich project?`, 'the question goes below the offer text');
   assert.ok(!textOf(w, offer).includes('tg-time'));
 

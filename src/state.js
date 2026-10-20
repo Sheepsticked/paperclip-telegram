@@ -114,6 +114,9 @@ function loadOffers(saved) {
       thread: offer.thread ?? null,
       file: offer.file ?? null,
       agentId: stringOrNull(offer.agentId),
+      model: stringOrNull(offer.model),
+      reasoning: stringOrNull(offer.reasoning),
+      adapterType: stringOrNull(offer.adapterType),
       prompt: stringOrNull(offer.prompt),
       heard: stringOrNull(offer.heard),
       voice: loadOfferVoice(offer.voice),
@@ -444,14 +447,15 @@ export class State {
     return this.following.delete(issueId);
   }
 
-  // `file` is a Telegram file waiting to be attached to the new task; `agentId` is the agent picked so far;
+  // `file` is a Telegram file waiting to be attached to the new task; `agentId` is the agent picked so far, and
+  // `model` and `reasoning` the model and level picked for it, which belong to the adapter type `adapterType`;
   // `prompt` is the text of the offer message; `heard` is the transcript of a voice note the offer shows, and `voice`
   // holds { fileId, duration, language, messageId } of that note and the message that shows the offer, so it can be
   // read again.
   addOffer(text, messageId, updateId, nowMs, thread = null, { file = null, agentId = null, prompt = null, heard = null, voice = null } = {}) {
     this.offerCounter += 1;
     const key = this.offerCounter.toString(36);
-    this.offers.set(key, { text, messageId, updateId, at: nowMs, thread, file, agentId, prompt, heard, voice });
+    this.offers.set(key, { text, messageId, updateId, at: nowMs, thread, file, agentId, model: null, reasoning: null, adapterType: null, prompt, heard, voice });
     while (this.offers.size > MAX_OFFERS) this.offers.delete(this.offers.keys().next().value);
     return key;
   }

@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import { button, choiceButton } from './format.js';
 import { PaperclipError } from './paperclip.js';
 
+// What a tap on a picker button answers when the list or the item behind it changed.
+export const STALE_LIST = 'List changed, try again';
+
 const MODEL_CACHE_MS = 10 * 60 * 1000;
 const FAILED_CACHE_MS = 60 * 1000;
 // Model buttons per page, two to a row; a long list is paged to stay under Telegram's button limit.

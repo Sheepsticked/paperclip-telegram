@@ -4,6 +4,7 @@ import { docsKeyboard, sendDocument } from './docs.js';
 import { followIssue, unfollowIssue } from './follow.js';
 import { ago, button, choiceButton, escapeHtml, fitMessage, headline, issueUrl, link, quote, statusName, truncate } from './format.js';
 import {
+  STALE_LIST,
   modelHash,
   modelLabel,
   modelRows,
@@ -25,7 +26,6 @@ export { ID_PREFIX, byPrefix };
 
 const COMMENT_SCAN = 3;
 const CONFIRM_LABEL = 'Tap again to confirm';
-const STALE_LIST = 'List changed, try again';
 const HIGH_PRIORITIES = new Set(['high', 'critical']);
 const PICKER_PAGE = 8;
 const PICKER_AGENT_LIMIT = 40;

@@ -32,6 +32,15 @@ class HttpError extends Error {
   }
 }
 
+// Null, or an object with only adapterConfig (an object) and useProjectWorkspace (a boolean), as the server's strict schema says.
+function checkOverrides(overrides) {
+  if (overrides === undefined || overrides === null) return;
+  const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (!object(overrides) || Object.keys(overrides).some((k) => !['adapterConfig', 'useProjectWorkspace'].includes(k))) throw new HttpError(400, 'Validation error');
+  if (overrides.adapterConfig !== undefined && !object(overrides.adapterConfig)) throw new HttpError(400, 'Validation error');
+  if (overrides.useProjectWorkspace !== undefined && typeof overrides.useProjectWorkspace !== 'boolean') throw new HttpError(400, 'Validation error');
+}
+
 // A stand-in for the Paperclip API: in-memory data, the real routes' response shapes and error codes.
 export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyId = 'company-1', prefix = 'TST' } = {}) {
   // The models each adapter type lists, `[{ id, label }]`; a type that is not here lists none.
@@ -377,12 +386,14 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
     const key = body.idempotencyKey ?? null;
     if (key && idempotency.has(key)) return new Reply(200, { ...issueView(idempotency.get(key)), deduplicated: true, deduplicationReason: 'idempotency_key' });
     if (!body.title && !body.description) throw new HttpError(422, 'Provide a title or task description');
+    checkOverrides(body.assigneeAdapterOverrides);
     const issue = api.addIssue({
       title: body.title,
       description: body.description ?? null,
       status: body.status ?? (body.assigneeAgentId ? 'todo' : 'backlog'),
       assigneeAgentId: body.assigneeAgentId ?? null,
       projectId: body.projectId ?? null,
+      assigneeAdapterOverrides: body.assigneeAdapterOverrides ?? null,
     });
     if (key) idempotency.set(key, issue);
     return new Reply(201, issueView(issue));
@@ -394,14 +405,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
     const issue = getIssue(params.id);
     const allowed = ['status', 'assigneeAgentId', 'assigneeUserId', 'projectId', 'title', 'description', 'priority'];
     if (Object.keys(body).some((k) => ![...allowed, 'assigneeAdapterOverrides'].includes(k))) throw new HttpError(400, 'Validation error');
-    // Null, or an object with only adapterConfig (an object) and useProjectWorkspace (a boolean), as the server's schema says.
-    const overrides = body.assigneeAdapterOverrides;
-    if (overrides !== undefined && overrides !== null) {
-      const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-      if (!object(overrides) || Object.keys(overrides).some((k) => !['adapterConfig', 'useProjectWorkspace'].includes(k))) throw new HttpError(400, 'Validation error');
-      if (overrides.adapterConfig !== undefined && !object(overrides.adapterConfig)) throw new HttpError(400, 'Validation error');
-      if (overrides.useProjectWorkspace !== undefined && typeof overrides.useProjectWorkspace !== 'boolean') throw new HttpError(400, 'Validation error');
-    }
+    checkOverrides(body.assigneeAdapterOverrides);
     if (body.status !== undefined && !STATUSES.includes(body.status)) throw new HttpError(400, 'Validation error');
     if (body.projectId != null && !UUID.test(body.projectId) && !projects.some((p) => p.id === body.projectId)) throw new HttpError(400, 'Validation error');
     if (body.assigneeAgentId != null) {

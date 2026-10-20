@@ -125,7 +125,7 @@ test('a captioned photo offers a task, and the task gets the photo after it is c
   const offer = w.tg.lastMessage();
   assert.equal(offer.text, 'Create a task from this?');
   assert.equal(offer.replyTo, update.message.message_id);
-  assert.deepEqual(rowsOf(w, offer.message_id), [['For Lead', 'Other agent', 'Cancel']]);
+  assert.deepEqual(rowsOf(w, offer.message_id), [['For Lead', 'Cancel'], ['Other agent']]);
   assert.equal(creates(w).length, 0);
   assert.equal(w.tg.downloads.length, 0, 'nothing is downloaded before the owner agrees');
 
@@ -151,6 +151,8 @@ test('the offer with a file goes through the agent choice and survives a restart
 
   const restarted = w.makeBot();
   await restarted.handleUpdate(w.tg.tapButton(offer.message_id, 'Dev'));
+  assert.equal(creates(w).length, 0);
+  await restarted.handleUpdate(w.tg.tapButton(offer.message_id, 'For Dev'));
   assert.equal(creates(w)[0].body.assigneeAgentId, 'agent-1');
   assert.deepEqual(uploads(w)[0].body.multipart, [{ name: 'file', filename: 'spec.pdf', type: 'application/pdf', size: 4 }]);
   assert.match(w.tg.messages.get(offer.message_id).text, createdOffer('for Dev', '\nAttached: spec.pdf'));

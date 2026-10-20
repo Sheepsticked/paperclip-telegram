@@ -1,6 +1,7 @@
 import { ago, button, escapeHtml, truncate } from './format.js';
 import { taskRow } from './lists.js';
 import {
+  STALE_LIST,
   agentModelChange,
   agentReasoningChange,
   modelHash,
@@ -18,7 +19,6 @@ import { threadOf, where } from './thread.js';
 const LIST_BUTTON_LIMIT = 40;
 const TASK_LIMIT = 20;
 const CONFIRM_LABEL = 'Tap again to confirm';
-const STALE_LIST = 'List changed, try again';
 const NO_CONTROLS = new Set(['terminated', 'pending_approval']);
 
 const STATUS_NAMES = {
