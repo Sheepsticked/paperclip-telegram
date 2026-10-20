@@ -1,6 +1,7 @@
 import { FileProblem, attachFile } from './files.js';
 import { followIssue } from './follow.js';
 import { TRANSCRIPT_LEVELS, button, escapeHtml, firstLine, fitMessage, headline, issueUrl, quote, taskButton, truncate } from './format.js';
+import { languageName, noteLanguage, readAgainButtons, voiceLanguages } from './languages.js';
 import { makeOutcome, outcomeBlock } from './outcome.js';
 import { PaperclipError } from './paperclip.js';
 import { ID_PREFIX, byPrefix } from './pick.js';
@@ -115,8 +116,11 @@ export async function createTask(bot, { updateId, text, agent = null, project = 
   return issue;
 }
 
-function offerKeyboard(key, leadName) {
-  return [[button(`For ${leadName}`, `O:y:${key}`), button('Other agent', `O:o:${key}`), button('Cancel', `O:x:${key}`)]];
+// The offer's buttons; an offer made from a voice note adds a row with a button per other language.
+function offerKeyboard(bot, key, leadName, offer = null) {
+  const rows = [[button(`For ${leadName}`, `O:y:${key}`), button('Other agent', `O:o:${key}`), button('Cancel', `O:x:${key}`)]];
+  const again = offer?.voice ? readAgainButtons(bot, 'o', key, offer.voice.language) : [];
+  return again.length > 0 ? [...rows, again] : rows;
 }
 
 async function leadName(bot) {
@@ -128,16 +132,18 @@ export async function offerTask(bot, update, { text, file = null } = {}) {
   const msg = update.message;
   const key = bot.state.addOffer(text ?? msg.text.trim(), msg.message_id, update.update_id, bot.now(), threadOf(bot, msg), { file, prompt: OFFER_PROMPT });
   bot.state.save();
-  await bot.send(OFFER_PROMPT, { ...where(bot, msg), keyboard: offerKeyboard(key, await leadName(bot)) });
+  await bot.send(OFFER_PROMPT, { ...where(bot, msg), keyboard: offerKeyboard(bot, key, await leadName(bot)) });
 }
 
 // Turns the "Transcribing…" reply to a voice note into the offer to create a task from its transcript.
 export async function offerFromVoice(bot, job, text) {
-  const key = bot.state.addOffer(text, job.noteId, job.updateId, bot.now(), job.thread, { prompt: OFFER_PROMPT, heard: text });
+  // With a list of languages the offer keeps what it needs to read the note again.
+  const voice = voiceLanguages(bot) ? { fileId: job.fileId, duration: job.duration, language: noteLanguage(bot, job) } : null;
+  const key = bot.state.addOffer(text, job.noteId, job.updateId, bot.now(), job.thread, { prompt: OFFER_PROMPT, heard: text, voice });
   bot.state.save();
   const offer = bot.state.offers.get(key);
   try {
-    await bot.edit(job.messageId, withOfferText(offer, null, (html) => html), offerKeyboard(key, await leadName(bot)));
+    await bot.edit(job.messageId, withOfferText(bot, offer, null, (html) => html), offerKeyboard(bot, key, await leadName(bot), offer));
   } catch (err) {
     bot.state.offers.delete(key);
     bot.state.save();
@@ -234,10 +240,11 @@ export function settledPlain(text, outcome) {
 }
 
 // Builds a message around the text of an offer. An offer made from a voice note shows the transcript, which is cut
-// as far as the Telegram limit asks.
-function withOfferText(offer, message, build) {
+// as far as the Telegram limit asks, and the language it was read in when the config lists languages.
+function withOfferText(bot, offer, message, build) {
   if (!offer?.heard) return build(escapeHtml(promptOf(offer, message)));
-  return fitMessage((level) => build(`Heard:\n${quote(offer.heard, level)}\n${escapeHtml(offer.prompt ?? OFFER_PROMPT)}`), TRANSCRIPT_LEVELS);
+  const language = voiceLanguages(bot) && offer.voice ? ` · ${escapeHtml(languageName(offer.voice.language))}` : '';
+  return fitMessage((level) => build(`Heard${language}:\n${quote(offer.heard, level)}\n${escapeHtml(offer.prompt ?? OFFER_PROMPT)}`), TRANSCRIPT_LEVELS);
 }
 
 async function createFromOffer(bot, cq, key, offer, agent, project) {
@@ -249,7 +256,7 @@ async function createFromOffer(bot, cq, key, offer, agent, project) {
   const ref = issue.identifier ? { label: issue.identifier, url: issueUrl(bot.config.uiBaseUrl, issue.identifier) } : null;
   const below = offer.file ? await attachOfferFile(bot, issue, offer.file) : null;
   const outcome = makeOutcome('Created', forWho, bot.now(), ref);
-  await bot.edit(cq.message.message_id, withOfferText(offer, cq.message, (html) => settledHtml(html, outcome, below)), []);
+  await bot.edit(cq.message.message_id, withOfferText(bot, offer, cq.message, (html) => settledHtml(html, outcome, below)), []);
   return bot.answer(cq.id, 'Created');
 }
 
@@ -258,20 +265,25 @@ async function afterAgent(bot, cq, key, offer, agent) {
   offer.agentId = agent?.id ?? null;
   bot.state.save();
   if (!(await shouldAskProject(bot))) return createFromOffer(bot, cq, key, offer, agent, null);
-  const asking = withOfferText(offer, cq.message, (html) => `${html}\n\n${PROJECT_QUESTION}`);
+  const asking = withOfferText(bot, offer, cq.message, (html) => `${html}\n\n${PROJECT_QUESTION}`);
   await bot.edit(cq.message.message_id, asking, await projectQuestion(bot, key, 0));
   return bot.answer(cq.id);
+}
+
+// The tap on an offer that is gone: it was settled, or it expired and the message is settled now.
+export async function expiredOffer(bot, cq) {
+  // A voice note that is being read again owns its message; a late tap on the old buttons changes nothing.
+  if (bot.state.isReadingVoice(cq.message?.message_id)) return bot.answer(cq.id, 'Already handled');
+  await bot.answer(cq.id, 'This offer has expired');
+  // A settled message keeps its outcome.
+  if (wasSettled(bot, cq.message?.message_id) || !cq.message?.reply_markup?.inline_keyboard?.length) return undefined;
+  return bot.edit(cq.message.message_id, settledPlain(promptOf(null, cq.message), makeOutcome('Expired', null, bot.now())), []);
 }
 
 export async function handleOfferCallback(bot, cq) {
   const [, op, key, arg] = String(cq.data).split(':');
   const offer = bot.state.getOffer(key, bot.now());
-  if (!offer) {
-    await bot.answer(cq.id, 'This offer has expired');
-    // A settled message keeps its outcome.
-    if (wasSettled(bot, cq.message?.message_id) || !cq.message?.reply_markup?.inline_keyboard?.length) return undefined;
-    return bot.edit(cq.message.message_id, settledPlain(promptOf(null, cq.message), makeOutcome('Expired', null, bot.now())), []);
-  }
+  if (!offer) return expiredOffer(bot, cq);
   const messageId = cq.message.message_id;
   try {
     if (op === 'y') return await afterAgent(bot, cq, key, offer, null);
@@ -280,11 +292,11 @@ export async function handleOfferCallback(bot, cq) {
       bot.state.save();
       markSettled(bot, messageId);
       const outcome = makeOutcome('Cancelled', null, bot.now());
-      await bot.edit(messageId, withOfferText(offer, cq.message, (html) => settledHtml(html, outcome)), []);
+      await bot.edit(messageId, withOfferText(bot, offer, cq.message, (html) => settledHtml(html, outcome)), []);
       return await bot.answer(cq.id);
     }
     if (op === 'b') {
-      await bot.editKeyboard(messageId, offerKeyboard(key, await leadName(bot)));
+      await bot.editKeyboard(messageId, offerKeyboard(bot, key, await leadName(bot), offer));
       return await bot.answer(cq.id);
     }
     if (op === 'o') {

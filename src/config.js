@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { LANGUAGE_CODE, MAX_LANGUAGES } from './languages.js';
 
 export const EXIT_CONFIG = 78;
 
@@ -66,6 +67,21 @@ const isPositiveInteger = (value) => Number.isSafeInteger(value) && value > 0;
 
 export const VOICE_DEFAULTS = { model: 'small', language: null, beamSize: 1, threads: 4, maxSeconds: 300 };
 
+// The optional `voice.languages` list; null when it is not set. A bad list is reported once, by its first fault.
+function parseVoiceLanguages(raw, problems) {
+  const list = raw.languages;
+  if (list === undefined || list === null) return null;
+  if (raw.language !== undefined && raw.language !== null) problems.push('set voice.language or voice.languages, not both');
+  if (!Array.isArray(list) || list.length < 1 || list.length > MAX_LANGUAGES) {
+    problems.push(`voice.languages must be a list of 1 to ${MAX_LANGUAGES} language codes`);
+  } else if (!list.every((code) => typeof code === 'string' && LANGUAGE_CODE.test(code))) {
+    problems.push('voice.languages codes must be 2 or 3 lowercase letters, such as "en"');
+  } else if (new Set(list).size !== list.length) {
+    problems.push('voice.languages must not repeat a code');
+  }
+  return Array.isArray(list) ? [...list] : null;
+}
+
 // Checks the optional `voice` block and returns it with its defaults; the problems are pushed to `problems`.
 function parseVoice(raw, problems) {
   if (raw === undefined || raw === null) return null;
@@ -81,6 +97,7 @@ function parseVoice(raw, problems) {
   need(nonEmpty(raw.modelsDir), 'voice.modelsDir must be a non-empty path');
   need(raw.model === undefined || nonEmpty(raw.model), 'voice.model must be a non-empty string when set');
   need(raw.language === undefined || raw.language === null || nonEmpty(raw.language), 'voice.language must be a language code or null');
+  const languages = parseVoiceLanguages(raw, problems);
   need(raw.beamSize === undefined || isPositiveInteger(raw.beamSize), 'voice.beamSize must be a positive integer when set');
   need(raw.threads === undefined || isPositiveInteger(raw.threads), 'voice.threads must be a positive integer when set');
   need(
@@ -93,6 +110,7 @@ function parseVoice(raw, problems) {
     modelsDir: expandHome(raw.modelsDir.trim()),
     model: raw.model?.trim() ?? VOICE_DEFAULTS.model,
     language: raw.language?.trim() ?? VOICE_DEFAULTS.language,
+    ...(languages ? { languages } : {}),
     beamSize: raw.beamSize ?? VOICE_DEFAULTS.beamSize,
     threads: raw.threads ?? VOICE_DEFAULTS.threads,
     maxSeconds: raw.maxSeconds ?? VOICE_DEFAULTS.maxSeconds,

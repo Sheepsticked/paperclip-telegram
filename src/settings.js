@@ -1,4 +1,5 @@
 import { button } from './format.js';
+import { canSwitchLanguage, languageName, nextLanguage, switchLanguage } from './languages.js';
 import { where } from './thread.js';
 
 const MUTE_HOURS = [1, 8];
@@ -37,6 +38,7 @@ export function renderSettings(bot) {
   lines.push(state.isMuted(bot.now()) ? `Muted until ${untilText(state.muteUntil)}` : 'Notifications are on');
   lines.push('Cards that need an answer are always sent.');
   const keyboard = TOGGLES.map(([key, label]) => [state.settings[key] ? button(`${label} · On`, `S:t:${key}`, 'success') : button(`${label} · Off`, `S:t:${key}`)]);
+  if (canSwitchLanguage(bot)) keyboard.push([button(`Voice · ${languageName(switchLanguage(bot))}`, 'S:v')]);
   keyboard.push([
     ...MUTE_HOURS.map((hours) => button(`Mute ${hours} h`, `S:m:${hours}`)),
     button('Unmute', 'S:u'),
@@ -82,6 +84,10 @@ export async function handleSettingsCallback(bot, cq) {
   } else if (op === 'u') {
     await endMute(bot);
     answer = 'Unmuted';
+  } else if (op === 'v' && canSwitchLanguage(bot)) {
+    state.voiceLanguage = nextLanguage(bot);
+    state.save();
+    answer = `Voice: ${languageName(state.voiceLanguage)}`;
   } else {
     return bot.answer(cq.id, 'Unknown action');
   }

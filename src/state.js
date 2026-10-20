@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { LANGUAGE_CODE } from './languages.js';
 
 const MAX_MESSAGES = 2000;
 const MAX_RICH_MESSAGES = 2000;
@@ -66,6 +67,14 @@ function loadRoots(saved) {
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const stringOrNull = (value) => (typeof value === 'string' ? value : null);
+const languageOrNull = (value) => (typeof value === 'string' && LANGUAGE_CODE.test(value) ? value : null);
+
+// What an offer made from a voice note keeps to read the note again; null when it is not usable.
+function loadOfferVoice(saved) {
+  const usable = isObject(saved) && typeof saved.fileId === 'string' && languageOrNull(saved.language) !== null;
+  if (!usable) return null;
+  return { fileId: saved.fileId, duration: Number.isFinite(saved.duration) && saved.duration > 0 ? saved.duration : 0, language: saved.language };
+}
 
 // Followed tasks from a saved file; an entry without an identifier is dropped.
 function loadFollowing(saved) {
@@ -106,6 +115,7 @@ function loadOffers(saved) {
       agentId: stringOrNull(offer.agentId),
       prompt: stringOrNull(offer.prompt),
       heard: stringOrNull(offer.heard),
+      voice: loadOfferVoice(offer.voice),
     });
   }
   return offers;
@@ -134,6 +144,7 @@ function loadVoice(saved) {
       updateId: Number.isInteger(job.updateId) ? job.updateId : 0,
       thread: Number.isInteger(job.thread) ? job.thread : null,
       replyTo: Number.isInteger(job.replyTo) ? job.replyTo : null,
+      language: languageOrNull(job.language),
       at: Number.isFinite(job.at) ? job.at : 0,
       text: job.status === 'ready' ? job.text : null,
       readyAt: job.status === 'ready' ? job.readyAt : null,
@@ -214,6 +225,7 @@ export class State {
     this.offerCounter = Number.isInteger(data.offerCounter) && data.offerCounter >= 0 ? data.offerCounter : 0;
     this.voice = loadVoice(data.voice);
     this.voiceCounter = Number.isInteger(data.voiceCounter) && data.voiceCounter >= 0 ? data.voiceCounter : 0;
+    this.voiceLanguage = languageOrNull(data.voiceLanguage);
     this.prefixCounts = loadPrefixCounts(data.prefixCounts);
     this.reviewSent = loadReviewSent(data.reviewSent);
     this.statusRetries = loadStatusRetries(data.statusRetries);
@@ -432,11 +444,12 @@ export class State {
   }
 
   // `file` is a Telegram file waiting to be attached to the new task; `agentId` is the agent picked so far;
-  // `prompt` is the text of the offer message; `heard` is the transcript of a voice note the offer shows.
-  addOffer(text, messageId, updateId, nowMs, thread = null, { file = null, agentId = null, prompt = null, heard = null } = {}) {
+  // `prompt` is the text of the offer message; `heard` is the transcript of a voice note the offer shows, and `voice`
+  // holds { fileId, duration, language } of that note so it can be read again.
+  addOffer(text, messageId, updateId, nowMs, thread = null, { file = null, agentId = null, prompt = null, heard = null, voice = null } = {}) {
     this.offerCounter += 1;
     const key = this.offerCounter.toString(36);
-    this.offers.set(key, { text, messageId, updateId, at: nowMs, thread, file, agentId, prompt, heard });
+    this.offers.set(key, { text, messageId, updateId, at: nowMs, thread, file, agentId, prompt, heard, voice });
     while (this.offers.size > MAX_OFFERS) this.offers.delete(this.offers.keys().next().value);
     return key;
   }
@@ -466,6 +479,12 @@ export class State {
   getVoice(key, nowMs) {
     const job = this.voice.get(key);
     return job?.status === 'ready' && nowMs - job.readyAt <= OFFER_TTL_MS ? job : null;
+  }
+
+  // True while a voice note is being transcribed into the given message.
+  isReadingVoice(messageId) {
+    for (const job of this.voice.values()) if (job.status === 'pending' && job.messageId === messageId) return true;
+    return false;
   }
 
   pruneVoice(nowMs) {
@@ -556,6 +575,7 @@ export class State {
       offerCounter: this.offerCounter,
       voice: Object.fromEntries(this.voice),
       voiceCounter: this.voiceCounter,
+      voiceLanguage: this.voiceLanguage,
       prefixCounts: this.prefixCounts,
       topics: Object.fromEntries(this.topics),
       roots: Object.fromEntries(this.roots),

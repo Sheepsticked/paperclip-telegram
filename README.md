@@ -82,7 +82,7 @@ Edit it:
 | `telegramTokenFile`, `paperclipTokenFile` | Paths of the two token files. `~/` is expanded. |
 | `telegramApiUrl` | Optional, defaults to `https://api.telegram.org`. |
 | `pollSeconds` | Optional, seconds between Paperclip polls (default 15). |
-| `voice` | Optional. Turns voice notes on: the Python of the voice setup and the folder of its model, plus a few settings. Without it a voice note gets "Voice notes are not set up on this machine." See [Voice notes](#voice-notes). |
+| `voice` | Optional. Turns voice notes on: the Python of the voice setup and the folder of its model, plus a few settings such as the language or the list of languages. Without it a voice note gets "Voice notes are not set up on this machine." See [Voice notes](#voice-notes). |
 | `routineRunErrorCodes` | Optional. Failed runs with one of these error codes do not raise an alert (the defaults are in `config.example.json`). |
 
 The bot reads `$PAPERCLIP_TELEGRAM_CONFIG`, or `~/.config/paperclip-telegram/config.json` when that is not set. A missing or invalid config, or a bad token file, makes it exit with status 78 and a message that names the problem (never the token).
@@ -270,12 +270,22 @@ The script is safe to run again. It creates a Python virtual environment in `${X
 | `python` | The Python of the virtual environment (`<venv>/bin/python`). `~/` is expanded. |
 | `modelsDir` | The folder the model was downloaded to (`<venv>/models`). |
 | `model` | Optional, default `small`. The installer only fetches `small`. |
-| `language` | Optional, default `null`: the language is detected for every note. A code such as `"en"` fixes it. |
+| `language` | Optional, default `null`: the language is detected for every note. A code such as `"en"` fixes it. Not together with `languages`. |
+| `languages` | Optional. A list of 1 to 4 different [Whisper language codes](https://github.com/openai/whisper/blob/main/whisper/tokenizer.py) (2 or 3 lowercase letters), for example `["en", "ru"]`; the first is the default. The bot then never detects the language: every note is read in a named one. See [Choosing the language](#choosing-the-language). Setting both `language` and `languages` is a config error. |
 | `beamSize` | Optional, default `1` (fastest). |
 | `threads` | Optional, default `4`. CPU threads for one transcription. |
 | `maxSeconds` | Optional, default `300`. The longest note that is accepted. |
 
 The bot starts `scripts/transcribe.py` with `nice -n 10`, without a shell, for each note: the audio goes into a private temporary folder that is removed afterwards, the helper is killed when it runs too long or the bot stops, and it never uses the network at run time (`HF_HUB_OFFLINE=1`). You can run it by hand: `<venv>/bin/python scripts/transcribe.py note.ogg --models-dir <venv>/models` prints one JSON line with `text`, `language` and `seconds` (the time the transcription took). How long that is depends on the CPU.
+
+#### Choosing the language
+
+Without `voice.languages` the helper detects the language of each note, or uses `voice.language` when it is set, and no message names a language. Detection can guess wrong, so a list lets you choose instead. With `"languages": ["en", "ru"]`:
+
+- Every note is read in a named language, passed to the helper as `--language <code>`. The transcript names it: `Heard · English` above the quote in a topic or a reply, and `Heard · English:` in the task offer. The language names come from the runtime (`English`, `Russian`); a code it has no name for is shown as the code.
+- With two or more languages, `/settings` has one more button, **Voice · English**. A tap moves to the next language in the list, wrapping around, and answers `Voice: Russian`. The pick is saved in the state file and applies to the notes that arrive after it: a note keeps the language it had when it arrived, also while it waits behind another note.
+- Under each transcript there is one button per other language (**Russian**). In a topic or a reply it sits next to **Send** and **Cancel** when there are two languages, and in a row of its own when there are more; on a task offer it is a row below the offer's buttons. A tap turns the message back into `Transcribing…`, drops the old text (and the offer, if there was one), reads the same audio again in that language and shows the result in the same message. Nothing is sent or created by the tap, and the `/settings` pick does not change. If the second read fails or finds no speech, the message ends with the same notice as a first read.
+- A tap on a settled or expired message behaves like the other taps: `Already handled` or an expiry notice.
 
 ### Following
 
@@ -283,7 +293,7 @@ Each new comment of a followed task is one message: the agent's name in bold as 
 
 ### Settings and mute
 
-`/settings` has a toggle for each kind of message (done, in review, failed run, followed comments) and for following the tasks you create, plus **Mute 1 h**, **Mute 8 h** and **Unmute**. A toggle reads `Done messages · On` (green) or `Done messages · Off`. While muted, those messages are not sent; when the mute ends, one line says how many were hidden. Cards that need an answer and inbox items are always sent.
+`/settings` has a toggle for each kind of message (done, in review, failed run, followed comments) and for following the tasks you create, plus **Mute 1 h**, **Mute 8 h** and **Unmute**. With two or more `voice.languages` it also has the **Voice** button that picks the language of new voice notes (see [Choosing the language](#choosing-the-language)). A toggle reads `Done messages · On` (green) or `Done messages · Off`. While muted, those messages are not sent; when the mute ends, one line says how many were hidden. Cards that need an answer and inbox items are always sent.
 
 Only what needs you makes a sound: cards, approvals, decisions, stalled reviews, blocked tasks, recovery items, join requests, a failed run, **Done** of a top-level task and a rejected Paperclip token. The summary line for many changes makes a sound only when it counts a finished top-level task. Everything else is delivered silently: agent comments, **In review**, **Done** of a subtask, task views, replies to your commands and lists. The mute and the toggles above decide what is sent at all; they do not change the sound.
 
@@ -307,7 +317,7 @@ A private chat gets no mention.
 | `/following` | Lists the followed tasks. |
 | `/agents` | Lists the agents; a button opens the agent view. |
 | `/projects` | Lists the projects with their open tasks. |
-| `/settings` | Notification toggles and mute. |
+| `/settings` | Notification toggles, mute and, when `voice.languages` lists two or more, the voice language. |
 | `/help`, `/start` | Show the command list. |
 
 The same commands are in the Telegram menu. The bot also sets its profile text (short description and description) once at start.

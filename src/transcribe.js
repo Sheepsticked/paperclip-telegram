@@ -34,15 +34,16 @@ export class Transcriber {
     this.#timeoutMs = timeoutMs;
   }
 
-  // Resolves with { text, language, seconds }; rejects with a TranscribeError.
-  async transcribe(audio, { duration = 0 } = {}) {
+  // Resolves with { text, language, seconds }; rejects with a TranscribeError. `language` overrides the configured one;
+  // null detects it.
+  async transcribe(audio, { duration = 0, language = this.#voice.language } = {}) {
     if (this.#stopped) throw new TranscribeError('stopped');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paperclip-telegram-voice-'));
     try {
       fs.chmodSync(dir, 0o700);
       const file = path.join(dir, 'voice.ogg');
       fs.writeFileSync(file, audio, { mode: 0o600 });
-      return await this.#run(file, this.#timeoutMs(duration));
+      return await this.#run(file, language, this.#timeoutMs(duration));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -54,8 +55,8 @@ export class Transcriber {
     this.#child?.kill('SIGKILL');
   }
 
-  #args(file) {
-    const { python, modelsDir, model, threads, beamSize, language } = this.#voice;
+  #args(file, language) {
+    const { python, modelsDir, model, threads, beamSize } = this.#voice;
     return [
       '-n', NICE_LEVEL, python, SCRIPT, file,
       '--model', model,
@@ -66,9 +67,9 @@ export class Transcriber {
     ];
   }
 
-  #run(file, timeoutMs) {
+  #run(file, language, timeoutMs) {
     return new Promise((resolve, reject) => {
-      const child = spawn('nice', this.#args(file), { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn('nice', this.#args(file, language), { stdio: ['ignore', 'pipe', 'pipe'] });
       this.#child = child;
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');

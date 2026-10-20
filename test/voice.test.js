@@ -6,6 +6,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { parseConfig } from '../src/config.js';
+import { languageName } from '../src/languages.js';
+import { State } from '../src/state.js';
 import { transcribeTimeoutMs } from '../src/transcribe.js';
 import { lengthWords } from '../src/voice.js';
 import { TELEGRAM_TOKEN, UI_BASE_URL, confirmPayload, outcomePattern, startWorld, textQuestion, questionsPayload, waitFor } from './helpers.js';
@@ -697,4 +699,514 @@ test('the real helper fails with a short message on stderr and nothing on stdout
   assert.equal(run.stdout, '');
   assert.match(run.stderr, /^transcribe: audio file not found\n$/);
   return undefined;
+});
+
+// ---- Choosing the language of a note ----
+
+const EN_RU = { languages: ['en', 'ru'] };
+// The language each helper run was given, in order (null when it got none).
+const flagLanguages = (ctx) =>
+  events(ctx)
+    .filter((entry) => entry.event === 'start')
+    .map((entry) => (entry.flags.includes('--language') ? entry.flags[entry.flags.indexOf('--language') + 1] : null));
+const rows = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => b.text));
+const textOf = (w, id) => w.tg.messages.get(id).text;
+const heardIn = (name, text) => `<b>Heard</b> · ${name}\n<blockquote>${text}</blockquote>\n\n`;
+const offerIn = (name, text) => `Heard · ${name}:\n<blockquote>${text}</blockquote>\nCreate a task from this?`;
+const TWO_READINGS = { mode: 'text', text: 'Please use the blue logo', texts: { ru: 'Пожалуйста, синий логотип' } };
+
+async function openSettings(ctx) {
+  await ctx.bot.handleUpdate(ctx.w.tg.message('/settings'));
+  return ctx.w.tg.lastMessage();
+}
+
+test('with languages a note is read in the first one, then in the one the /settings switch picked; the pick survives a restart', async (t) => {
+  const ctx = await setup(t, { voice: EN_RU });
+  const { w, bot } = ctx;
+  await dictate(ctx, { mode: 'text', text: 'First' });
+  assert.deepEqual(events(ctx)[0].flags, ['--model', 'small', '--models-dir', path.join(ctx.dir, 'models'), '--threads', '4', '--beam', '1', '--language', 'en']);
+
+  const view = await openSettings(ctx);
+  assert.deepEqual(rows(w, view.message_id).slice(-2), [['Voice · English'], ['Mute 1 h', 'Mute 8 h', 'Unmute']]);
+  assert.equal(styles(w, view.message_id)['Voice · English'], null, 'the switch has no colour');
+  const sent = w.tg.sent().length;
+  await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Voice'));
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Voice: Russian');
+  assert.deepEqual(rows(w, view.message_id).slice(-2), [['Voice · Russian'], ['Mute 1 h', 'Mute 8 h', 'Unmute']]);
+  assert.equal(w.tg.sent().length, sent, 'the settings are redrawn in place');
+
+  await dictate(ctx, { mode: 'text', text: 'Second' });
+  assert.deepEqual(flagLanguages(ctx), ['en', 'ru']);
+
+  const restarted = w.makeBot();
+  assert.equal(JSON.parse(fs.readFileSync(w.statePath, 'utf8')).voiceLanguage, 'ru');
+  const again = await openSettings({ w, bot: restarted });
+  assert.deepEqual(rows(w, again.message_id).at(-2), ['Voice · Russian']);
+  await restarted.handleUpdate(note(ctx, { mode: 'text', text: 'Third' }));
+  await settled(restarted);
+  assert.deepEqual(flagLanguages(ctx), ['en', 'ru', 'ru']);
+});
+
+test('the switch moves through the list and wraps around; a pick that left the list means the first language', async (t) => {
+  const ctx = await setup(t, { voice: { languages: ['en', 'ru', 'de'] } });
+  const { w, bot } = ctx;
+  const view = await openSettings(ctx);
+  const picked = [];
+  for (let i = 0; i < 4; i += 1) {
+    await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Voice'));
+    picked.push(w.tg.callbackAnswers.at(-1).text);
+  }
+  assert.deepEqual(picked, ['Voice: Russian', 'Voice: German', 'Voice: English', 'Voice: Russian']);
+
+  const saved = JSON.parse(fs.readFileSync(w.statePath, 'utf8'));
+  saved.voiceLanguage = 'fr';
+  fs.writeFileSync(w.statePath, JSON.stringify(saved));
+  const restarted = w.makeBot();
+  const stale = await openSettings({ w, bot: restarted });
+  assert.deepEqual(rows(w, stale.message_id).at(-2), ['Voice · English']);
+  await restarted.handleUpdate(w.tg.tapButton(stale.message_id, 'Voice'));
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Voice: Russian');
+  await restarted.handleUpdate(note(ctx, { mode: 'text', text: 'Stale pick' }));
+  await settled(restarted);
+  assert.deepEqual(flagLanguages(ctx), ['ru']);
+});
+
+test('a note keeps the language it had when it arrived, also while it waits behind another note', async (t) => {
+  const ctx = await setup(t, { forum: true, voice: EN_RU });
+  const { w, bot } = ctx;
+  const { thread } = await taskWithTopic(w, bot);
+  const first = note(ctx, { mode: 'text', text: 'First note', delayMs: 400 }, { thread });
+  const second = note(ctx, { mode: 'text', text: 'Second note' }, { thread });
+  await bot.handleUpdate(first);
+  const firstReply = w.tg.lastMessage();
+  await bot.handleUpdate(second);
+  const secondReply = w.tg.lastMessage();
+  await waitFor(() => events(ctx).some((entry) => entry.event === 'start'), { label: 'the first helper' });
+
+  const view = await openSettings(ctx);
+  await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Voice'));
+  await bot.handleUpdate(note(ctx, { mode: 'text', text: 'Third note' }, { thread }));
+  const thirdReply = w.tg.lastMessage();
+  await settled(bot);
+
+  assert.deepEqual(flagLanguages(ctx), ['en', 'en', 'ru']);
+  assert.match(textOf(w, firstReply.message_id), /Heard<\/b> · English/);
+  assert.match(textOf(w, secondReply.message_id), /Heard<\/b> · English/);
+  assert.match(textOf(w, thirdReply.message_id), /Heard<\/b> · Russian/);
+});
+
+test('a note saved without a language is read in the switch language, or in the configured one without a list', async (t) => {
+  const cases = [
+    { voice: EN_RU, picked: 'ru', expected: 'ru' },
+    { voice: EN_RU, picked: null, expected: 'en' },
+    { voice: { language: 'de' }, picked: null, expected: 'de' },
+  ];
+  for (const { voice, picked, expected } of cases) {
+    const ctx = await setup(t, { voice });
+    const { w, bot } = ctx;
+    const slow = { log: ctx.log, mode: 'slow', delayMs: 60_000, text: 'Interrupted' };
+    await bot.handleUpdate(note(ctx, slow));
+    const reply = w.tg.lastMessage();
+    await waitFor(() => events(ctx).length > 0, { label: 'the helper to start' });
+    bot.stop();
+    await settled(bot);
+
+    // A saved job without a language.
+    const saved = JSON.parse(fs.readFileSync(w.statePath, 'utf8'));
+    delete saved.voice['1'].language;
+    saved.voiceLanguage = picked;
+    fs.writeFileSync(w.statePath, JSON.stringify(saved));
+    w.tg.files.get('file-1').data = Buffer.from(JSON.stringify({ log: ctx.log, mode: 'text', text: 'Back again' }));
+
+    const restarted = w.makeBot();
+    const stop = runLoops(restarted);
+    try {
+      await waitFor(() => /Back again/.test(textOf(w, reply.message_id)), { label: 'the resumed note' });
+    } finally {
+      await stop();
+    }
+    assert.equal(flagLanguages(ctx).at(-1), expected, JSON.stringify(voice));
+  }
+});
+
+test('the transcript names its language and a button reads the same note again in another, in the same message; Send posts only the new text', async (t) => {
+  const ctx = await setup(t, { forum: true, voice: EN_RU });
+  const { w, bot } = ctx;
+  const { issue, thread } = await taskWithTopic(w, bot);
+  const { placeholder } = await dictate(ctx, { ...TWO_READINGS, delayMs: 150 }, { thread });
+  const id = placeholder.message_id;
+  assert.equal(textOf(w, id), heardIn('English', 'Please use the blue logo').trimEnd());
+  assert.deepEqual(rows(w, id), [['Send', 'Cancel', 'Russian']]);
+  assert.deepEqual(styles(w, id), { Send: 'success', Cancel: 'danger', Russian: null });
+  const known = w.tg.sent().length;
+
+  await bot.handleUpdate(w.tg.tapButton(id, 'Russian'));
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Reading again in Russian');
+  assert.equal(textOf(w, id), 'Transcribing…');
+  assert.deepEqual(w.tg.buttons(id), []);
+  const job = bot.state.voice.get('1');
+  assert.deepEqual([job.status, job.language, job.text], ['pending', 'ru', null], 'the old transcript is dropped');
+  assert.equal(posts(w, '/comments').length, 0, 'nothing is sent by the tap');
+
+  await settled(bot);
+  assert.equal(textOf(w, id), heardIn('Russian', 'Пожалуйста, синий логотип').trimEnd());
+  assert.deepEqual(rows(w, id), [['Send', 'Cancel', 'English']]);
+  assert.deepEqual(styles(w, id), { Send: 'success', Cancel: 'danger', English: null });
+  assert.equal(w.tg.sent().length, known, 'the same message is edited');
+  assert.deepEqual(flagLanguages(ctx), ['en', 'ru']);
+  const file = w.tg.files.get('file-1').path;
+  assert.deepEqual(w.tg.downloads.map((d) => d.path), [file, file], 'the same audio is read again');
+  assert.equal(bot.state.voiceLanguage, null, 'the /settings switch is not changed');
+
+  await bot.handleUpdate(w.tg.tapButton(id, 'Send'));
+  assert.deepEqual(posts(w, '/comments').map((c) => [c.path.split('/').at(-2), c.body]), [[issue.id, { body: 'Пожалуйста, синий логотип' }]]);
+  assert.match(textOf(w, id), outcomePattern('Sent', null, { before: heardIn('Russian', 'Пожалуйста, синий логотип') }));
+  assert.deepEqual(w.tg.buttons(id), []);
+});
+
+test('reading again can go back to the first language and the first text is not kept', async (t) => {
+  const ctx = await setup(t, { voice: EN_RU });
+  const { w, bot } = ctx;
+  const issue = w.pc.addIssue({ title: 'Fix the layout', status: 'in_progress' });
+  await bot.handleUpdate(w.tg.message(`/task ${issue.identifier}`));
+  const { placeholder } = await dictate(ctx, TWO_READINGS, { replyTo: w.tg.lastMessage().message_id });
+  const id = placeholder.message_id;
+  await bot.handleUpdate(w.tg.tapButton(id, 'Russian'));
+  await settled(bot);
+  await bot.handleUpdate(w.tg.tapButton(id, 'English'));
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Reading again in English');
+  await settled(bot);
+  assert.equal(textOf(w, id), heardIn('English', 'Please use the blue logo').trimEnd());
+  assert.deepEqual(flagLanguages(ctx), ['en', 'ru', 'en']);
+
+  await bot.handleUpdate(w.tg.tapButton(id, 'Send'));
+  assert.deepEqual(posts(w, '/comments').map((c) => c.body), [{ body: 'Please use the blue logo' }]);
+  assert.equal(bot.state.voice.size, 0);
+});
+
+test('two languages put the other one next to Send and Cancel; more put the others in a row of their own', async (t) => {
+  const two = await setup(t, { forum: true, voice: EN_RU });
+  const one = await dictate(two, { mode: 'text', text: 'Hello' }, { thread: (await taskWithTopic(two.w, two.bot)).thread });
+  assert.deepEqual(rows(two.w, one.placeholder.message_id), [['Send', 'Cancel', 'Russian']]);
+
+  const many = await setup(t, { forum: true, voice: { languages: ['ru', 'en', 'de', 'fr'] } });
+  const note3 = await dictate(many, { mode: 'text', text: 'Hello' }, { thread: (await taskWithTopic(many.w, many.bot)).thread });
+  const id = note3.placeholder.message_id;
+  assert.equal(textOf(many.w, id), heardIn('Russian', 'Hello').trimEnd());
+  assert.deepEqual(rows(many.w, id), [['Send', 'Cancel'], ['English', 'German', 'French']]);
+  assert.deepEqual(styles(many.w, id), { Send: 'success', Cancel: 'danger', English: null, German: null, French: null });
+  await many.bot.handleUpdate(many.w.tg.tapButton(id, 'German'));
+  assert.equal(many.w.tg.callbackAnswers.at(-1).text, 'Reading again in German');
+  await settled(many.bot);
+  assert.equal(textOf(many.w, id), heardIn('German', 'Hello').trimEnd());
+  assert.deepEqual(rows(many.w, id), [['Send', 'Cancel'], ['Russian', 'English', 'French']]);
+  assert.deepEqual(flagLanguages(many), ['ru', 'de']);
+});
+
+test('a language code with no name is shown as the code', () => {
+  assert.deepEqual([languageName('en'), languageName('ru'), languageName('de'), languageName('zz')], ['English', 'Russian', 'German', 'zz']);
+});
+
+test('a task offer made from a note names its language and reads the note again; the task is made from the new text', async (t) => {
+  const ctx = await setup(t, { voice: EN_RU });
+  const { w, bot } = ctx;
+  const { update, placeholder } = await dictate(ctx, { mode: 'text', text: 'Draw the logo in blue', texts: { ru: 'Нарисуйте логотип синим' }, delayMs: 150 });
+  const id = placeholder.message_id;
+  assert.equal(textOf(w, id), offerIn('English', 'Draw the logo in blue'));
+  assert.deepEqual(rows(w, id), [['For Lead', 'Other agent', 'Cancel'], ['Russian']]);
+  assert.deepEqual(styles(w, id), { 'For Lead': null, 'Other agent': null, Cancel: null, Russian: null });
+  assert.deepEqual(Object.values(JSON.parse(fs.readFileSync(w.statePath, 'utf8')).offers)[0].voice, { fileId: 'file-1', duration: 5, language: 'en' });
+  const known = w.tg.sent().length;
+
+  await bot.handleUpdate(w.tg.tapButton(id, 'Russian'));
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Reading again in Russian');
+  assert.equal(textOf(w, id), 'Transcribing…');
+  assert.deepEqual(w.tg.buttons(id), []);
+  assert.equal(bot.state.offers.size, 0, 'the old offer is dropped');
+  assert.equal(posts(w, '/issues').length, 0, 'nothing is created by the tap');
+
+  await settled(bot);
+  assert.equal(textOf(w, id), offerIn('Russian', 'Нарисуйте логотип синим'));
+  assert.deepEqual(rows(w, id), [['For Lead', 'Other agent', 'Cancel'], ['English']]);
+  assert.equal(w.tg.sent().length, known, 'the same message is edited');
+  assert.equal(bot.state.offers.size, 1);
+  assert.deepEqual(flagLanguages(ctx), ['en', 'ru']);
+  assert.equal(bot.state.voiceLanguage, null, 'the /settings switch is not changed');
+
+  await bot.handleUpdate(w.tg.tapButton(id, 'For Lead'));
+  const [created] = posts(w, '/issues');
+  assert.equal(created.body.title, 'Нарисуйте логотип синим');
+  assert.equal(created.body.description, 'Нарисуйте логотип синим');
+  assert.equal(created.body.idempotencyKey, `telegram-update-${update.update_id}`);
+  assert.match(textOf(w, id), outcomePattern('Created', `${TASK_LINK} for Lead`, { before: `${offerIn('Russian', 'Нарисуйте логотип синим')}\n\n` }));
+  assert.deepEqual(w.tg.buttons(id), []);
+});
+
+test('the language row of an offer comes back with Back from the agent list', async (t) => {
+  const ctx = await setup(t, { voice: EN_RU });
+  const { w, bot } = ctx;
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Pick someone' });
+  const id = placeholder.message_id;
+  await bot.handleUpdate(w.tg.tapButton(id, 'Other agent'));
+  assert.ok(!rows(w, id).flat().includes('Russian'));
+  await bot.handleUpdate(w.tg.tapButton(id, 'Back'));
+  assert.deepEqual(rows(w, id), [['For Lead', 'Other agent', 'Cancel'], ['Russian']]);
+});
+
+test('an offer made from a note can be read again after a restart', async (t) => {
+  const ctx = await setup(t, { voice: EN_RU });
+  const { w } = ctx;
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Before', texts: { ru: 'After' } });
+  const restarted = w.makeBot();
+  await restarted.handleUpdate(w.tg.tapButton(placeholder.message_id, 'Russian'));
+  await settled(restarted);
+  assert.equal(textOf(w, placeholder.message_id), offerIn('Russian', 'After'));
+  assert.deepEqual(flagLanguages(ctx), ['en', 'ru']);
+});
+
+test('a read-again that was pending at restart is finished in the new language', async (t) => {
+  const ctx = await setup(t, { forum: true, voice: EN_RU });
+  const { w, bot } = ctx;
+  const { thread } = await taskWithTopic(w, bot);
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Hello', texts: { ru: 'Privet' } }, { thread });
+  const id = placeholder.message_id;
+  w.tg.files.get('file-1').data = Buffer.from(JSON.stringify({ log: ctx.log, mode: 'slow', delayMs: 60_000, text: 'Hello' }));
+  await bot.handleUpdate(w.tg.tapButton(id, 'Russian'));
+  await waitFor(() => flagLanguages(ctx).length === 2, { label: 'the second helper to start' });
+  const [, second] = events(ctx).filter((entry) => entry.event === 'start');
+  bot.stop();
+  await settled(bot);
+  await waitFor(() => pidGone(second.pid), { label: 'the helper to be killed' });
+  const saved = JSON.parse(fs.readFileSync(w.statePath, 'utf8')).voice['1'];
+  assert.deepEqual([saved.status, saved.language, saved.text], ['pending', 'ru', null]);
+  assert.equal(textOf(w, id), 'Transcribing…');
+
+  w.tg.files.get('file-1').data = Buffer.from(JSON.stringify({ log: ctx.log, mode: 'text', text: 'Hello', texts: { ru: 'Privet' } }));
+  const restarted = w.makeBot();
+  const stop = runLoops(restarted);
+  try {
+    await waitFor(() => labels(w, id).includes('Send'), { label: 'the resumed read' });
+  } finally {
+    await stop();
+  }
+  assert.equal(textOf(w, id), heardIn('Russian', 'Privet').trimEnd());
+  assert.deepEqual(flagLanguages(ctx), ['en', 'ru', 'ru']);
+});
+
+test('a failed second read ends like a failed first read, in a topic and in General', async (t) => {
+  const ctx = await setup(t, { forum: true, voice: EN_RU });
+  const { w, bot } = ctx;
+  const { thread } = await taskWithTopic(w, bot);
+  for (const [options, mode, expected] of [
+    [{ thread }, 'fail', 'Could not transcribe this voice note.'],
+    [{ thread }, 'empty', 'No speech heard.'],
+    [{}, 'fail', 'Could not transcribe this voice note.'],
+    [{}, 'empty', 'No speech heard.'],
+  ]) {
+    const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Fine in English', modes: { ru: mode } }, options);
+    const id = placeholder.message_id;
+    await bot.handleUpdate(w.tg.tapButton(id, 'Russian'));
+    await settled(bot);
+    assert.equal(textOf(w, id), expected);
+    assert.deepEqual(w.tg.buttons(id), []);
+  }
+  assert.equal(bot.state.voice.size, 0);
+  assert.equal(bot.state.offers.size, 0);
+  assert.equal(posts(w, '/comments').length + posts(w, '/issues').length, 0);
+});
+
+test('a read-again tap on a settled or an expired message behaves like the other taps', async (t) => {
+  const ctx = await setup(t, { forum: true, voice: EN_RU });
+  const { w, bot } = ctx;
+  const { thread } = await taskWithTopic(w, bot);
+
+  // A transcript that was sent.
+  const sent = await dictate(ctx, { mode: 'text', text: 'Sent already' }, { thread });
+  const lateTap = w.tg.tapButton(sent.placeholder.message_id, 'Russian');
+  await bot.handleUpdate(w.tg.tapButton(sent.placeholder.message_id, 'Send'));
+  await bot.handleUpdate(lateTap);
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Already handled');
+  assert.match(textOf(w, sent.placeholder.message_id), outcomePattern('Sent', null, { before: heardIn('English', 'Sent already') }));
+
+  // An offer that was cancelled.
+  const cancelled = await dictate(ctx, { mode: 'text', text: 'Cancelled already' });
+  const lateOfferTap = w.tg.tapButton(cancelled.placeholder.message_id, 'Russian');
+  await bot.handleUpdate(w.tg.tapButton(cancelled.placeholder.message_id, 'Cancel'));
+  await bot.handleUpdate(lateOfferTap);
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'This offer has expired');
+  assert.match(textOf(w, cancelled.placeholder.message_id), outcomePattern('Cancelled', null, { before: `${offerIn('English', 'Cancelled already')}\n\n` }));
+  assert.equal(flagLanguages(ctx).length, 2, 'no tap started another read');
+
+  // Both after 24 hours; Telegram hands the tap the message as plain text.
+  const old = await dictate(ctx, { mode: 'text', text: 'Too late' }, { thread });
+  const oldOffer = await dictate(ctx, { mode: 'text', text: 'Too late for a task' });
+  const later = w.makeBot({ now: () => Date.now() + 25 * HOUR });
+  const tap = w.tg.tapButton(old.placeholder.message_id, 'Russian');
+  tap.callback_query.message.text = 'Heard · English\nToo late';
+  await later.handleUpdate(tap);
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'This voice note has expired');
+  assert.match(textOf(w, old.placeholder.message_id), outcomePattern('Expired', null, { before: 'Heard · English\nToo late\n\n' }));
+  const offerTap = w.tg.tapButton(oldOffer.placeholder.message_id, 'Russian');
+  offerTap.callback_query.message.text = 'Heard · English:\nToo late for a task\nCreate a task from this?';
+  await later.handleUpdate(offerTap);
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'This offer has expired');
+  assert.match(textOf(w, oldOffer.placeholder.message_id), outcomePattern('Expired', null, { before: 'Heard · English:\nToo late for a task\nCreate a task from this?\n\n' }));
+  assert.equal(flagLanguages(ctx).length, 4);
+});
+
+test('a second tap while a note is read again changes nothing and does not settle the message', async (t) => {
+  const ctx = await setup(t, { forum: true, voice: EN_RU });
+  const { w, bot } = ctx;
+  const { thread } = await taskWithTopic(w, bot);
+  for (const options of [{ thread }, {}]) {
+    const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Twice', delayMs: 150 }, options);
+    const id = placeholder.message_id;
+    const taps = [w.tg.tapButton(id, 'Russian'), w.tg.tapButton(id, 'Russian'), w.tg.tapButton(id, options.thread ? 'Send' : 'For Lead')];
+    const before = flagLanguages(ctx).length;
+    await bot.handleUpdate(taps[0]);
+    for (const tap of taps.slice(1)) {
+      await bot.handleUpdate(tap);
+      assert.equal(w.tg.callbackAnswers.at(-1).text, 'Already handled');
+      assert.equal(textOf(w, id), 'Transcribing…');
+    }
+    await settled(bot);
+    assert.equal(flagLanguages(ctx).length, before + 1, 'the note was read once more');
+    assert.match(textOf(w, id), /Heard.* · Russian/);
+    assert.equal(posts(w, '/comments').length + posts(w, '/issues').length, 0);
+  }
+});
+
+test('a read-again tap with a language that is not listed does nothing', async (t) => {
+  const ctx = await setup(t, { forum: true, voice: EN_RU });
+  const { w, bot } = ctx;
+  const { thread } = await taskWithTopic(w, bot);
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Stays' }, { thread });
+  const general = await dictate(ctx, { mode: 'text', text: 'Stays too' });
+  await bot.handleUpdate(w.tg.tap(placeholder.message_id, 'V:l:1:de'));
+  await bot.handleUpdate(w.tg.tap(general.placeholder.message_id, 'V:o:1:de'));
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Unknown action');
+  assert.equal(flagLanguages(ctx).length, 2);
+  assert.equal(bot.state.getVoice('1', Date.now()).status, 'ready');
+  assert.equal(bot.state.offers.size, 1);
+
+  // The listed language still works afterwards.
+  await bot.handleUpdate(w.tg.tapButton(placeholder.message_id, 'Russian'));
+  await settled(bot);
+  assert.deepEqual(flagLanguages(ctx), ['en', 'en', 'ru']);
+});
+
+test('the log keeps its fields and still holds no transcript when a note is read again', async (t) => {
+  const ctx = await setup(t, { forum: true, voice: EN_RU });
+  const { w, bot } = ctx;
+  const { thread } = await taskWithTopic(w, bot);
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Quiet words', texts: { ru: 'LOGGED-RUSSIAN' } }, { thread });
+  await bot.handleUpdate(w.tg.tapButton(placeholder.message_id, 'Russian'));
+  await settled(bot);
+  assert.ok(w.logs.out.some((line) => /info voice note transcribed seconds=0\.1 language=en characters=11/.test(line)));
+  assert.ok(w.logs.out.some((line) => /info voice note transcribed seconds=0\.1 language=ru characters=14/.test(line)));
+  assert.ok(!w.allLogText().includes('LOGGED-RUSSIAN'));
+  assert.ok(!w.allLogText().includes('Quiet words'));
+});
+
+test('/help names the language switch and the button only when there are two languages or more', async (t) => {
+  const phrase = /The language is set in \/settings, and a button under the text reads the note again in another language\./;
+  const two = await setup(t, { voice: EN_RU });
+  await two.bot.handleUpdate(two.w.tg.message('/help'));
+  assert.match(two.w.tg.lastMessage().text, /after you confirm\. The language is set in/);
+  assert.match(two.w.tg.lastMessage().text, phrase);
+
+  for (const voice of [{ languages: ['ru'] }, { language: 'de' }, {}]) {
+    const ctx = await setup(t, { voice });
+    await ctx.bot.handleUpdate(ctx.w.tg.message('/help'));
+    assert.match(ctx.w.tg.lastMessage().text, /Voice notes work too/);
+    assert.ok(!phrase.test(ctx.w.tg.lastMessage().text) && !/language/i.test(ctx.w.tg.lastMessage().text), JSON.stringify(voice));
+  }
+});
+
+test('with one language the note names it and is read in it, but there is no switch and no button', async (t) => {
+  const ctx = await setup(t, { forum: true, voice: { languages: ['ru'] } });
+  const { w, bot } = ctx;
+  const { thread } = await taskWithTopic(w, bot);
+  const view = await openSettings(ctx);
+  assert.deepEqual(rows(w, view.message_id).map((row) => row[0]).filter((label) => /Voice/.test(label)), []);
+  await bot.handleUpdate(w.tg.tap(view.message_id, 'S:v'));
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Unknown action');
+
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Hello' }, { thread });
+  assert.equal(textOf(w, placeholder.message_id), heardIn('Russian', 'Hello').trimEnd());
+  assert.deepEqual(rows(w, placeholder.message_id), [['Send', 'Cancel']]);
+  const general = await dictate(ctx, { mode: 'text', text: 'A task' });
+  assert.equal(textOf(w, general.placeholder.message_id), offerIn('Russian', 'A task'));
+  assert.deepEqual(rows(w, general.placeholder.message_id), [['For Lead', 'Other agent', 'Cancel']]);
+  assert.deepEqual(flagLanguages(ctx), ['ru', 'ru']);
+});
+
+test('without languages the v10 messages stay: no row in /settings, no language on a message, no button', async (t) => {
+  const ctx = await setup(t, { forum: true, voice: { language: 'de' } });
+  const { w, bot } = ctx;
+  const { thread } = await taskWithTopic(w, bot);
+  const view = await openSettings(ctx);
+  assert.equal(rows(w, view.message_id).length, 6);
+  assert.ok(!rows(w, view.message_id).flat().some((label) => /Voice/.test(label)));
+  await bot.handleUpdate(w.tg.tap(view.message_id, 'S:v'));
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Unknown action');
+  assert.equal(bot.state.voiceLanguage, null);
+
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Hello' }, { thread });
+  assert.equal(textOf(w, placeholder.message_id), heard('Hello').trimEnd());
+  assert.deepEqual(rows(w, placeholder.message_id), [['Send', 'Cancel']]);
+  const general = await dictate(ctx, { mode: 'text', text: 'A task' });
+  assert.equal(textOf(w, general.placeholder.message_id), 'Heard:\n<blockquote>A task</blockquote>\nCreate a task from this?');
+  assert.deepEqual(rows(w, general.placeholder.message_id), [['For Lead', 'Other agent', 'Cancel']]);
+  assert.equal(Object.values(JSON.parse(fs.readFileSync(w.statePath, 'utf8')).offers)[0].voice, null);
+
+  // A button from an earlier config does nothing now.
+  await bot.handleUpdate(w.tg.tap(placeholder.message_id, 'V:l:1:ru'));
+  await bot.handleUpdate(w.tg.tap(general.placeholder.message_id, 'V:o:1:ru'));
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Unknown action');
+  assert.deepEqual(flagLanguages(ctx), ['de', 'de']);
+  assert.equal(bot.state.getVoice('1', Date.now()).status, 'ready');
+});
+
+test('saved languages that are not codes are ignored when the state loads', () => {
+  const job = { status: 'pending', fileId: 'f', messageId: 1, noteId: 2 };
+  const offer = { text: 'T', at: 1, messageId: 3, heard: 'T', voice: { fileId: 'f', duration: 4, language: 'ru' } };
+  const state = new State('unused.json', {
+    voiceLanguage: 'EN',
+    voice: { a: { ...job, language: 'ru' }, b: { ...job, language: 'Russian' }, c: job },
+    offers: { a: offer, b: { ...offer, voice: { ...offer.voice, language: 'x' } }, c: { ...offer, voice: undefined } },
+  });
+  assert.equal(state.voiceLanguage, null);
+  assert.deepEqual([...state.voice.values()].map((entry) => entry.language), ['ru', null, null]);
+  assert.deepEqual([...state.offers.values()].map((entry) => entry.voice), [{ fileId: 'f', duration: 4, language: 'ru' }, null, null]);
+  assert.equal(new State('unused.json', { voiceLanguage: 'de' }).voiceLanguage, 'de');
+});
+
+test('voice.languages is checked: 1 to 4 distinct codes of 2 or 3 lowercase letters, and not together with voice.language', () => {
+  const base = {
+    paperclipUrl: 'http://localhost:3100',
+    uiBaseUrl: 'https://paperclip.example.com',
+    companyId: 'c',
+    leadAgentId: 'a',
+    telegramUserId: 1,
+    telegramTokenFile: 't',
+    paperclipTokenFile: 'p',
+  };
+  const parse = (extra) => parseConfig({ ...base, voice: { python: '/v/bin/python', modelsDir: '/v/models', ...extra } });
+  const listProblem = 'voice.languages must be a list of 1 to 4 language codes';
+  const codeProblem = 'voice.languages codes must be 2 or 3 lowercase letters, such as "en"';
+
+  assert.deepEqual(parse({ languages: ['en', 'ru'] }).problems, []);
+  assert.deepEqual(parse({ languages: ['en', 'ru'] }).config.voice.languages, ['en', 'ru']);
+  assert.deepEqual(parse({ languages: ['ru'] }).config.voice.languages, ['ru']);
+  assert.deepEqual(parse({ languages: ['en', 'ru', 'de', 'haw'] }).config.voice.languages, ['en', 'ru', 'de', 'haw']);
+  assert.deepEqual(parse({ language: null, languages: ['en', 'ru'] }).problems, []);
+  assert.equal('languages' in parse({}).config.voice, false, 'without the key nothing is added');
+  assert.equal('languages' in parse({ languages: null }).config.voice, false);
+
+  for (const languages of [[], ['en', 'ru', 'de', 'fr', 'es'], 'en', {}, 3]) assert.deepEqual(parse({ languages }).problems, [listProblem], JSON.stringify(languages));
+  for (const languages of [['EN'], ['e'], ['engl'], ['en', 3], ['e1'], [''], ['en ru'], ['en', null]]) assert.deepEqual(parse({ languages }).problems, [codeProblem], JSON.stringify(languages));
+  assert.deepEqual(parse({ languages: ['en', 'ru', 'en'] }).problems, ['voice.languages must not repeat a code']);
+  assert.deepEqual(parse({ language: 'en', languages: ['en', 'ru'] }).problems, ['set voice.language or voice.languages, not both']);
+  assert.deepEqual(parse({ language: 'en', languages: [] }).problems, ['set voice.language or voice.languages, not both', listProblem]);
 });

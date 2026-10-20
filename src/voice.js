@@ -1,7 +1,8 @@
 import fs from 'node:fs';
-import { markSettled, offerFromVoice, settledPlain, wasSettled } from './create.js';
+import { expiredOffer, markSettled, offerFromVoice, settledPlain, wasSettled } from './create.js';
 import { FILE_LIMIT_BYTES } from './files.js';
 import { TRANSCRIPT_LEVELS, button, escapeHtml, fitMessage, quote } from './format.js';
+import { canSwitchLanguage, languageName, noteLanguage, readAgainButtons, switchLanguage, voiceLanguages } from './languages.js';
 import { makeOutcome, outcomeBlock } from './outcome.js';
 import { threadOf, where } from './thread.js';
 import { TranscribeError } from './transcribe.js';
@@ -40,6 +41,7 @@ export async function handleVoice(bot, update, { offer, replyTo }) {
     updateId: update.update_id,
     thread: threadOf(bot, msg),
     replyTo,
+    language: voiceLanguages(bot) ? switchLanguage(bot) : null,
     at: bot.now(),
   });
   bot.state.save();
@@ -76,7 +78,7 @@ async function transcribeJob(bot, key) {
   if (bot.stopped || job?.status !== 'pending') return;
   let result;
   try {
-    result = await bot.transcriber.transcribe(await download(bot, job.fileId), { duration: job.duration });
+    result = await bot.transcriber.transcribe(await download(bot, job.fileId), { duration: job.duration, language: noteLanguage(bot, job) });
   } catch (err) {
     if (bot.stopped) return;
     bot.log.warn('voice transcription failed', { error: err.message });
@@ -108,14 +110,23 @@ async function editReply(bot, job, html, keyboard) {
   }
 }
 
-function heardHtml(text, outcome, level) {
-  const body = `<b>Heard</b>\n${quote(text, level)}`;
+// The name of the language a note was read in; null where the config has no list of languages.
+const languageLabel = (bot, job) => (voiceLanguages(bot) ? languageName(noteLanguage(bot, job)) : null);
+
+function heardHtml(text, label, outcome, level) {
+  const body = `<b>Heard</b>${label ? ` · ${escapeHtml(label)}` : ''}\n${quote(text, level)}`;
   return outcome ? `${body}\n\n${outcomeBlock({ outcome })}` : body;
 }
 
-const fitHeard = (text, outcome = null) => fitMessage((level) => heardHtml(text, outcome, level), TRANSCRIPT_LEVELS);
+const fitHeard = (text, label, outcome = null) => fitMessage((level) => heardHtml(text, label, outcome, level), TRANSCRIPT_LEVELS);
 
-const confirmKeyboard = (key) => [[button('Send', `V:s:${key}`, 'success'), button('Cancel', `V:x:${key}`, 'danger')]];
+// Send and Cancel, then a button per other language: next to them when there is one, else in a row of their own.
+function confirmKeyboard(bot, key, job) {
+  const row = [button('Send', `V:s:${key}`, 'success'), button('Cancel', `V:x:${key}`, 'danger')];
+  const again = readAgainButtons(bot, 'l', key, noteLanguage(bot, job));
+  if (again.length === 1) return [[...row, ...again]];
+  return again.length > 1 ? [row, again] : [row];
+}
 
 // The transcript is ready: no speech ends the job; in General it becomes the task offer; elsewhere the owner confirms it.
 async function show(bot, key, text) {
@@ -133,7 +144,7 @@ async function show(bot, key, text) {
   }
   Object.assign(job, { status: 'ready', text, readyAt: bot.now() });
   bot.state.save();
-  if (!(await editReply(bot, job, fitHeard(text), confirmKeyboard(key)))) {
+  if (!(await editReply(bot, job, fitHeard(text, languageLabel(bot, job)), confirmKeyboard(bot, key, job)))) {
     bot.state.voice.delete(key);
     bot.state.save();
   }
@@ -153,19 +164,65 @@ function typedMessage(job) {
 // The tap on a note that is gone: it was settled before, or it expired and the message is settled now.
 async function gone(bot, cq) {
   const message = cq.message;
-  if (wasSettled(bot, message?.message_id) || !message?.reply_markup?.inline_keyboard?.length) return bot.answer(cq.id, 'Already handled');
+  // A note that is being read again owns its message; a late tap on the old buttons changes nothing.
+  if (bot.state.isReadingVoice(message?.message_id) || wasSettled(bot, message?.message_id) || !message?.reply_markup?.inline_keyboard?.length) {
+    return bot.answer(cq.id, 'Already handled');
+  }
   await bot.answer(cq.id, 'This voice note has expired');
   const outcome = makeOutcome('Expired', null, bot.now());
   const shown = typeof message.text === 'string' && message.text.trim() ? message.text.trim() : 'Heard';
   return bot.edit(message.message_id, settledPlain(shown, outcome), []);
 }
 
-// Send and Cancel. `deliver(bot, msg)` handles the text like a typed message and says whether it was used.
-export async function handleVoiceCallback(bot, cq, deliver) {
-  const [, op, key] = String(cq.data).split(':');
+const canRead = (bot, code) => canSwitchLanguage(bot) && voiceLanguages(bot).includes(code);
+
+// Saves the job that was just made pending and starts it in the voice queue.
+function queueAgain(bot, cq, key, code) {
+  bot.state.save();
+  enqueueVoice(bot, key);
+  return bot.answer(cq.id, `Reading again in ${languageName(code)}`);
+}
+
+// The button of another language on a transcript: its text is dropped and the same audio is read again.
+async function readAgain(bot, cq, key, job, code) {
+  if (!canRead(bot, code)) return bot.answer(cq.id, 'Unknown action');
+  await bot.edit(job.messageId, WORKING, []);
+  Object.assign(job, { status: 'pending', text: null, readyAt: null, language: code });
+  return queueAgain(bot, cq, key, code);
+}
+
+// The same on a task offer made from a note: the offer is dropped and the new transcript becomes a new offer.
+async function readAgainFromOffer(bot, cq, key, code) {
+  const offer = bot.state.getOffer(key, bot.now());
+  if (!offer) return expiredOffer(bot, cq);
   const messageId = cq.message?.message_id;
+  if (!offer.voice || !messageId || !canRead(bot, code)) return bot.answer(cq.id, 'Unknown action');
+  await bot.edit(messageId, WORKING, []);
+  bot.state.offers.delete(key);
+  const jobKey = bot.state.addVoice({
+    mode: 'offer',
+    fileId: offer.voice.fileId,
+    duration: offer.voice.duration,
+    messageId,
+    noteId: offer.messageId,
+    updateId: offer.updateId,
+    thread: offer.thread,
+    replyTo: null,
+    language: code,
+    at: bot.now(),
+  });
+  return queueAgain(bot, cq, jobKey, code);
+}
+
+// Send, Cancel and the read-again buttons. `deliver(bot, msg)` handles the text like a typed message and says
+// whether it was used.
+export async function handleVoiceCallback(bot, cq, deliver) {
+  const [, op, key, code] = String(cq.data).split(':');
+  const messageId = cq.message?.message_id;
+  if (op === 'o') return readAgainFromOffer(bot, cq, key, code);
   const job = bot.state.getVoice(key, bot.now());
   if (!job) return gone(bot, cq);
+  if (op === 'l') return readAgain(bot, cq, key, job, code);
   if (op === 'x' || op === 's') {
     // The note is taken and saved before the text goes out, so neither a failure nor a restart after Paperclip took
     // it can send it twice.
@@ -178,7 +235,7 @@ export async function handleVoiceCallback(bot, cq, deliver) {
     }
     markSettled(bot, messageId);
     const outcome = makeOutcome(op === 's' ? 'Sent' : 'Cancelled', null, bot.now());
-    await bot.edit(messageId, fitHeard(job.text, outcome), []);
+    await bot.edit(messageId, fitHeard(job.text, languageLabel(bot, job), outcome), []);
     return bot.answer(cq.id, outcome.kind);
   }
   return bot.answer(cq.id, 'Unknown action');

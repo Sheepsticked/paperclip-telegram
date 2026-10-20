@@ -2,6 +2,8 @@
 //   { mode: 'text' | 'empty' | 'fail' | 'slow', text, delayMs, log }
 // 'text' prints `text`, 'empty' prints no speech, 'fail' exits with an error and 'slow' waits `delayMs` (30 s by
 // default) before it prints `text`. With `log` it appends what it did to that file, one JSON object per line.
+// `texts` and `modes` map a language code to its own text and mode; they apply when the helper gets `--language`,
+// which is also the language it reports (else it reports "en").
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,14 +19,18 @@ if (audio) {
   };
   note('start', { flags, dir, dirMode: fs.statSync(dir).mode & 0o777, fileMode: fs.statSync(audio).mode & 0o777, nice: os.getPriority() });
 
-  const delayMs = job.mode === 'slow' ? (job.delayMs ?? 30_000) : (job.delayMs ?? 0);
+  const languageAt = flags.indexOf('--language');
+  const language = languageAt >= 0 ? flags[languageAt + 1] : null;
+  const mode = (language && job.modes?.[language]) || job.mode;
+  const text = (language && job.texts?.[language]) ?? job.text ?? '';
+  const delayMs = mode === 'slow' ? (job.delayMs ?? 30_000) : (job.delayMs ?? 0);
   await new Promise((resolve) => setTimeout(resolve, delayMs));
 
-  if (job.mode === 'fail') {
+  if (mode === 'fail') {
     note('end', { failed: true });
     process.stderr.write('transcribe: RuntimeError: the model failed\n');
     process.exit(1);
   }
   note('end');
-  process.stdout.write(`${JSON.stringify({ text: job.mode === 'empty' ? '' : job.text ?? '', language: 'en', seconds: 0.1 })}\n`);
+  process.stdout.write(`${JSON.stringify({ text: mode === 'empty' ? '' : text, language: language ?? 'en', seconds: 0.1 })}\n`);
 }

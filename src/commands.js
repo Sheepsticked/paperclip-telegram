@@ -4,6 +4,7 @@ import { NEW_USAGE, askProjectForNew, createTask, offerTask, parseNewArgs, resol
 import { attachToTask, fileOf } from './files.js';
 import { headline, issueUrl } from './format.js';
 import { handleNoteReply } from './inbox.js';
+import { canSwitchLanguage } from './languages.js';
 import { commandFind, commandFollowing, commandStatus, commandTasks } from './lists.js';
 import { PaperclipError } from './paperclip.js';
 import { commandProjects } from './projects.js';
@@ -32,7 +33,11 @@ function helpText(bot) {
   const topics = ['In a task topic, plain text comments on that task and /task opens it.'];
   const { voice } = bot.config;
   const voiceNotes = voice
-    ? [`Voice notes work too, up to ${lengthWords(voice.maxSeconds)} long: the bot turns them into text on this machine, shows the text and uses it only after you confirm.`]
+    ? [
+        `Voice notes work too, up to ${lengthWords(voice.maxSeconds)} long: the bot turns them into text on this machine, shows the text and uses it only after you confirm.${
+          canSwitchLanguage(bot) ? ' The language is set in /settings, and a button under the text reads the note again in another language.' : ''
+        }`,
+      ]
     : [];
   return [...HELP_COMMANDS, ...(bot.topics.on ? topics : []), 'Reply to any bot message about a task to comment on it.', ...voiceNotes].join('\n');
 }
