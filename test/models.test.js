@@ -114,6 +114,17 @@ test('an override keeps its other keys and is null when nothing is left', () => 
   );
 });
 
+test('an override with an older codex level name is folded into the canonical key', () => {
+  const codex = (override, agent, fn, ...args) => fn('codex_local', override, agent, ...args);
+  assert.equal(codex({ adapterConfig: { reasoningEffort: 'high' } }, {}, overrideWithReasoning, ''), null);
+  assert.deepEqual(codex({ adapterConfig: { reasoningEffort: 'high' } }, {}, overrideWithReasoning, 'low'), { adapterConfig: { modelReasoningEffort: 'low' } });
+  assert.deepEqual(codex({ adapterConfig: { reasoningEffort: 'ultra' } }, {}, overrideWithModel, 'gpt-5.4'), { adapterConfig: { model: 'gpt-5.4' } });
+  assert.deepEqual(codex({ adapterConfig: { reasoningEffort: 'high' } }, {}, overrideWithModel, 'gpt-5.4'), { adapterConfig: { model: 'gpt-5.4', modelReasoningEffort: 'high' } });
+  // The adapter falls back to the older name when the canonical one is empty, so the agent's is blanked too.
+  assert.deepEqual(codex(null, { reasoningEffort: 'ultra' }, overrideWithModel, 'gpt-5.4'), { adapterConfig: { model: 'gpt-5.4', modelReasoningEffort: '', reasoningEffort: '' } });
+  assert.deepEqual(codex({ adapterConfig: { model: 'gpt-5.4' } }, { reasoningEffort: 'ultra' }, overrideWithReasoning, ''), { adapterConfig: { model: 'gpt-5.4', modelReasoningEffort: '', reasoningEffort: '' } });
+});
+
 test('the agent view shows the model and the reasoning level of a Claude agent', async (t) => {
   const { w, bot } = await setup(t);
   const view = await openAgent(w, bot);

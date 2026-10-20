@@ -193,35 +193,37 @@ export function overrideWithoutModel(override) {
   return overrideOf(override, config);
 }
 
-// The override with a new model. The override's level is dropped when the model does not allow it (an empty one
-// is dropped too, as it only stood for a level the agent hands on), and an agent level the model does not
-// allow is cleared by an empty level in the override.
+// The override's level under its own key only: older names are folded into it, so a reset or a change reaches them.
+function foldReasoning(type, config) {
+  const { key, aliases } = ADAPTERS[type];
+  const level = readReasoning(type, config);
+  for (const name of [key, ...aliases]) delete config[name];
+  return level;
+}
+
+// The override with a new model. Its own level stays only when the model allows it; an agent level the model
+// does not allow is blanked in the override (the agent's older names too, which the adapter would fall back to).
 export function overrideWithModel(type, override, agentConfig, modelId) {
   const config = { ...override?.adapterConfig, model: modelId };
-  const key = reasoningKey(type);
-  if (key) {
+  if (ADAPTERS[type]) {
     const allowed = reasoningValues(type, modelId);
-    if (!allowed.includes(text(config[key]))) delete config[key];
-    if (!(key in config)) {
-      const inherited = readReasoning(type, agentConfig);
-      if (inherited && !allowed.includes(inherited)) config[key] = '';
-    }
+    const own = foldReasoning(type, config);
+    const inherited = readReasoning(type, agentConfig);
+    if (allowed.includes(own)) config[reasoningKey(type)] = own;
+    else if (inherited && !allowed.includes(inherited)) Object.assign(config, clearedReasoning(type, agentConfig));
   }
   return overrideOf(override, config);
 }
 
-// The override with a new reasoning level; an empty value (Default) hands the level back to the agent.
+// The override with a new reasoning level; an empty value (Default) hands the level back to the agent, unless the
+// agent's level does not suit the override's model.
 export function overrideWithReasoning(type, override, agentConfig, value) {
-  const key = reasoningKey(type);
   const config = { ...override?.adapterConfig };
-  if (!key) return overrideOf(override, config);
-  if (value) {
-    config[key] = value;
-  } else {
-    delete config[key];
-    const inherited = readReasoning(type, agentConfig);
-    if (inherited && !reasoningValues(type, text(config.model) || readModel(agentConfig)).includes(inherited)) config[key] = '';
-  }
+  if (!ADAPTERS[type]) return overrideOf(override, config);
+  foldReasoning(type, config);
+  const inherited = readReasoning(type, agentConfig);
+  if (value) config[reasoningKey(type)] = value;
+  else if (inherited && !reasoningValues(type, text(config.model) || readModel(agentConfig)).includes(inherited)) Object.assign(config, clearedReasoning(type, agentConfig));
   return overrideOf(override, config);
 }
 
