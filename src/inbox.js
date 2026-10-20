@@ -426,13 +426,15 @@ export async function handleInboxCallback(bot, cq) {
 }
 
 // The owner's reply to a "Request changes" prompt becomes the note of the decision.
+// True when the note was sent.
 export async function handleNoteReply(bot, record, msg) {
   try {
     await bot.pc.stalledReviewDecision(record.issue.id, { action: 'request_changes', note: msg.text.trim() });
   } catch (err) {
     await reportFailure(bot, err, msg);
     if (err instanceof PaperclipError && alreadyResolved(record, err)) await resolveRecord(bot, record, RESOLVED_ELSEWHERE);
-    return;
+    return false;
   }
   await resolveRecord(bot, record, 'Changes requested');
+  return true;
 }

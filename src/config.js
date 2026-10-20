@@ -62,6 +62,43 @@ function nonEmpty(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+const isPositiveInteger = (value) => Number.isSafeInteger(value) && value > 0;
+
+export const VOICE_DEFAULTS = { model: 'small', language: null, beamSize: 1, threads: 4, maxSeconds: 300 };
+
+// Checks the optional `voice` block and returns it with its defaults; the problems are pushed to `problems`.
+function parseVoice(raw, problems) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    problems.push('voice must be an object when set');
+    return null;
+  }
+  const before = problems.length;
+  const need = (ok, message) => {
+    if (!ok) problems.push(message);
+  };
+  need(nonEmpty(raw.python), 'voice.python must be a non-empty path');
+  need(nonEmpty(raw.modelsDir), 'voice.modelsDir must be a non-empty path');
+  need(raw.model === undefined || nonEmpty(raw.model), 'voice.model must be a non-empty string when set');
+  need(raw.language === undefined || raw.language === null || nonEmpty(raw.language), 'voice.language must be a language code or null');
+  need(raw.beamSize === undefined || isPositiveInteger(raw.beamSize), 'voice.beamSize must be a positive integer when set');
+  need(raw.threads === undefined || isPositiveInteger(raw.threads), 'voice.threads must be a positive integer when set');
+  need(
+    raw.maxSeconds === undefined || (typeof raw.maxSeconds === 'number' && Number.isFinite(raw.maxSeconds) && raw.maxSeconds > 0),
+    'voice.maxSeconds must be a positive number of seconds when set',
+  );
+  if (problems.length > before) return null;
+  return {
+    python: expandHome(raw.python.trim()),
+    modelsDir: expandHome(raw.modelsDir.trim()),
+    model: raw.model?.trim() ?? VOICE_DEFAULTS.model,
+    language: raw.language?.trim() ?? VOICE_DEFAULTS.language,
+    beamSize: raw.beamSize ?? VOICE_DEFAULTS.beamSize,
+    threads: raw.threads ?? VOICE_DEFAULTS.threads,
+    maxSeconds: raw.maxSeconds ?? VOICE_DEFAULTS.maxSeconds,
+  };
+}
+
 // Returns { config, problems }; the config is only usable when problems is empty.
 export function parseConfig(raw) {
   const problems = [];
@@ -108,6 +145,8 @@ export function parseConfig(raw) {
     'routineRunErrorCodes must be an array of strings when set',
   );
 
+  const voice = parseVoice(c.voice, problems);
+
   if (problems.length > 0) return { config: null, problems };
 
   const trimSlash = (url) => url.replace(/\/+$/, '');
@@ -129,6 +168,7 @@ export function parseConfig(raw) {
       richMessages: c.richMessages ?? 'auto',
       closedTopicDays: c.closedTopicDays ?? 7,
       routineRunErrorCodes: c.routineRunErrorCodes ?? DEFAULT_ROUTINE_RUN_ERROR_CODES,
+      voice,
     },
   };
 }

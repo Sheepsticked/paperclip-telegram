@@ -11,6 +11,7 @@ const MAX_INBOX = 300;
 const MAX_FOLLOWING = 50;
 const MAX_OFFERS = 20;
 const OFFER_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_VOICE = 20;
 const MAX_ROOTS = 2000;
 const MAX_REVIEW_SENT = 2000;
 const MAX_STATUS_RETRIES = 200;
@@ -104,9 +105,41 @@ function loadOffers(saved) {
       file: offer.file ?? null,
       agentId: stringOrNull(offer.agentId),
       prompt: stringOrNull(offer.prompt),
+      heard: stringOrNull(offer.heard),
     });
   }
   return offers;
+}
+
+// Voice notes waiting to be transcribed (`pending`) or to be sent or cancelled (`ready`) from a saved file;
+// an entry that cannot be used is dropped.
+function loadVoice(saved) {
+  const jobs = new Map();
+  for (const [key, job] of Object.entries(isObject(saved) ? saved : {})) {
+    const usable =
+      isObject(job) &&
+      (job.status === 'pending' || job.status === 'ready') &&
+      typeof job.fileId === 'string' &&
+      Number.isInteger(job.messageId) &&
+      Number.isInteger(job.noteId) &&
+      (job.status === 'pending' || (typeof job.text === 'string' && Number.isFinite(job.readyAt)));
+    if (!usable) continue;
+    jobs.set(key, {
+      status: job.status,
+      mode: job.mode === 'offer' ? 'offer' : 'confirm',
+      fileId: job.fileId,
+      duration: Number.isFinite(job.duration) && job.duration > 0 ? job.duration : 0,
+      messageId: job.messageId,
+      noteId: job.noteId,
+      updateId: Number.isInteger(job.updateId) ? job.updateId : 0,
+      thread: Number.isInteger(job.thread) ? job.thread : null,
+      replyTo: Number.isInteger(job.replyTo) ? job.replyTo : null,
+      at: Number.isFinite(job.at) ? job.at : 0,
+      text: job.status === 'ready' ? job.text : null,
+      readyAt: job.status === 'ready' ? job.readyAt : null,
+    });
+  }
+  return jobs;
 }
 
 function loadPrefixCounts(saved) {
@@ -179,6 +212,8 @@ export class State {
     this.following = loadFollowing(data.following);
     this.offers = loadOffers(data.offers);
     this.offerCounter = Number.isInteger(data.offerCounter) && data.offerCounter >= 0 ? data.offerCounter : 0;
+    this.voice = loadVoice(data.voice);
+    this.voiceCounter = Number.isInteger(data.voiceCounter) && data.voiceCounter >= 0 ? data.voiceCounter : 0;
     this.prefixCounts = loadPrefixCounts(data.prefixCounts);
     this.reviewSent = loadReviewSent(data.reviewSent);
     this.statusRetries = loadStatusRetries(data.statusRetries);
@@ -220,6 +255,7 @@ export class State {
     this.cards.clear();
     this.inbox.clear();
     this.offers.clear();
+    this.voice.clear();
     this.topics.clear();
     this.boardMessageId = null;
     this.boardHash = null;
@@ -396,11 +432,11 @@ export class State {
   }
 
   // `file` is a Telegram file waiting to be attached to the new task; `agentId` is the agent picked so far;
-  // `prompt` is the text of the offer message.
-  addOffer(text, messageId, updateId, nowMs, thread = null, { file = null, agentId = null, prompt = null } = {}) {
+  // `prompt` is the text of the offer message; `heard` is the transcript of a voice note the offer shows.
+  addOffer(text, messageId, updateId, nowMs, thread = null, { file = null, agentId = null, prompt = null, heard = null } = {}) {
     this.offerCounter += 1;
     const key = this.offerCounter.toString(36);
-    this.offers.set(key, { text, messageId, updateId, at: nowMs, thread, file, agentId, prompt });
+    this.offers.set(key, { text, messageId, updateId, at: nowMs, thread, file, agentId, prompt, heard });
     while (this.offers.size > MAX_OFFERS) this.offers.delete(this.offers.keys().next().value);
     return key;
   }
@@ -412,6 +448,28 @@ export class State {
 
   pruneOffers(nowMs) {
     for (const [key, offer] of this.offers) if (nowMs - offer.at > OFFER_TTL_MS) this.offers.delete(key);
+  }
+
+  // A voice note whose transcript is not there yet; the oldest finished jobs go when there are too many.
+  addVoice(job) {
+    this.voiceCounter += 1;
+    const key = this.voiceCounter.toString(36);
+    this.voice.set(key, { ...job, status: 'pending', text: null, readyAt: null });
+    for (const [oldKey, old] of this.voice) {
+      if (this.voice.size <= MAX_VOICE) break;
+      if (old.status === 'ready') this.voice.delete(oldKey);
+    }
+    return key;
+  }
+
+  // The voice note with a transcript to send or cancel, if it is still within 24 hours of being shown.
+  getVoice(key, nowMs) {
+    const job = this.voice.get(key);
+    return job?.status === 'ready' && nowMs - job.readyAt <= OFFER_TTL_MS ? job : null;
+  }
+
+  pruneVoice(nowMs) {
+    for (const [key, job] of this.voice) if (job.status === 'ready' && nowMs - job.readyAt > OFFER_TTL_MS) this.voice.delete(key);
   }
 
   // Remembers which top-level task an issue belongs to; the oldest entries go first.
@@ -445,12 +503,13 @@ export class State {
     return changed;
   }
 
-  // Drops the topic of a task, and the offers that were made in that topic.
+  // Drops the topic of a task, and the offers and voice notes that were made in that topic.
   forgetTopic(rootId) {
     const topic = this.topics.get(rootId);
     if (!topic) return;
     this.topics.delete(rootId);
     for (const [key, offer] of this.offers) if (offer.thread === topic.thread) this.offers.delete(key);
+    for (const [key, job] of this.voice) if (job.thread === topic.thread) this.voice.delete(key);
   }
 
   // Counts the company prefix of an identifier so /task <number> can guess it.
@@ -495,6 +554,8 @@ export class State {
       following: Object.fromEntries(this.following),
       offers: Object.fromEntries(this.offers),
       offerCounter: this.offerCounter,
+      voice: Object.fromEntries(this.voice),
+      voiceCounter: this.voiceCounter,
       prefixCounts: this.prefixCounts,
       topics: Object.fromEntries(this.topics),
       roots: Object.fromEntries(this.roots),

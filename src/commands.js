@@ -10,6 +10,7 @@ import { commandProjects } from './projects.js';
 import { commandSettings } from './settings.js';
 import { guessPrefix, parseTaskRef, sendTaskView } from './tasks.js';
 import { isServiceMessage, replyTarget, threadOf, where } from './thread.js';
+import { handleVoice, lengthWords } from './voice.js';
 
 const HELP_COMMANDS = [
   '<b>Paperclip bot</b>',
@@ -29,7 +30,11 @@ const HELP_COMMANDS = [
 
 function helpText(bot) {
   const topics = ['In a task topic, plain text comments on that task and /task opens it.'];
-  return [...HELP_COMMANDS, ...(bot.topics.on ? topics : []), 'Reply to any bot message about a task to comment on it.'].join('\n');
+  const { voice } = bot.config;
+  const voiceNotes = voice
+    ? [`Voice notes work too, up to ${lengthWords(voice.maxSeconds)} long: the bot turns them into text on this machine, shows the text and uses it only after you confirm.`]
+    : [];
+  return [...HELP_COMMANDS, ...(bot.topics.on ? topics : []), 'Reply to any bot message about a task to comment on it.', ...voiceNotes].join('\n');
 }
 
 const TASK_USAGE = 'Usage: /task &lt;ID&gt;, for example /task ABC-12 or /task 12';
@@ -92,17 +97,24 @@ async function runCommand(bot, update, command) {
   }
 }
 
-// Posts the owner's text as a comment; the reaction (or a short reply) confirms it.
+// Posts the owner's text as a comment; the reaction (or a short reply) confirms it. True when the comment was posted.
 async function postComment(bot, msg, issue) {
   try {
     await bot.pc.postComment(issue.id, msg.text.trim());
   } catch (err) {
     await reportFailure(bot, err, msg);
-    return undefined;
+    return false;
   }
-  if (bot.topics.on && (await bot.react(msg.message_id))) return undefined;
+  if (bot.topics.on && (await bot.react(msg.message_id))) return true;
   const url = issue.identifier ? issueUrl(bot.config.uiBaseUrl, issue.identifier) : null;
-  return reply(bot, msg, issue.identifier ? headline('Comment posted', issue, { url }) : '<b>Comment posted</b>', issue);
+  await reply(bot, msg, issue.identifier ? headline('Comment posted', issue, { url }) : '<b>Comment posted</b>', issue);
+  return true;
+}
+
+// Says something in reply to `msg` about text that was not used.
+async function refuse(bot, msg, html) {
+  await reply(bot, msg, html);
+  return false;
 }
 
 // The task a reply belongs to: the one its message was about, the card's, or the topic's.
@@ -112,30 +124,31 @@ function taskOfReply(bot, msg, replyTo) {
 }
 
 // Precedence: a note for a stalled review, a decline reason, an open text question, then a plain comment on the task.
+// True when the text was used.
 async function handleReply(bot, msg, replyTo) {
   const text = typeof msg.text === 'string' ? msg.text.trim() : '';
 
   const noteRecord = bot.state.inboxByNotePrompt(replyTo);
   if (noteRecord) {
-    if (!text) return reply(bot, msg, 'Only text replies are supported');
+    if (!text) return refuse(bot, msg, 'Only text replies are supported');
     return handleNoteReply(bot, noteRecord, msg);
   }
 
   const reasonCard = findCardByReasonPrompt(bot.state, replyTo);
   if (reasonCard) {
-    if (!text) return reply(bot, msg, 'Only text replies are supported');
+    if (!text) return refuse(bot, msg, 'Only text replies are supported');
     return handleReasonReply(bot, reasonCard, msg);
   }
 
   const card = findCardByMessage(bot.state, replyTo);
   if (card && hasOpenTextQuestion(card)) {
-    if (!text) return reply(bot, msg, 'Only text replies are supported');
+    if (!text) return refuse(bot, msg, 'Only text replies are supported');
     return handleTextAnswer(bot, card, msg);
   }
 
   const issue = taskOfReply(bot, msg, replyTo);
-  if (!issue) return reply(bot, msg, "I don't know which task this is");
-  if (!text) return reply(bot, msg, 'Only text replies are supported');
+  if (!issue) return refuse(bot, msg, "I don't know which task this is");
+  if (!text) return refuse(bot, msg, 'Only text replies are supported');
   return postComment(bot, msg, issue);
 }
 
@@ -143,6 +156,15 @@ async function handleReply(bot, msg, replyTo) {
 function topicTask(bot, msg) {
   const rootId = bot.state.rootForThread(threadOf(bot, msg));
   return rootId ? { id: rootId, identifier: bot.state.topics.get(rootId).identifier } : null;
+}
+
+// Handles text the owner did not type (the transcript of a voice note) as if it was typed where `msg` was written:
+// as a reply to the message `msg` answers, else as a comment in a task topic. True when the text was used.
+export async function deliverText(bot, msg) {
+  const target = replyTarget(msg);
+  if (target) return handleReply(bot, msg, target);
+  const task = topicTask(bot, msg);
+  return task ? postComment(bot, msg, task) : refuse(bot, msg, "I don't know which task this is");
 }
 
 // A photo or file: it goes to the task the message replies to or is written under; with a caption alone it offers a new task.
@@ -162,6 +184,7 @@ export async function handleMessage(bot, update) {
   if (isServiceMessage(msg) || msg.from?.is_bot) return undefined;
   const command = typeof msg.text === 'string' ? parseCommand(msg.text) : null;
   if (command) return runCommand(bot, update, command);
+  if (msg.voice) return handleVoice(bot, update, { offer: !replyTarget(msg) && !topicTask(bot, msg), replyTo: replyTarget(msg) });
   const file = fileOf(msg);
   if (file) return handleFile(bot, update, file);
   const target = replyTarget(msg);

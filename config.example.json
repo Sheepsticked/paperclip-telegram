@@ -13,6 +13,15 @@
   "paperclipTokenFile": "~/.config/paperclip-telegram/paperclip-token",
   "telegramApiUrl": "https://api.telegram.org",
   "pollSeconds": 15,
+  "voice": {
+    "python": "~/.local/share/paperclip-telegram/voice/bin/python",
+    "modelsDir": "~/.local/share/paperclip-telegram/voice/models",
+    "model": "small",
+    "language": null,
+    "beamSize": 1,
+    "threads": 4,
+    "maxSeconds": 300
+  },
   "routineRunErrorCodes": [
     "cancelled",
     "agent_paused",

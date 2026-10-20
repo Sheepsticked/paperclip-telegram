@@ -116,6 +116,8 @@ export function headline(kind, issue, { own = false, titleMax = 100, url = null,
 export const QUOTE_MAX = 2000;
 // Quote budgets tried in turn until the whole message fits the Telegram limit.
 export const QUOTE_LEVELS = [QUOTE_MAX, 1000, 400, 150, 0];
+// Transcript budgets for a voice note, from the whole text down, tried until the message fits the Telegram limit.
+export const TRANSCRIPT_LEVELS = [Infinity, 3000, 2000, 1000, 500];
 const FOLD_LINES = 3;
 const FOLD_CHARS = 300;
 

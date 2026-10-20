@@ -380,6 +380,7 @@ export async function pollPaperclip(bot) {
   const startedAt = bot.now();
   state.pruneCards(startedAt);
   state.pruneOffers(startedAt);
+  state.pruneVoice(startedAt);
   state.pruneInbox(startedAt);
   await announceMuteEnd(bot);
 

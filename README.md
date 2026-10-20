@@ -10,11 +10,11 @@ It watches a Paperclip company and sends you:
 - an alert when an agent run fails;
 - the new comments of the tasks you follow.
 
-From the chat you can open any task and act on it (finish, reopen, cancel, comment, assign, set the project, read its documents, stop its run), list and search tasks and projects, create tasks (also from a photo or file), pause, resume and run agents, and choose which notifications you get. Your Telegram replies become Paperclip comments and answers, and the photos and files you send are attached to tasks.
+From the chat you can open any task and act on it (finish, reopen, cancel, comment, assign, set the project, read its documents, stop its run), list and search tasks and projects, create tasks (also from a photo, a file or a voice note), pause, resume and run agents, and choose which notifications you get. Your Telegram replies become Paperclip comments and answers, and the photos and files you send are attached to tasks.
 
 The bot works in a private chat, or in a group with topics where every top-level task gets its own topic (see [Group with topics](#group-with-topics)). Its messages use one plain style: no emoji, a bold kind and the task on the first line, and the task id on that line is the link to Paperclip.
 
-The bot makes no AI calls. It has no runtime dependencies and needs Node.js 22 or newer. It polls Paperclip (default every 15 seconds) and uses Telegram long polling, so it needs no public address.
+The bot makes no AI calls. Voice notes are turned into text on this machine, with no cloud service (see [Voice notes](#voice-notes)). It has no runtime dependencies and needs Node.js 22 or newer. It polls Paperclip (default every 15 seconds) and uses Telegram long polling, so it needs no public address.
 
 ## Setup
 
@@ -82,6 +82,7 @@ Edit it:
 | `telegramTokenFile`, `paperclipTokenFile` | Paths of the two token files. `~/` is expanded. |
 | `telegramApiUrl` | Optional, defaults to `https://api.telegram.org`. |
 | `pollSeconds` | Optional, seconds between Paperclip polls (default 15). |
+| `voice` | Optional. Turns voice notes on: the Python of the voice setup and the folder of its model, plus a few settings. Without it a voice note gets "Voice notes are not set up on this machine." See [Voice notes](#voice-notes). |
 | `routineRunErrorCodes` | Optional. Failed runs with one of these error codes do not raise an alert (the defaults are in `config.example.json`). |
 
 The bot reads `$PAPERCLIP_TELEGRAM_CONFIG`, or `~/.config/paperclip-telegram/config.json` when that is not set. A missing or invalid config, or a bad token file, makes it exit with status 78 and a message that names the problem (never the token).
@@ -162,7 +163,7 @@ When an item leaves the feed (answered here or in Paperclip, or dismissed in Pap
 
 ### Settled messages
 
-When the bot settles a message in place (a card is answered or closed, an inbox item is resolved, a task offer is created, cancelled or expires), it edits the message instead of sending a new one: the text stays as it was, the buttons go, and the last block is a highlighted line that says what happened, with which answer, and when. The line is a quote in a plain message and marked text in a rich message. Its parts, separated by `·`:
+When the bot settles a message in place (a card is answered or closed, an inbox item is resolved, a task offer is created, cancelled or expires, a voice note is sent or cancelled), it edits the message instead of sending a new one: the text stays as it was, the buttons go, and the last block is a highlighted line that says what happened, with which answer, and when. The line is a quote in a plain message and marked text in a rich message. Its parts, separated by `·`:
 
 | Part | Content |
 | --- | --- |
@@ -243,6 +244,39 @@ Send a photo or a file as a reply to a bot message about a task, or inside the t
 
 Sent on its own, a file with a caption offers "Create a task from this?" with the caption as the text, and the file is attached once the task exists. Without a caption the bot asks for one, or for a reply to a task message. Each photo or file of an album is handled by itself.
 
+### Voice notes
+
+Send a voice note instead of typing. The bot turns it into text on this machine with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (the `small` model, on the CPU), shows you the text it heard and uses it only after you confirm. The audio never leaves the machine and no API key is involved.
+
+Where you send the note decides what happens, as for typed text:
+
+- **In General** (or anywhere the bot would offer a task for typed text): the bot replies `Transcribing…` and then edits that reply into the task offer: `Heard:`, the text in a quote, then `Create a task from this?` with the usual buttons. The task is created from the text.
+- **In a task topic, or as a reply to a bot message**: the reply becomes **Heard**, the text in a quote, and the buttons **Send** (green) and **Cancel** (red). **Send** handles the text exactly as if you had typed it there: a reply to a card's text question answers it, a reply to a decline prompt is the reason, a reply to a note prompt of a stalled review is the note, and anything else is a comment on the task. If Paperclip refuses it, the buttons stay and you can tap **Send** again. **Cancel** does nothing else.
+
+A settled message keeps the text and ends with the outcome line `Sent`, `Cancelled` or `Expired` (see [Settled messages](#settled-messages)); a transcript that waited 24 hours expires. The comment or answer is the text only, with no marker. A long text is folded in an expandable quote; if the message would pass Telegram's length limit the shown text is cut with `…`, and **Send** still uses all of it. The text is HTML-escaped.
+
+A note without speech gets `No speech heard.`, and one that could not be transcribed (or took more than four times its length, at least a minute) gets `Could not transcribe this voice note.`; the log tells why, but never holds the text. A note longer than `voice.maxSeconds` is refused with `Voice notes can be up to 5 minutes long.` without being downloaded. The `Transcribing…` job is saved in the state file, so a restart picks it up again. Notes are transcribed one at a time, apart from the rest of the bot, so buttons keep working meanwhile. All these messages are silent.
+
+Setup, once:
+
+```bash
+scripts/install-voice.sh
+```
+
+The script is safe to run again. It creates a Python virtual environment in `${XDG_DATA_HOME:-~/.local/share}/paperclip-telegram/voice` with `faster-whisper==1.2.1` and `av>=15,<16` (PyAV 16 and later break that faster-whisper), downloads the `small` model into its `models` folder (plan for about 1 GB of disk for the environment and the model together), and prints the `voice` block for the config. It needs `python3` with the `venv` module (`python3-venv` on Debian and Ubuntu) and a network connection for the one-time download. Add the block to the config and restart the service.
+
+| `voice` key | Meaning |
+| --- | --- |
+| `python` | The Python of the virtual environment (`<venv>/bin/python`). `~/` is expanded. |
+| `modelsDir` | The folder the model was downloaded to (`<venv>/models`). |
+| `model` | Optional, default `small`. The installer only fetches `small`. |
+| `language` | Optional, default `null`: the language is detected for every note. A code such as `"en"` fixes it. |
+| `beamSize` | Optional, default `1` (fastest). |
+| `threads` | Optional, default `4`. CPU threads for one transcription. |
+| `maxSeconds` | Optional, default `300`. The longest note that is accepted. |
+
+The bot starts `scripts/transcribe.py` with `nice -n 10`, without a shell, for each note: the audio goes into a private temporary folder that is removed afterwards, the helper is killed when it runs too long or the bot stops, and it never uses the network at run time (`HF_HUB_OFFLINE=1`). You can run it by hand: `<venv>/bin/python scripts/transcribe.py note.ogg --models-dir <venv>/models` prints one JSON line with `text`, `language` and `seconds` (the time the transcription took). How long that is depends on the CPU.
+
 ### Following
 
 Each new comment of a followed task is one message: the agent's name in bold as the kind (and the task, outside its own topic), then the comment as a quote of up to 4000 characters (2000 as a plain message). Your own comments are not sent. Every comment is said once: the bot remembers the last 500 comment ids it showed (in follow messages and in done and in-review quotes; a task view does not count), and a comment in that memory is not sent or quoted again, in the same poll or a later one. The memory is kept across restarts and cleared when `telegramChatId` changes. More than five new comments on one task arrive as one summary line. A task stops being followed when it is done or cancelled. At most 50 tasks are followed; following one more drops the oldest. Tasks you create from Telegram are followed by default (the **Follow new tasks** setting), and so are tasks that have a topic. The **Followed comments** setting decides whether their comments are sent.
@@ -264,6 +298,7 @@ A private chat gets no mention.
 | --- | --- |
 | `/new [@agent] [#project] <text>` | Creates a task. The first line is the title (100 characters at most), the whole text is the description. `@agent` is an agent's URL key or name without spaces; `#project` is a project's URL key or name. The default is the lead agent and `newTaskProjectId`. Without `#project` (and without a default project) it first asks which project. An unknown name gets a reply that lists the valid ones, and nothing is created. Sending the same message twice does not create a second task. |
 | plain text | Offers "Create a task from this?" with **For \<lead>**, **Other agent** and **Cancel**, then asks for the project. An offer expires after 24 hours. In a task topic, plain text is a comment instead. |
+| voice note | Turns it into text on this machine and shows it before it is used: an offer for a new task in General, **Send** and **Cancel** in a task topic or as a reply. See [Voice notes](#voice-notes). |
 | photo or file | Attaches it to the task of the message it replies to, or of the topic it is written in. With a caption and no task it offers a new task. See [Photos and files](#photos-and-files). |
 | `/task <ID>` | Opens a task. In a task topic, without an ID, it opens that topic's task. |
 | `/tasks` | Lists open tasks. |
@@ -279,7 +314,7 @@ The same commands are in the Telegram menu. The bot also sets its profile text (
 
 ### Replies
 
-Reply to any message the bot sent about a task (including the task view and inbox items) and your text becomes a comment on that task. With topics on, the bot reacts to your message with a thumbs-up; otherwise it answers `Comment posted · ID`. A reply to a card with an open text question answers the question instead, a reply to a decline prompt is the decline reason, and a reply to the note prompt of a stalled review is its note. The bot remembers the last 2000 messages; for an older or unrelated message it answers "I don't know which task this is". A photo or file as a reply is attached to the task (see [Photos and files](#photos-and-files)); other message types are not supported.
+Reply to any message the bot sent about a task (including the task view and inbox items) and your text becomes a comment on that task. With topics on, the bot reacts to your message with a thumbs-up; otherwise it answers `Comment posted · ID`. A reply to a card with an open text question answers the question instead, a reply to a decline prompt is the decline reason, and a reply to the note prompt of a stalled review is its note. The bot remembers the last 2000 messages; for an older or unrelated message it answers "I don't know which task this is". A photo or file as a reply is attached to the task (see [Photos and files](#photos-and-files)); a voice note as a reply is turned into text first and used after you tap **Send** (see [Voice notes](#voice-notes)); other message types are not supported.
 
 ## Group with topics
 
@@ -345,6 +380,7 @@ Deleting needs the **Delete messages** right. Without it the bot keeps the topic
 - Token files must be regular files with mode 600 (or stricter). Tokens are never logged; URLs and errors are wrapped so they cannot leak one.
 - Paperclip requests use the board key as a bearer token and carry no run id, so your replies and task changes are recorded as yours.
 - The download address of a Telegram file contains the bot token, so it is never logged, shown or put in an error message.
+- Voice notes are transcribed on this machine. The audio is written to a private temporary folder (mode 700) that is removed afterwards, and the helper reads the model from disk and does not use the network. The log holds the length, language and time of a transcription, never the text.
 
 ## Development
 
@@ -352,4 +388,4 @@ Deleting needs the **Delete messages** right. Without it the bot keeps the topic
 npm test
 ```
 
-The tests run the real bot against fake Telegram and Paperclip servers on random local ports; nothing leaves the machine. `npm start` runs the bot in the foreground with the same config and token files.
+The tests run the real bot against fake Telegram and Paperclip servers on random local ports; nothing leaves the machine. Voice notes are tested with a small Node script (`test/fakes/transcriber.mjs`) that stands in for `scripts/transcribe.py`, so no model is needed. `npm start` runs the bot in the foreground with the same config and token files.

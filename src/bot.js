@@ -9,6 +9,8 @@ import { RICH_LIMIT, hasRichMention } from './rich.js';
 import { TelegramClient, TelegramError, defaultSleep } from './telegram.js';
 import { DELETE_RIGHT_WARNING, dropTopic, topicTarget } from './topics.js';
 import { COMMENT_REACTION, isServiceMessage, threadGone } from './thread.js';
+import { Transcriber } from './transcribe.js';
+import { resumeVoice } from './voice.js';
 
 export const LONG_POLL_SECONDS = 50;
 const AGENT_CACHE_MS = 10 * 60 * 1000;
@@ -42,7 +44,7 @@ export function backoffMs(failures, baseMs) {
 }
 
 export class Bot {
-  constructor({ config, tokens, state, log, fetchImpl, sleep = defaultSleep, now = Date.now, longPollSeconds = LONG_POLL_SECONDS, confirmMs = CONFIRM_MS }) {
+  constructor({ config, tokens, state, log, fetchImpl, sleep = defaultSleep, now = Date.now, longPollSeconds = LONG_POLL_SECONDS, confirmMs = CONFIRM_MS, voiceTimeoutMs }) {
     this.config = config;
     this.state = state;
     this.log = log;
@@ -52,6 +54,9 @@ export class Bot {
     this.tg = new TelegramClient({ baseUrl: config.telegramApiUrl, token: tokens.telegram, fetchImpl, sleep });
     this.pc = new PaperclipClient({ baseUrl: config.paperclipUrl, token: tokens.paperclip, fetchImpl });
     this.queue = new SerialQueue();
+    // Voice notes are transcribed one at a time, outside `queue`, so a long job never holds up buttons or the poll.
+    this.voiceQueue = new SerialQueue();
+    this.transcriber = config.voice ? new Transcriber(config.voice, { timeoutMs: voiceTimeoutMs }) : null;
     this.abort = new AbortController();
     this.stopped = false;
     this.commandsRegistered = false;
@@ -439,13 +444,16 @@ export class Bot {
   }
 
   async run() {
+    resumeVoice(this);
     await Promise.all([this.#telegramLoop(), this.#paperclipLoop()]);
+    await this.voiceQueue.idle();
     await this.queue.idle();
     this.state.save();
   }
 
   stop() {
     this.stopped = true;
+    this.transcriber?.stop();
     this.abort.abort();
     for (const entry of this.armed.values()) clearTimeout(entry.timer);
     this.armed.clear();

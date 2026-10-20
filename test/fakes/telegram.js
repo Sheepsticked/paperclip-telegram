@@ -750,7 +750,8 @@ export async function startFakeTelegram({
     addFile({ name = 'notes.txt', data = 'file content', size, kind = 'document' } = {}) {
       const bytes = Buffer.from(data);
       const id = `file-${nextFileNumber}`;
-      const entry = { id, name, data: bytes, size: size ?? bytes.length, path: `${kind === 'photo' ? 'photos' : 'documents'}/file_${nextFileNumber}${name.includes('.') ? name.slice(name.lastIndexOf('.')) : ''}` };
+      const folder = { photo: 'photos', voice: 'voice' }[kind] ?? 'documents';
+      const entry = { id, name, data: bytes, size: size ?? bytes.length, path: `${folder}/file_${nextFileNumber}${name.includes('.') ? name.slice(name.lastIndexOf('.')) : ''}` };
       nextFileNumber += 1;
       files.set(id, entry);
       return entry;
@@ -765,6 +766,11 @@ export async function startFakeTelegram({
         ],
         ...(caption ? { caption } : {}),
       };
+      return api.message(undefined, { ...options, extra });
+    },
+    // A voice note the owner sends; `duration` is the length Telegram reports, in seconds.
+    voiceUpdate(file, { duration = 5, ...options } = {}) {
+      const extra = { voice: { file_id: file.id, file_unique_id: `unique-${file.id}`, duration, mime_type: 'audio/ogg', file_size: file.size } };
       return api.message(undefined, { ...options, extra });
     },
     documentUpdate(file, { caption, mime = 'text/plain', ...options } = {}) {

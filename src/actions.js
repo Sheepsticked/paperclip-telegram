@@ -196,24 +196,26 @@ export async function reportFailure(bot, err, msg) {
   return failure;
 }
 
+// Both reply handlers say whether the owner's text was used.
 export async function handleReasonReply(bot, card, msg) {
   if (card.status !== 'pending') {
     await bot.send('This card was already answered or closed.', where(bot, msg));
-    return;
+    return false;
   }
   const reason = msg.text.trim();
   if (reason.length > MAX_REASON_LENGTH) {
     await bot.send(`The reason is too long (max ${MAX_REASON_LENGTH} characters).`, where(bot, msg));
-    return;
+    return false;
   }
   try {
     await bot.pc.reject(card.issueId, card.interactionId, { reason });
   } catch (err) {
     const failure = await reportFailure(bot, err, msg);
     if (failure.kind === 'closed') await syncClosed(bot, card);
-    return;
+    return false;
   }
   await closeCard(bot, card, declinedOutcome(card, reason, bot.now()));
+  return true;
 }
 
 export async function handleTextAnswer(bot, card, msg) {
@@ -221,7 +223,7 @@ export async function handleTextAnswer(bot, card, msg) {
   if (!isInstantForm(card)) {
     bot.state.save();
     await editCardMessage(bot, card);
-    return;
+    return true;
   }
   const result = formRespondBody(card);
   try {
@@ -230,7 +232,8 @@ export async function handleTextAnswer(bot, card, msg) {
     card.answers[index].text = null;
     const failure = await reportFailure(bot, err, msg);
     if (failure.kind === 'closed') await syncClosed(bot, card);
-    return;
+    return false;
   }
   await closeCard(bot, card, answeredOutcome(card, bot.now()));
+  return true;
 }
