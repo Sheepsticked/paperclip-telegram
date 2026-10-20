@@ -34,6 +34,8 @@ class HttpError extends Error {
 
 // A stand-in for the Paperclip API: in-memory data, the real routes' response shapes and error codes.
 export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyId = 'company-1', prefix = 'TST' } = {}) {
+  // The models each adapter type lists, `[{ id, label }]`; a type that is not here lists none.
+  const models = {};
   const agents = [
     { id: 'agent-1', companyId, name: 'Dev', role: 'engineer', title: null, status: 'idle', urlKey: 'dev', pauseReason: null, pausedAt: null, lastHeartbeatAt: null },
     { id: 'agent-lead', companyId, name: 'Lead', role: 'ceo', title: null, status: 'idle', urlKey: 'lead', pauseReason: null, pausedAt: null, lastHeartbeatAt: null },
@@ -391,7 +393,15 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
   route('PATCH', '/api/issues/:id', ({ params, body }) => {
     const issue = getIssue(params.id);
     const allowed = ['status', 'assigneeAgentId', 'assigneeUserId', 'projectId', 'title', 'description', 'priority'];
-    if (Object.keys(body).some((k) => !allowed.includes(k))) throw new HttpError(400, 'Validation error');
+    if (Object.keys(body).some((k) => ![...allowed, 'assigneeAdapterOverrides'].includes(k))) throw new HttpError(400, 'Validation error');
+    // Null, or an object with only adapterConfig (an object) and useProjectWorkspace (a boolean), as the server's schema says.
+    const overrides = body.assigneeAdapterOverrides;
+    if (overrides !== undefined && overrides !== null) {
+      const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+      if (!object(overrides) || Object.keys(overrides).some((k) => !['adapterConfig', 'useProjectWorkspace'].includes(k))) throw new HttpError(400, 'Validation error');
+      if (overrides.adapterConfig !== undefined && !object(overrides.adapterConfig)) throw new HttpError(400, 'Validation error');
+      if (overrides.useProjectWorkspace !== undefined && typeof overrides.useProjectWorkspace !== 'boolean') throw new HttpError(400, 'Validation error');
+    }
     if (body.status !== undefined && !STATUSES.includes(body.status)) throw new HttpError(400, 'Validation error');
     if (body.projectId != null && !UUID.test(body.projectId) && !projects.some((p) => p.id === body.projectId)) throw new HttpError(400, 'Validation error');
     if (body.assigneeAgentId != null) {
@@ -409,6 +419,10 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
         changes[key] = body[key];
         issue[key] = body[key];
       }
+    }
+    if (body.assigneeAdapterOverrides !== undefined) {
+      changes.assigneeAdapterOverrides = body.assigneeAdapterOverrides;
+      issue.assigneeAdapterOverrides = body.assigneeAdapterOverrides;
     }
     if (nextAgent !== issue.assigneeAgentId) changes.assigneeAgentId = nextAgent;
     if (nextUser !== issue.assigneeUserId) changes.assigneeUserId = nextUser;
@@ -583,6 +597,20 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
 
   route('GET', '/api/agents/:id', ({ params }) => agentRow(params.id));
 
+  // Only adapterConfig is accepted. Its keys are merged into the saved ones, as the server does without
+  // `replaceAdapterConfig` (which this fake refuses: the bot never replaces a config).
+  route('PATCH', '/api/agents/:id', ({ params, body }) => {
+    const agent = agentRow(params.id);
+    if (Object.keys(body).some((k) => k !== 'adapterConfig')) throw new HttpError(400, 'Validation error');
+    const config = body.adapterConfig;
+    if (config === null || typeof config !== 'object' || Array.isArray(config)) throw new HttpError(422, 'adapterConfig must be an object');
+    agent.adapterConfig = { ...agent.adapterConfig, ...config };
+    agent.updatedAt = tick();
+    return agent;
+  });
+
+  route('GET', '/api/companies/:cid/adapters/:type/models', ({ params }) => models[params.type] ?? []);
+
   // Pausing also cancels the agent's active runs.
   route('POST', '/api/agents/:id/pause', ({ params }) => {
     const agent = agentRow(params.id);
@@ -709,6 +737,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
     companyId,
     prefix,
     agents,
+    models,
     requests,
     issues,
     interactions,
@@ -733,7 +762,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
       failures.push({ method, pattern, status, times, message });
     },
     clearFailures: () => failures.splice(0),
-    addIssue({ title, description = null, status = 'todo', assigneeAgentId = null, assigneeUserId = null, projectId = null, parentId = null, createdAt, updatedAt } = {}) {
+    addIssue({ title, description = null, status = 'todo', assigneeAgentId = null, assigneeUserId = null, projectId = null, parentId = null, assigneeAdapterOverrides = null, createdAt, updatedAt } = {}) {
       issueNumber += 1;
       const now = tick();
       const issue = {
@@ -747,6 +776,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
         priority: 'medium',
         assigneeAgentId,
         assigneeUserId,
+        assigneeAdapterOverrides,
         executionRunId: null,
         executionAgentNameKey: null,
         executionLockedAt: null,
@@ -812,8 +842,10 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
       projects.push(project);
       return project;
     },
-    addAgent({ name, role = 'engineer', title = null, status = 'idle', pauseReason = null } = {}) {
+    // An agent without `adapterType` has no adapter at all, so the bot offers no model controls for it.
+    addAgent({ name, role = 'engineer', title = null, status = 'idle', pauseReason = null, adapterType, adapterConfig } = {}) {
       const agent = { id: `agent-${agents.length + 1}`, companyId, name, role, title, status, urlKey: name.toLowerCase().replace(/\W+/g, '-'), pauseReason, pausedAt: pauseReason ? tick() : null, lastHeartbeatAt: null };
+      if (adapterType !== undefined) Object.assign(agent, { adapterType, adapterConfig: adapterConfig ?? {} });
       agents.push(agent);
       return agent;
     },

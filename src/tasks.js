@@ -1,7 +1,21 @@
+import { isDeepStrictEqual } from 'node:util';
 import { authorName } from './comments.js';
 import { docsKeyboard, sendDocument } from './docs.js';
 import { followIssue, unfollowIssue } from './follow.js';
-import { ago, button, escapeHtml, fitMessage, headline, issueUrl, link, quote, statusName, truncate } from './format.js';
+import { ago, button, choiceButton, escapeHtml, fitMessage, headline, issueUrl, link, quote, statusName, truncate } from './format.js';
+import {
+  modelHash,
+  modelLabel,
+  modelRows,
+  overrideSettings,
+  overrideWithModel,
+  overrideWithReasoning,
+  overrideWithoutModel,
+  readModel,
+  reasoningLabel,
+  reasoningRows,
+  reasoningValues,
+} from './models.js';
 import { PaperclipError } from './paperclip.js';
 import { ID_PREFIX, byPrefix } from './pick.js';
 import { RICH_LIMIT, RICH_QUOTE_MAX, escapeRich, richBody, richJoin } from './rich.js';
@@ -11,6 +25,7 @@ export { ID_PREFIX, byPrefix };
 
 const COMMENT_SCAN = 3;
 const CONFIRM_LABEL = 'Tap again to confirm';
+const STALE_LIST = 'List changed, try again';
 const HIGH_PRIORITIES = new Set(['high', 'critical']);
 const PICKER_PAGE = 8;
 const PICKER_AGENT_LIMIT = 40;
@@ -62,7 +77,19 @@ export async function loadTask(bot, ref) {
   if (issue.assigneeAgentId) assignee = (await bot.agentName(issue.assigneeAgentId)) ?? 'An agent';
   else if (issue.assigneeUserId) assignee = 'You';
   const running = issue.executionRunId ? await runningAgentName(bot, issue.executionAgentNameKey) : null;
-  return { issue, comment, author, assignee, running, project: issue.project?.name ?? null };
+  return { issue, comment, author, assignee, running, project: issue.project?.name ?? null, modelLine: await overrideLine(bot, issue) };
+}
+
+// "Model: Claude Sonnet 5.5 · High" for what the task's own override sets; null when it sets neither.
+async function overrideLine(bot, issue) {
+  const { model, reasoning } = overrideSettings(issue.assigneeAdapterOverrides);
+  if (!model && !reasoning) return null;
+  let name = 'Agent default';
+  if (model) {
+    const agent = issue.assigneeAgentId ? (await bot.agentRecords()).find((entry) => entry.id === issue.assigneeAgentId) : null;
+    name = modelLabel(await bot.models.list(agent?.adapterType), model);
+  }
+  return `Model: ${truncate(name, 60)}${reasoning ? ` · ${reasoningLabel(reasoning)}` : ''}`;
 }
 
 // The agent holding the run: the server reports its lower-cased name, matched here to an agent's name or URL key.
@@ -95,6 +122,7 @@ function composeTask(view, { note, own, now, uiBaseUrl }, level, rich = false) {
   const lines = [`<b>${link(url, issue.identifier, esc)}</b>${title}`];
   if (note) lines.push(esc(note));
   lines.push(statusLine(view, now, esc));
+  if (view.modelLine) lines.push(esc(view.modelLine));
   const description = String(issue.description ?? '').trim();
   if (description && level.description > 0) {
     lines.push(rich ? richBody(description, level.description, { uiBaseUrl, fullUrl: url }) : `<blockquote>${escapeHtml(truncate(description, level.description))}</blockquote>`);
@@ -109,8 +137,9 @@ function composeTask(view, { note, own, now, uiBaseUrl }, level, rich = false) {
 // True when the view shows Paperclip Markdown: a description or, outside the task's own topic, a comment.
 const hasMarkdown = (view, own) => Boolean(String(view.issue.description ?? '').trim() || (!own && view.comment?.body?.trim()));
 
-// First keyboard: one row. `more` shows the second one with the rarer actions.
-export function taskKeyboard(issue, { following, armed, own = false, more = false }) {
+// First keyboard: one row. `more` shows the second one with the rarer actions; `model` (see modelControls) adds the
+// buttons that set the model and reasoning level of this task.
+export function taskKeyboard(issue, { following, armed, own = false, more = false, model = null }) {
   const id = issue.id;
   const confirmable = (op, label, style) => button(armed.has(op) ? CONFIRM_LABEL : label, `T:${op}:${id}`, style);
   const finished = issue.status === 'done' || issue.status === 'cancelled';
@@ -126,8 +155,12 @@ export function taskKeyboard(issue, { following, armed, own = false, more = fals
   const others = [];
   if (issue.documentSummaries?.length > 0) others.push(button('Docs', `T:l:${id}`));
   if (!own) others.push(button(following ? 'Unfollow' : 'Follow', `T:f:${id}`));
+  const choices = [];
+  if (model?.models) choices.push(button('Model', `T:o:${id}:${model.prefix}`));
+  if (model?.reasoning) choices.push(button('Reasoning', `T:e:${id}:${model.prefix}`));
   const rows = [
     [button('Assign', `T:a:${id}`), button('Project', `T:p:${id}:0`)],
+    choices,
     moves,
     others,
     own ? [] : [button('Comment', `T:c:${id}`)],
@@ -137,11 +170,11 @@ export function taskKeyboard(issue, { following, armed, own = false, more = fals
 }
 
 // `rich` is the same view as Markdown, and `hasMarkdown` says whether it has Paperclip Markdown to show.
-export function renderTask(bot, view, { note = null, own = false, armed = new Set(), more = false } = {}) {
+export function renderTask(bot, view, { note = null, own = false, armed = new Set(), more = false, model = null } = {}) {
   const context = { note, own, now: bot.now(), uiBaseUrl: bot.config.uiBaseUrl };
   const text = fitMessage((level) => composeTask(view, context, level), LEVELS);
   const rich = fitMessage((level) => composeTask(view, context, level, true), RICH_LEVELS, RICH_LIMIT);
-  const keyboard = taskKeyboard(view.issue, { following: bot.state.isFollowing(view.issue.id), armed, own, more });
+  const keyboard = taskKeyboard(view.issue, { following: bot.state.isFollowing(view.issue.id), armed, own, more, model });
   return { text, rich, hasMarkdown: hasMarkdown(view, own), keyboard };
 }
 
@@ -161,7 +194,8 @@ export async function sendTaskView(bot, ref, options = {}) {
 async function showTask(bot, message, ref, view, { more = false } = {}) {
   const current = view ?? (await loadTask(bot, ref));
   const own = ownTopic(bot, current.issue.id, threadOf(bot, message));
-  const { text, rich, keyboard } = renderTask(bot, current, { own, armed: bot.armedOps(message.message_id), more });
+  const model = more ? await modelControls(bot, current.issue) : null;
+  const { text, rich, keyboard } = renderTask(bot, current, { own, armed: bot.armedOps(message.message_id), more, model });
   await bot.edit(message.message_id, text, keyboard, rich);
 }
 
@@ -219,7 +253,8 @@ async function openMore(bot, cq, issueId) {
   const issue = await bot.pc.getIssue(issueId);
   const own = ownTopic(bot, issue.id, threadOf(bot, cq.message));
   bot.disarm(cq.message.message_id);
-  const keyboard = taskKeyboard(issue, { following: bot.state.isFollowing(issue.id), armed: new Set(), own, more: true });
+  const model = await modelControls(bot, issue);
+  const keyboard = taskKeyboard(issue, { following: bot.state.isFollowing(issue.id), armed: new Set(), own, more: true, model });
   await bot.editKeyboard(cq.message.message_id, keyboard);
   return bot.answer(cq.id);
 }
@@ -236,6 +271,101 @@ async function openDocs(bot, cq, issueId) {
   return bot.answer(cq.id);
 }
 
+// Which of the Model and Reasoning buttons the assignee's adapter offers, from the cached agent list; the
+// buttons carry the start of the agent's id so a tap after a reassign is noticed.
+async function modelControls(bot, issue) {
+  const agent = issue.assigneeAgentId ? (await bot.agentRecords()).find((entry) => entry.id === issue.assigneeAgentId) : null;
+  if (!agent?.adapterType) return null;
+  const models = (await bot.models.list(agent.adapterType)).length > 0;
+  const model = overrideSettings(issue.assigneeAdapterOverrides).model || readModel(agent.adapterConfig);
+  const reasoning = reasoningValues(agent.adapterType, model).length > 0;
+  return models || reasoning ? { prefix: agent.id.slice(0, ID_PREFIX), models, reasoning } : null;
+}
+
+// The task's assignee while it is still the agent a picker button was made for.
+async function overrideTarget(bot, issueId, prefix) {
+  const issue = await bot.pc.getIssue(issueId);
+  const id = issue.assigneeAgentId;
+  return { issue, agent: id?.startsWith(prefix) ? await bot.pc.getAgent(id) : null };
+}
+
+// Puts the task view back, with a note for the tap.
+async function redrawTask(bot, cq, issueId, note) {
+  bot.disarm(cq.message.message_id);
+  await showTask(bot, cq.message, issueId);
+  return bot.answer(cq.id, note);
+}
+
+async function saveOverride(bot, issue, next) {
+  if (!isDeepStrictEqual(next, issue.assigneeAdapterOverrides ?? null)) await bot.pc.updateIssue(issue.id, { assigneeAdapterOverrides: next });
+}
+
+async function openModelPicker(bot, cq, issueId, prefix, pageArg) {
+  const { issue, agent } = await overrideTarget(bot, issueId, prefix);
+  if (!agent) return redrawTask(bot, cq, issueId, STALE_LIST);
+  const models = await bot.models.list(agent.adapterType);
+  if (models.length === 0) return redrawTask(bot, cq, issueId, 'No models to choose from');
+  const { model } = overrideSettings(issue.assigneeAdapterOverrides);
+  const rows = [
+    [choiceButton('Agent default', !model, `T:O:${issueId}:${prefix}:-`)],
+    ...modelRows({
+      models,
+      current: model,
+      page: pageArg === undefined ? undefined : Number(pageArg) || 0,
+      pick: (index, id) => `T:O:${issueId}:${prefix}:${index}:${modelHash(id)}`,
+      turn: (page) => `T:o:${issueId}:${prefix}:${page}`,
+    }),
+    [button('◀ Back', `T:b:${issueId}`)],
+  ];
+  bot.disarm(cq.message.message_id);
+  await bot.editKeyboard(cq.message.message_id, rows);
+  return bot.answer(cq.id);
+}
+
+// '-' is Agent default; any other pick must still be the same model at the same place in the fresh list.
+async function setOverrideModel(bot, cq, issueId, prefix, index, hash) {
+  const { issue, agent } = await overrideTarget(bot, issueId, prefix);
+  if (!agent) return redrawTask(bot, cq, issueId, STALE_LIST);
+  const current = issue.assigneeAdapterOverrides;
+  let next = overrideWithoutModel(current);
+  let label = 'Agent default';
+  if (index !== '-') {
+    const models = await bot.models.list(agent.adapterType, { fresh: true });
+    const model = /^\d+$/.test(index ?? '') ? models[Number(index)] : undefined;
+    if (!model || modelHash(model.id) !== hash) return redrawTask(bot, cq, issueId, STALE_LIST);
+    next = overrideWithModel(agent.adapterType, current, agent.adapterConfig, model.id);
+    label = model.label;
+  }
+  await saveOverride(bot, issue, next);
+  return redrawTask(bot, cq, issueId, `Model: ${label}`);
+}
+
+// The reasoning levels of the model the task will run with: the override's, else the agent's.
+const taskReasoningValues = (agent, override) => reasoningValues(agent.adapterType, overrideSettings(override).model || readModel(agent.adapterConfig));
+
+async function openReasoningPicker(bot, cq, issueId, prefix) {
+  const { issue, agent } = await overrideTarget(bot, issueId, prefix);
+  if (!agent) return redrawTask(bot, cq, issueId, STALE_LIST);
+  const override = issue.assigneeAdapterOverrides;
+  const values = taskReasoningValues(agent, override);
+  if (values.length === 0) return redrawTask(bot, cq, issueId, 'No reasoning levels for this model');
+  const rows = reasoningRows({ values, current: overrideSettings(override).reasoning, pick: (value) => `T:E:${issueId}:${prefix}:${value || '-'}` });
+  rows.push([button('◀ Back', `T:b:${issueId}`)]);
+  bot.disarm(cq.message.message_id);
+  await bot.editKeyboard(cq.message.message_id, rows);
+  return bot.answer(cq.id);
+}
+
+async function setOverrideReasoning(bot, cq, issueId, prefix, valueArg) {
+  const { issue, agent } = await overrideTarget(bot, issueId, prefix);
+  if (!agent) return redrawTask(bot, cq, issueId, STALE_LIST);
+  const value = valueArg === '-' ? '' : (valueArg ?? '');
+  const values = taskReasoningValues(agent, issue.assigneeAdapterOverrides);
+  if (values.length === 0 || (value && !values.includes(value))) return redrawTask(bot, cq, issueId, STALE_LIST);
+  await saveOverride(bot, issue, overrideWithReasoning(agent.adapterType, issue.assigneeAdapterOverrides, agent.adapterConfig, value));
+  return redrawTask(bot, cq, issueId, `Reasoning: ${value ? reasoningLabel(value) : 'Default'}`);
+}
+
 export function assignableAgents(agents) {
   return agents.filter((agent) => !UNASSIGNABLE.has(agent.status)).sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -250,10 +380,18 @@ async function openAgentPicker(bot, cq, issueId) {
 }
 
 async function assign(bot, cq, issueId, prefix) {
-  const agent = byPrefix(assignableAgents(await bot.agentRecords({ fresh: true })), prefix);
+  const agents = await bot.agentRecords({ fresh: true });
+  const agent = byPrefix(assignableAgents(agents), prefix);
   if (!agent) return bot.answer(cq.id, 'Agent not found', true);
   // The server allows one assignee, so a user assignee is cleared together with the new agent.
-  await bot.pc.updateIssue(issueId, { assigneeAgentId: agent.id, assigneeUserId: null });
+  const change = { assigneeAgentId: agent.id, assigneeUserId: null };
+  // The server keeps a task's override on reassign, so a model of another adapter type would reach the new agent.
+  const { assigneeAdapterOverrides: override, assigneeAgentId: previous } = await bot.pc.getIssue(issueId);
+  const settings = overrideSettings(override);
+  if ((settings.model || settings.reasoning) && agents.find((entry) => entry.id === previous)?.adapterType !== agent.adapterType) {
+    change.assigneeAdapterOverrides = overrideWithoutModel(override);
+  }
+  await bot.pc.updateIssue(issueId, change);
   bot.disarm(cq.message.message_id);
   await showTask(bot, cq.message, issueId);
   return bot.answer(cq.id, `Assigned to ${agent.name}`);
@@ -323,7 +461,7 @@ async function askForComment(bot, cq, issueId) {
 }
 
 export async function handleTaskCallback(bot, cq) {
-  const [, op, issueId, arg] = String(cq.data).split(':');
+  const [, op, issueId, arg, third, fourth] = String(cq.data).split(':');
   if (!issueId || !cq.message?.message_id) return bot.answer(cq.id, 'Unknown action');
   try {
     if (op === 'v') {
@@ -341,6 +479,10 @@ export async function handleTaskCallback(bot, cq) {
     if (op === 'A') return await assign(bot, cq, issueId, arg ?? '');
     if (op === 'p') return await openProjectPicker(bot, cq, issueId, Number(arg) || 0);
     if (op === 'P') return await setProject(bot, cq, issueId, arg ?? '');
+    if (op === 'o') return await openModelPicker(bot, cq, issueId, arg ?? '', third);
+    if (op === 'O') return await setOverrideModel(bot, cq, issueId, arg ?? '', third, fourth);
+    if (op === 'e') return await openReasoningPicker(bot, cq, issueId, arg ?? '');
+    if (op === 'E') return await setOverrideReasoning(bot, cq, issueId, arg ?? '', third);
     if (op === 'f') return await toggleFollow(bot, cq, issueId);
     if (op === 's') return await stopRun(bot, cq, issueId, arg ?? '');
     if (op === 'l') return await openDocs(bot, cq, issueId);

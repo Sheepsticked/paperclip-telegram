@@ -27,6 +27,7 @@ const HELP_COMMANDS = [
   '/help — this list',
   '',
   'Send plain text to create a task from it.',
+  'Model and Reasoning buttons set what an agent runs with: in an agent view for the agent, under More on a task for that task only.',
 ];
 
 function helpText(bot) {

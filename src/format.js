@@ -33,6 +33,11 @@ export function button(label, data, style) {
   return { text: truncate(label, BUTTON_LABEL_MAX), callback_data: data, ...(style ? { style } : {}) };
 }
 
+// A choice button: the plain label, or a blue one with a check mark when selected.
+export function choiceButton(label, on, data) {
+  return on ? button(`✓ ${label}`, data, 'primary') : button(label, data);
+}
+
 // The extra button on messages about one task; it sends the task view.
 export function taskButton(issueId) {
   return button('Open task', `T:v:${issueId}`);

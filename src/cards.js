@@ -1,4 +1,4 @@
-import { ALERT_LIMIT, button, cardUrl, escapeHtml, headline, openRows, truncate } from './format.js';
+import { ALERT_LIMIT, button, cardUrl, choiceButton, escapeHtml, headline, openRows, truncate } from './format.js';
 import { fitSettled, makeOutcome, outcomeBlock } from './outcome.js';
 import { RICH_ALERT_LIMIT, escapeRich, richBody, richJoin, richText } from './rich.js';
 
@@ -210,11 +210,6 @@ function composeText(card, uiBaseUrl, level, rich = false) {
 
 // True when the card has a prompt, details or a tool preview, which are Paperclip Markdown.
 const hasMarkdown = (card) => Boolean(card.prompt || card.details || card.toolAction?.preview);
-
-// A choice button: the plain label, or a blue one with a check mark when selected.
-function choiceButton(label, on, data) {
-  return on ? button(`✓ ${label}`, data, 'primary') : button(label, data);
-}
 
 function answerRows(card) {
   const k = card.key;

@@ -2,6 +2,7 @@ import { routeCallback } from './callbacks.js';
 import { handleMessage } from './commands.js';
 import { MESSAGE_LIMIT, truncate, withMention } from './format.js';
 import { isRichFault, warnHourly } from './guard.js';
+import { ModelCache } from './models.js';
 import { pollPaperclip } from './notifications.js';
 import { PaperclipClient, PaperclipError } from './paperclip.js';
 import { SerialQueue } from './queue.js';
@@ -53,6 +54,7 @@ export class Bot {
     this.longPollSeconds = longPollSeconds;
     this.tg = new TelegramClient({ baseUrl: config.telegramApiUrl, token: tokens.telegram, fetchImpl, sleep });
     this.pc = new PaperclipClient({ baseUrl: config.paperclipUrl, token: tokens.paperclip, fetchImpl });
+    this.models = new ModelCache({ pc: this.pc, companyId: config.companyId, now: () => this.now(), log });
     this.queue = new SerialQueue();
     // Voice notes are transcribed one at a time, outside `queue`, so a long job never holds up buttons or the poll.
     this.voiceQueue = new SerialQueue();

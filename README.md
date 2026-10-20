@@ -190,7 +190,7 @@ On the very first start the bot sends the cards and inbox items that are waiting
 
 ### Task view
 
-`/task <ID>` (for example `/task ABC-12`, any case; `/task 12` uses the company prefix seen most) sends the task. Line 1 is the id (linked to Paperclip) and the title. Line 2 is the status, the assignee (with `running` while a run is active), the project, when it was last updated, and `high priority` or `critical priority` when it is one of those. Then come the description (300 characters) and, in the main chat only, the last comment (200 characters) as a preview; a followed task still sends that comment in full. In the task's own topic the view has no comments, because the topic already holds them. The message is edited in place after every action.
+`/task <ID>` (for example `/task ABC-12`, any case; `/task 12` uses the company prefix seen most) sends the task. Line 1 is the id (linked to Paperclip) and the title. Line 2 is the status, the assignee (with `running` while a run is active), the project, when it was last updated, and `high priority` or `critical priority` when it is one of those. A line `Model: <model> · <reasoning level>` follows when the task has its own model or level (see **Model** below). Then come the description (300 characters) and, in the main chat only, the last comment (200 characters) as a preview; a followed task still sends that comment in full. In the task's own topic the view has no comments, because the topic already holds them. The message is edited in place after every action.
 
 The first row has **Done** (green, needs a second tap within 30 seconds) and **More**. While the task has an active run, **Stop run** (red, also two taps; it cancels that run) comes before **More**. A done or cancelled task has **Reopen** (blue, sets the status to to do) instead of **Done**.
 
@@ -200,6 +200,7 @@ The first row has **Done** (green, needs a second tap within 30 seconds) and **M
 | --- | --- |
 | Assign | Shows the agents; tap one to assign the task to it. |
 | Project | Shows the projects (8 per page) and "No project". |
+| Model, Reasoning | Shown when the assignee is an agent whose adapter lists models (**Model**) or has reasoning levels (**Reasoning**). They pick the model and level for this task only, from the same lists as the agent view, with **Agent default** (**Default** for the level) to go back to the agent's own. Assigning the task to an agent of another adapter type removes its model and level. |
 | To do | Sets the status to to do. Only shown when it changes the status. |
 | Cancel task | Cancels the task (red). Needs a second tap within 30 seconds (the label says "Tap again to confirm"). |
 | Docs | Shown when the task has documents. Turns the buttons into a list of the documents (title and key) with **Back**; tapping one sends it as a rich message, split at headings into at most three messages when it is long (with `richMessages: "off"` as plain text in at most three messages). A longer document ends with a link to the full text in Paperclip. Documents are read-only. |
@@ -228,9 +229,11 @@ If Paperclip refuses a change, its error text is shown as an alert and the view 
 | Pause (stops its current run) | Red. Needs a second tap within 30 seconds. Pauses the agent, which stops its current run. |
 | Resume | Resumes a paused agent. |
 | Run now | Starts a run for the agent. |
+| Model · name | Shown when the agent's adapter lists models (`Default` while none is set). Turns the buttons into one per model, two to a row, the current one marked (blue with ✓); a long list is paged. A tap saves at once and returns to the view. |
+| Reasoning · level | Shown when the agent's adapter has reasoning levels for its model (none for Haiku, for example). Offers **Default** and the levels the model allows. A tap saves at once. |
 | Refresh | Reads the agent again. |
 
-The bot cannot terminate agents or change their configuration, budget or team.
+Model and reasoning level are the agent's default for every task; the model list comes from Paperclip for the agent's adapter type, so any adapter that lists models gets **Model**. Picking a model that does not allow the current level clears the level. The bot changes only these two settings (`model` and the adapter's level key) and never the adapter type or the rest of the configuration; it cannot terminate agents or change their budget or team.
 
 ### Projects
 

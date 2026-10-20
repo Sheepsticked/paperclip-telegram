@@ -176,6 +176,16 @@ export class PaperclipClient {
     return this.request('GET', `/api/agents/${agentId}`);
   }
 
+  // Only the given adapterConfig keys change: the server merges them into the saved ones.
+  updateAgentConfig(agentId, adapterConfig) {
+    return this.request('PATCH', `/api/agents/${agentId}`, { body: { adapterConfig } });
+  }
+
+  // [{ id, label }] of the models an adapter type offers.
+  listAdapterModels(companyId, type) {
+    return this.request('GET', `/api/companies/${companyId}/adapters/${encodeURIComponent(type)}/models`);
+  }
+
   pauseAgent(agentId) {
     return this.request('POST', `/api/agents/${agentId}/pause`);
   }
