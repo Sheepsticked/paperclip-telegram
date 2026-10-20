@@ -1,7 +1,7 @@
 import fs from 'node:fs';
-import { markSettled, offerFromVoice, settledText, wasSettled } from './create.js';
+import { markSettled, offerFromVoice, settledPlain, wasSettled } from './create.js';
 import { FILE_LIMIT_BYTES } from './files.js';
-import { TRANSCRIPT_LEVELS, button, escapeHtml, fitMessage, quote, truncate } from './format.js';
+import { TRANSCRIPT_LEVELS, button, escapeHtml, fitMessage, quote } from './format.js';
 import { makeOutcome, outcomeBlock } from './outcome.js';
 import { threadOf, where } from './thread.js';
 import { TranscribeError } from './transcribe.js';
@@ -10,7 +10,6 @@ export const NOT_SET_UP = 'Voice notes are not set up on this machine.';
 const WORKING = 'Transcribing…';
 const NO_SPEECH = 'No speech heard.';
 const FAILED = 'Could not transcribe this voice note.';
-const EXPIRED_TEXT_LEVELS = [3500, 2000, 1000, 500];
 
 // "5 minutes" for a limit in whole minutes, else seconds.
 export function lengthWords(seconds) {
@@ -158,7 +157,7 @@ async function gone(bot, cq) {
   await bot.answer(cq.id, 'This voice note has expired');
   const outcome = makeOutcome('Expired', null, bot.now());
   const shown = typeof message.text === 'string' && message.text.trim() ? message.text.trim() : 'Heard';
-  return bot.edit(message.message_id, fitMessage((max) => settledText(truncate(shown, max), outcome), EXPIRED_TEXT_LEVELS), []);
+  return bot.edit(message.message_id, settledPlain(shown, outcome), []);
 }
 
 // Send and Cancel. `deliver(bot, msg)` handles the text like a typed message and says whether it was used.
@@ -168,14 +167,15 @@ export async function handleVoiceCallback(bot, cq, deliver) {
   const job = bot.state.getVoice(key, bot.now());
   if (!job) return gone(bot, cq);
   if (op === 'x' || op === 's') {
-    // The note is taken before the text goes out, so a failure after Paperclip took it cannot send it twice.
+    // The note is taken and saved before the text goes out, so neither a failure nor a restart after Paperclip took
+    // it can send it twice.
     bot.state.voice.delete(key);
+    bot.state.save();
     if (op === 's' && !(await deliver(bot, typedMessage(job)))) {
       bot.state.voice.set(key, job);
       bot.state.save();
       return bot.answer(cq.id, 'Not sent');
     }
-    bot.state.save();
     markSettled(bot, messageId);
     const outcome = makeOutcome(op === 's' ? 'Sent' : 'Cancelled', null, bot.now());
     await bot.edit(messageId, fitHeard(job.text, outcome), []);

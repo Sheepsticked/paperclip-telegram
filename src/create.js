@@ -225,6 +225,14 @@ export function settledText(prompt, outcome, below = null) {
   return settledHtml(escapeHtml(prompt), outcome, below);
 }
 
+// Budgets for plain message text rebuilt from a tap, tried until the text and its outcome fit the Telegram limit.
+const PLAIN_TEXT_LEVELS = [3500, 2000, 1000, 500];
+
+// A settled message rebuilt from the plain text Telegram sends with a tap, cut so the outcome still fits.
+export function settledPlain(text, outcome) {
+  return fitMessage((max) => settledText(truncate(text, max), outcome), PLAIN_TEXT_LEVELS);
+}
+
 // Builds a message around the text of an offer. An offer made from a voice note shows the transcript, which is cut
 // as far as the Telegram limit asks.
 function withOfferText(offer, message, build) {
@@ -262,7 +270,7 @@ export async function handleOfferCallback(bot, cq) {
     await bot.answer(cq.id, 'This offer has expired');
     // A settled message keeps its outcome.
     if (wasSettled(bot, cq.message?.message_id) || !cq.message?.reply_markup?.inline_keyboard?.length) return undefined;
-    return bot.edit(cq.message.message_id, settledText(promptOf(null, cq.message), makeOutcome('Expired', null, bot.now())), []);
+    return bot.edit(cq.message.message_id, settledPlain(promptOf(null, cq.message), makeOutcome('Expired', null, bot.now())), []);
   }
   const messageId = cq.message.message_id;
   try {

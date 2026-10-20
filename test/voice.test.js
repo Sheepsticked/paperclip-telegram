@@ -209,6 +209,22 @@ test('a lost confirmation of the comment does not make Send post it again', asyn
   assert.equal(posts(w, '/comments').length, 1);
 });
 
+test('Send saves the note as taken before the comment goes out, so a restart cannot send it again', async (t) => {
+  const ctx = await setup(t, { forum: true });
+  const { w, bot } = ctx;
+  const { thread } = await taskWithTopic(w, bot);
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Only once' }, { thread });
+  const post = bot.pc.postComment.bind(bot.pc);
+  let saved = null;
+  bot.pc.postComment = (...args) => {
+    saved = JSON.parse(fs.readFileSync(w.statePath, 'utf8')).voice;
+    return post(...args);
+  };
+  await bot.handleUpdate(w.tg.tapButton(placeholder.message_id, 'Send'));
+  assert.deepEqual(saved, {});
+  assert.equal(w.pc.comments.at(-1).body, 'Only once');
+});
+
 test('a voice note in General becomes the task offer with the transcript, and the task is created from it', async (t) => {
   const ctx = await setup(t, { forum: true });
   const { w, bot } = ctx;
@@ -514,6 +530,20 @@ test('an offer made from a voice note expires after 24 hours like any offer', as
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'This offer has expired');
   assert.equal(posts(w, '/issues').length, 0);
   assert.match(w.tg.messages.get(placeholder.message_id).text, outcomePattern('Expired', null, { before: 'Heard:\nOld idea\nCreate a task from this?\n\n' }));
+});
+
+test('an expired offer whose transcript nearly fills a message still loses its buttons', async (t) => {
+  const ctx = await setup(t);
+  const { w } = ctx;
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Old idea' });
+  const later = w.makeBot({ now: () => Date.now() + 25 * HOUR });
+  const tap = w.tg.tapButton(placeholder.message_id, 'For Lead');
+  tap.callback_query.message.text = `Heard:\n${'word & '.repeat(570)}\nCreate a task from this?`;
+  await later.handleUpdate(tap);
+  const shown = w.tg.messages.get(placeholder.message_id).text;
+  assert.deepEqual(w.tg.buttons(placeholder.message_id), []);
+  assert.match(shown, /^Heard:\nword &amp; word/);
+  assert.match(shown, outcomePattern('Expired', null));
 });
 
 test('< and & in a transcript are escaped for display and posted as they are', async (t) => {
