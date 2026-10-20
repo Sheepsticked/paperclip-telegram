@@ -168,8 +168,13 @@ export async function handleVoiceCallback(bot, cq, deliver) {
   const job = bot.state.getVoice(key, bot.now());
   if (!job) return gone(bot, cq);
   if (op === 'x' || op === 's') {
-    if (op === 's' && !(await deliver(bot, typedMessage(job)))) return bot.answer(cq.id, 'Not sent');
+    // The note is taken before the text goes out, so a failure after Paperclip took it cannot send it twice.
     bot.state.voice.delete(key);
+    if (op === 's' && !(await deliver(bot, typedMessage(job)))) {
+      bot.state.voice.set(key, job);
+      bot.state.save();
+      return bot.answer(cq.id, 'Not sent');
+    }
     bot.state.save();
     markSettled(bot, messageId);
     const outcome = makeOutcome(op === 's' ? 'Sent' : 'Cancelled', null, bot.now());

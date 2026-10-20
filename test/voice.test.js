@@ -191,6 +191,24 @@ test('a failed comment keeps the buttons so Send can be tried again', async (t) 
   assert.match(w.tg.messages.get(placeholder.message_id).text, outcomePattern('Sent', null, { before: heard('Try twice') }));
 });
 
+test('a lost confirmation of the comment does not make Send post it again', async (t) => {
+  const ctx = await setup(t);
+  const { w, bot } = ctx;
+  const issue = w.pc.addIssue({ title: 'Fix the layout', status: 'in_progress' });
+  await bot.handleUpdate(w.tg.message(`/task ${issue.identifier}`));
+  const view = w.tg.lastMessage();
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Once, not twice' }, { replyTo: view.message_id });
+
+  w.tg.failNext('sendMessage', 500, { ok: false, error_code: 500, description: 'Internal Server Error' });
+  await bot.handleUpdate(w.tg.tapButton(placeholder.message_id, 'Send'));
+  assert.equal(posts(w, '/comments').length, 1);
+  assert.match(w.tg.messages.get(placeholder.message_id).text, outcomePattern('Sent', null, { before: heard('Once, not twice') }));
+  assert.match(w.allLogText(), /warn could not confirm a comment/);
+
+  await bot.handleUpdate(w.tg.tap(placeholder.message_id, 'V:s:1'));
+  assert.equal(posts(w, '/comments').length, 1);
+});
+
 test('a voice note in General becomes the task offer with the transcript, and the task is created from it', async (t) => {
   const ctx = await setup(t, { forum: true });
   const { w, bot } = ctx;

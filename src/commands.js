@@ -107,7 +107,12 @@ async function postComment(bot, msg, issue) {
   }
   if (bot.topics.on && (await bot.react(msg.message_id))) return true;
   const url = issue.identifier ? issueUrl(bot.config.uiBaseUrl, issue.identifier) : null;
-  await reply(bot, msg, issue.identifier ? headline('Comment posted', issue, { url }) : '<b>Comment posted</b>', issue);
+  try {
+    await reply(bot, msg, issue.identifier ? headline('Comment posted', issue, { url }) : '<b>Comment posted</b>', issue);
+  } catch (err) {
+    // The comment is in Paperclip, so a lost confirmation does not undo it.
+    bot.log.warn('could not confirm a comment', { error: err.message });
+  }
   return true;
 }
 
