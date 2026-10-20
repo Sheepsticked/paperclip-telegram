@@ -176,9 +176,15 @@ async function gone(bot, cq) {
 
 const canRead = (bot, code) => canSwitchLanguage(bot) && voiceLanguages(bot).includes(code);
 
-// Saves the job that was just made pending and starts it in the voice queue.
-function queueAgain(bot, cq, key, code) {
+// Saves the job that was just made pending, shows "Transcribing…" and starts the job in the voice queue. The job is
+// saved before the edit, so a lost or refused edit, or a restart, still ends with the new reading in the message.
+async function queueAgain(bot, cq, messageId, key, code) {
   bot.state.save();
+  try {
+    await bot.edit(messageId, WORKING, []);
+  } catch (err) {
+    bot.log.warn('could not show that a voice note is read again', { error: err.message });
+  }
   enqueueVoice(bot, key);
   return bot.answer(cq.id, `Reading again in ${languageName(code)}`);
 }
@@ -187,9 +193,8 @@ function queueAgain(bot, cq, key, code) {
 // so the buttons of the old transcript no longer match anything.
 async function readAgain(bot, cq, key, job, code) {
   if (!canRead(bot, code)) return bot.answer(cq.id, 'Unknown action');
-  await bot.edit(job.messageId, WORKING, []);
   bot.state.voice.delete(key);
-  return queueAgain(bot, cq, bot.state.addVoice({ ...job, language: code }), code);
+  return queueAgain(bot, cq, job.messageId, bot.state.addVoice({ ...job, language: code }), code);
 }
 
 // The same on a task offer made from a note: the offer is dropped and the new transcript becomes a new offer.
@@ -198,7 +203,6 @@ async function readAgainFromOffer(bot, cq, key, code) {
   if (!offer) return expiredOffer(bot, cq);
   const messageId = cq.message?.message_id;
   if (!offer.voice || !messageId || !canRead(bot, code)) return bot.answer(cq.id, 'Unknown action');
-  await bot.edit(messageId, WORKING, []);
   bot.state.offers.delete(key);
   const jobKey = bot.state.addVoice({
     mode: 'offer',
@@ -212,7 +216,7 @@ async function readAgainFromOffer(bot, cq, key, code) {
     language: code,
     at: bot.now(),
   });
-  return queueAgain(bot, cq, jobKey, code);
+  return queueAgain(bot, cq, messageId, jobKey, code);
 }
 
 // Send, Cancel and the read-again buttons. `deliver(bot, msg)` handles the text like a typed message and says

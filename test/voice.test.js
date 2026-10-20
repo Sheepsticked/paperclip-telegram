@@ -999,6 +999,30 @@ test('a read-again that was pending at restart is finished in the new language',
   assert.deepEqual(flagLanguages(ctx), ['en', 'ru', 'ru']);
 });
 
+test('a read-again is saved before its Transcribing… edit, so a failed edit still ends with the new reading', async (t) => {
+  const ctx = await setup(t, { forum: true, voice: EN_RU });
+  const { w, bot } = ctx;
+  const { thread } = await taskWithTopic(w, bot);
+  const { placeholder } = await dictate(ctx, TWO_READINGS, { thread });
+  const id = placeholder.message_id;
+
+  w.tg.failNext('editMessageText', 500, { ok: false, error_code: 500, description: 'Internal Server Error' });
+  await bot.handleUpdate(w.tg.tapButton(id, 'Russian'));
+  const saved = Object.values(JSON.parse(fs.readFileSync(w.statePath, 'utf8')).voice);
+  assert.deepEqual(saved.map((job) => [job.status, job.language]), [['pending', 'ru']]);
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Reading again in Russian');
+  assert.match(w.allLogText(), /warn could not show that a voice note is read again/);
+
+  // A tap on the buttons that are still shown finds the message taken by the new reading.
+  await bot.handleUpdate(w.tg.tapButton(id, 'Send'));
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Already handled');
+  assert.equal(posts(w, '/comments').length, 0);
+
+  await settled(bot);
+  assert.equal(textOf(w, id), heardIn('Russian', 'Пожалуйста, синий логотип').trimEnd());
+  assert.deepEqual(rows(w, id), [['Send', 'Cancel', 'English']]);
+});
+
 test('a failed second read ends like a failed first read, in a topic and in General', async (t) => {
   const ctx = await setup(t, { forum: true, voice: EN_RU });
   const { w, bot } = ctx;
