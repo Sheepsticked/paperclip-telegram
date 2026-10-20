@@ -1,6 +1,6 @@
 import { handleCallback } from './actions.js';
 import { handleAgentCallback } from './agents.js';
-import { deliverText } from './commands.js';
+import { deliverText, handleHelpCallback } from './commands.js';
 import { handleOfferCallback } from './create.js';
 import { handleInboxCallback } from './inbox.js';
 import { handleListCallback } from './lists.js';
@@ -16,6 +16,7 @@ const HANDLERS = {
   O: handleOfferCallback,
   I: handleInboxCallback,
   G: handleAgentCallback,
+  H: handleHelpCallback,
   V: (bot, cq) => handleVoiceCallback(bot, cq, deliverText),
 };
 

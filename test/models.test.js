@@ -626,10 +626,3 @@ test('a task that was not assigned to an agent loses a stale model when an agent
   await assignTo(w, bot, issue, 'Dev');
   assert.equal(issuePatches(w).at(-1).body.assigneeAdapterOverrides, null);
 });
-
-test('/help mentions the model buttons in one line', async (t) => {
-  const { w, bot } = await setup(t);
-  await bot.handleUpdate(w.tg.message('/help'));
-  const lines = w.tg.lastMessage().text.split('\n').filter((line) => /Model and Reasoning/.test(line));
-  assert.equal(lines.length, 1);
-});

@@ -341,7 +341,9 @@ A private chat gets no mention.
 | `/agents` | Lists the agents; a button opens the agent view. |
 | `/projects` | Lists the projects with their open tasks. |
 | `/settings` | Notification toggles, mute and, when `voice.languages` lists two or more, the voice language. |
-| `/help`, `/start` | Show the command list. |
+| `/help`, `/start` | Show the command list, with buttons for `/tasks`, `/status`, `/agents`, `/projects`, `/following` and `/settings`. |
+
+The help buttons run the command as if you had typed it, in the same chat and topic; the help message stays as it is, and a tap shows no pop-up. `/new`, `/task` and `/find` need text, so they have no button.
 
 The same commands are in the Telegram menu. The bot also sets its profile text (short description and description) once at start.
 

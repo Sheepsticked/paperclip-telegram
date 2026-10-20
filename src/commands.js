@@ -2,7 +2,7 @@ import { findCardByMessage, findCardByReasonPrompt, handleReasonReply, handleTex
 import { commandAgents } from './agents.js';
 import { NEW_USAGE, askProjectForNew, createTask, offerTask, parseNewArgs, resolveTargets } from './create.js';
 import { attachToTask, fileOf } from './files.js';
-import { headline, issueUrl } from './format.js';
+import { button, headline, issueUrl } from './format.js';
 import { handleNoteReply } from './inbox.js';
 import { canSwitchLanguage } from './languages.js';
 import { commandFind, commandFollowing, commandStatus, commandTasks } from './lists.js';
@@ -27,8 +27,24 @@ const HELP_COMMANDS = [
   '/help — this list',
   '',
   'Send plain text to create a task from it.',
-  'Model and Reasoning buttons set what an agent runs with: in an agent view for the agent, under More on a task for that task only.',
+  "Model and reasoning: on a new task's offer, under More on a task, or in an agent's view.",
 ];
+
+// The commands /help has a button for, in rows of three; each runs as if it was typed.
+const HELP_BUTTONS = [
+  [
+    ['tasks', 'Tasks'],
+    ['status', 'Status'],
+    ['agents', 'Agents'],
+  ],
+  [
+    ['projects', 'Projects'],
+    ['following', 'Following'],
+    ['settings', 'Settings'],
+  ],
+];
+
+const helpKeyboard = () => HELP_BUTTONS.map((row) => row.map(([name, label]) => button(label, `H:${name}`)));
 
 function helpText(bot) {
   const topics = ['In a task topic, plain text comments on that task and /task opens it.'];
@@ -94,13 +110,22 @@ const HANDLERS = {
 async function runCommand(bot, update, command) {
   const msg = update.message;
   const run = HANDLERS[command.name];
-  if (!run) return reply(bot, msg, helpText(bot));
+  if (!run) return bot.send(helpText(bot), { ...where(bot, msg), keyboard: helpKeyboard() });
   try {
     return await run(bot, update, command.rest);
   } catch (err) {
     if (!(err instanceof PaperclipError)) throw err;
     return reportFailure(bot, err, msg);
   }
+}
+
+// A button of /help: the command runs where the help is, in the same chat and topic, and its reply is not a quote of the help.
+export async function handleHelpCallback(bot, cq) {
+  const name = String(cq.data).split(':')[1];
+  if (!cq.message || !HELP_BUTTONS.flat().some(([command]) => command === name)) return bot.answer(cq.id, 'Unknown action');
+  const { message_id: _help, ...typedHere } = cq.message;
+  await runCommand(bot, { message: typedHere }, { name, rest: '' });
+  return bot.answer(cq.id);
 }
 
 // Posts the owner's text as a comment; the reaction (or a short reply) confirms it. True when the comment was posted.
