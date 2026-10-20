@@ -844,7 +844,8 @@ test('the transcript names its language and a button reads the same note again i
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Reading again in Russian');
   assert.equal(textOf(w, id), 'Transcribing…');
   assert.deepEqual(w.tg.buttons(id), []);
-  const job = bot.state.voice.get('1');
+  const [job] = [...bot.state.voice.values()];
+  assert.equal(bot.state.voice.size, 1);
   assert.deepEqual([job.status, job.language, job.text], ['pending', 'ru', null], 'the old transcript is dropped');
   assert.equal(posts(w, '/comments').length, 0, 'nothing is sent by the tap');
 
@@ -915,7 +916,12 @@ test('a task offer made from a note names its language and reads the note again;
   assert.equal(textOf(w, id), offerIn('English', 'Draw the logo in blue'));
   assert.deepEqual(rows(w, id), [['For Lead', 'Other agent', 'Cancel'], ['Russian']]);
   assert.deepEqual(styles(w, id), { 'For Lead': null, 'Other agent': null, Cancel: null, Russian: null });
-  assert.deepEqual(Object.values(JSON.parse(fs.readFileSync(w.statePath, 'utf8')).offers)[0].voice, { fileId: 'file-1', duration: 5, language: 'en' });
+  assert.deepEqual(Object.values(JSON.parse(fs.readFileSync(w.statePath, 'utf8')).offers)[0].voice, {
+    fileId: 'file-1',
+    duration: 5,
+    language: 'en',
+    messageId: id,
+  });
   const known = w.tg.sent().length;
 
   await bot.handleUpdate(w.tg.tapButton(id, 'Russian'));
@@ -977,7 +983,7 @@ test('a read-again that was pending at restart is finished in the new language',
   bot.stop();
   await settled(bot);
   await waitFor(() => pidGone(second.pid), { label: 'the helper to be killed' });
-  const saved = JSON.parse(fs.readFileSync(w.statePath, 'utf8')).voice['1'];
+  const [saved] = Object.values(JSON.parse(fs.readFileSync(w.statePath, 'utf8')).voice);
   assert.deepEqual([saved.status, saved.language, saved.text], ['pending', 'ru', null]);
   assert.equal(textOf(w, id), 'Transcribing…');
 
@@ -1076,6 +1082,44 @@ test('a second tap while a note is read again changes nothing and does not settl
   }
 });
 
+test('a late tap on the buttons of an earlier reading changes nothing once the new text is shown', async (t) => {
+  const ctx = await setup(t, { forum: true, voice: EN_RU });
+  const { w, bot } = ctx;
+  const { thread } = await taskWithTopic(w, bot);
+
+  // A transcript: Send, Cancel and the language button, each tapped late.
+  const { placeholder } = await dictate(ctx, TWO_READINGS, { thread });
+  const id = placeholder.message_id;
+  const late = ['Send', 'Cancel', 'Russian'].map((label) => w.tg.tapButton(id, label));
+  await bot.handleUpdate(w.tg.tapButton(id, 'Russian'));
+  await settled(bot);
+  const shown = textOf(w, id);
+  for (const tap of late) {
+    await bot.handleUpdate(tap);
+    assert.equal(w.tg.callbackAnswers.at(-1).text, 'Already handled');
+  }
+  assert.equal(textOf(w, id), shown);
+  assert.deepEqual(labels(w, id), ['Send', 'Cancel', 'English']);
+  assert.equal(posts(w, '/comments').length, 0);
+  assert.equal(flagLanguages(ctx).length, 2);
+
+  // The same for a task offer.
+  const offer = await dictate(ctx, TWO_READINGS);
+  const offerId = offer.placeholder.message_id;
+  const lateOffer = ['For Lead', 'Cancel', 'Russian'].map((label) => w.tg.tapButton(offerId, label));
+  await bot.handleUpdate(w.tg.tapButton(offerId, 'Russian'));
+  await settled(bot);
+  const shownOffer = textOf(w, offerId);
+  for (const tap of lateOffer) {
+    await bot.handleUpdate(tap);
+    assert.equal(w.tg.callbackAnswers.at(-1).text, 'Already handled');
+  }
+  assert.equal(textOf(w, offerId), shownOffer);
+  assert.deepEqual(rows(w, offerId), [['For Lead', 'Other agent', 'Cancel'], ['English']]);
+  assert.equal(bot.state.offers.size, 1);
+  assert.equal(posts(w, '/issues').length, 0);
+});
+
 test('a read-again tap with a language that is not listed does nothing', async (t) => {
   const ctx = await setup(t, { forum: true, voice: EN_RU });
   const { w, bot } = ctx;
@@ -1170,7 +1214,7 @@ test('without languages the v10 messages stay: no row in /settings, no language 
 
 test('saved languages that are not codes are ignored when the state loads', () => {
   const job = { status: 'pending', fileId: 'f', messageId: 1, noteId: 2 };
-  const offer = { text: 'T', at: 1, messageId: 3, heard: 'T', voice: { fileId: 'f', duration: 4, language: 'ru' } };
+  const offer = { text: 'T', at: 1, messageId: 3, heard: 'T', voice: { fileId: 'f', duration: 4, language: 'ru', messageId: 9 } };
   const state = new State('unused.json', {
     voiceLanguage: 'EN',
     voice: { a: { ...job, language: 'ru' }, b: { ...job, language: 'Russian' }, c: job },
@@ -1178,7 +1222,7 @@ test('saved languages that are not codes are ignored when the state loads', () =
   });
   assert.equal(state.voiceLanguage, null);
   assert.deepEqual([...state.voice.values()].map((entry) => entry.language), ['ru', null, null]);
-  assert.deepEqual([...state.offers.values()].map((entry) => entry.voice), [{ fileId: 'f', duration: 4, language: 'ru' }, null, null]);
+  assert.deepEqual([...state.offers.values()].map((entry) => entry.voice), [{ fileId: 'f', duration: 4, language: 'ru', messageId: 9 }, null, null]);
   assert.equal(new State('unused.json', { voiceLanguage: 'de' }).voiceLanguage, 'de');
 });
 

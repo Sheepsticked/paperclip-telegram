@@ -138,7 +138,7 @@ export async function offerTask(bot, update, { text, file = null } = {}) {
 // Turns the "Transcribing…" reply to a voice note into the offer to create a task from its transcript.
 export async function offerFromVoice(bot, job, text) {
   // With a list of languages the offer keeps what it needs to read the note again.
-  const voice = voiceLanguages(bot) ? { fileId: job.fileId, duration: job.duration, language: noteLanguage(bot, job) } : null;
+  const voice = voiceLanguages(bot) ? { fileId: job.fileId, duration: job.duration, language: noteLanguage(bot, job), messageId: job.messageId } : null;
   const key = bot.state.addOffer(text, job.noteId, job.updateId, bot.now(), job.thread, { prompt: OFFER_PROMPT, heard: text, voice });
   bot.state.save();
   const offer = bot.state.offers.get(key);
@@ -272,8 +272,8 @@ async function afterAgent(bot, cq, key, offer, agent) {
 
 // The tap on an offer that is gone: it was settled, or it expired and the message is settled now.
 export async function expiredOffer(bot, cq) {
-  // A voice note that is being read again owns its message; a late tap on the old buttons changes nothing.
-  if (bot.state.isReadingVoice(cq.message?.message_id)) return bot.answer(cq.id, 'Already handled');
+  // A note that was read again owns its message; a late tap on the buttons of an earlier reading changes nothing.
+  if (bot.state.ownsVoiceMessage(cq.message?.message_id, bot.now())) return bot.answer(cq.id, 'Already handled');
   await bot.answer(cq.id, 'This offer has expired');
   // A settled message keeps its outcome.
   if (wasSettled(bot, cq.message?.message_id) || !cq.message?.reply_markup?.inline_keyboard?.length) return undefined;

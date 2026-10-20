@@ -164,8 +164,8 @@ function typedMessage(job) {
 // The tap on a note that is gone: it was settled before, or it expired and the message is settled now.
 async function gone(bot, cq) {
   const message = cq.message;
-  // A note that is being read again owns its message; a late tap on the old buttons changes nothing.
-  if (bot.state.isReadingVoice(message?.message_id) || wasSettled(bot, message?.message_id) || !message?.reply_markup?.inline_keyboard?.length) {
+  // A note that was read again owns its message; a late tap on the buttons of an earlier reading changes nothing.
+  if (bot.state.ownsVoiceMessage(message?.message_id, bot.now()) || wasSettled(bot, message?.message_id) || !message?.reply_markup?.inline_keyboard?.length) {
     return bot.answer(cq.id, 'Already handled');
   }
   await bot.answer(cq.id, 'This voice note has expired');
@@ -183,12 +183,13 @@ function queueAgain(bot, cq, key, code) {
   return bot.answer(cq.id, `Reading again in ${languageName(code)}`);
 }
 
-// The button of another language on a transcript: its text is dropped and the same audio is read again.
+// The button of another language on a transcript: its text is dropped and the same audio is read again as a new job,
+// so the buttons of the old transcript no longer match anything.
 async function readAgain(bot, cq, key, job, code) {
   if (!canRead(bot, code)) return bot.answer(cq.id, 'Unknown action');
   await bot.edit(job.messageId, WORKING, []);
-  Object.assign(job, { status: 'pending', text: null, readyAt: null, language: code });
-  return queueAgain(bot, cq, key, code);
+  bot.state.voice.delete(key);
+  return queueAgain(bot, cq, bot.state.addVoice({ ...job, language: code }), code);
 }
 
 // The same on a task offer made from a note: the offer is dropped and the new transcript becomes a new offer.

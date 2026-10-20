@@ -71,9 +71,10 @@ const languageOrNull = (value) => (typeof value === 'string' && LANGUAGE_CODE.te
 
 // What an offer made from a voice note keeps to read the note again; null when it is not usable.
 function loadOfferVoice(saved) {
-  const usable = isObject(saved) && typeof saved.fileId === 'string' && languageOrNull(saved.language) !== null;
+  const usable = isObject(saved) && typeof saved.fileId === 'string' && languageOrNull(saved.language) !== null && Number.isInteger(saved.messageId);
   if (!usable) return null;
-  return { fileId: saved.fileId, duration: Number.isFinite(saved.duration) && saved.duration > 0 ? saved.duration : 0, language: saved.language };
+  const duration = Number.isFinite(saved.duration) && saved.duration > 0 ? saved.duration : 0;
+  return { fileId: saved.fileId, duration, language: saved.language, messageId: saved.messageId };
 }
 
 // Followed tasks from a saved file; an entry without an identifier is dropped.
@@ -445,7 +446,8 @@ export class State {
 
   // `file` is a Telegram file waiting to be attached to the new task; `agentId` is the agent picked so far;
   // `prompt` is the text of the offer message; `heard` is the transcript of a voice note the offer shows, and `voice`
-  // holds { fileId, duration, language } of that note so it can be read again.
+  // holds { fileId, duration, language, messageId } of that note and the message that shows the offer, so it can be
+  // read again.
   addOffer(text, messageId, updateId, nowMs, thread = null, { file = null, agentId = null, prompt = null, heard = null, voice = null } = {}) {
     this.offerCounter += 1;
     const key = this.offerCounter.toString(36);
@@ -481,9 +483,11 @@ export class State {
     return job?.status === 'ready' && nowMs - job.readyAt <= OFFER_TTL_MS ? job : null;
   }
 
-  // True while a voice note is being transcribed into the given message.
-  isReadingVoice(messageId) {
-    for (const job of this.voice.values()) if (job.status === 'pending' && job.messageId === messageId) return true;
+  // True while a voice note owns the message: it is being transcribed into it, or the message shows its transcript or
+  // its task offer within the 24 hours. A tap on buttons of an earlier reading of the note finds the message owned.
+  ownsVoiceMessage(messageId, nowMs) {
+    for (const job of this.voice.values()) if (job.messageId === messageId && (job.status === 'pending' || nowMs - job.readyAt <= OFFER_TTL_MS)) return true;
+    for (const offer of this.offers.values()) if (offer.voice?.messageId === messageId && nowMs - offer.at <= OFFER_TTL_MS) return true;
     return false;
   }
 
