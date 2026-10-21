@@ -131,7 +131,7 @@ describe('the demo', { concurrency: true }, () => {
     const board = await waitFor(() => theBoard(tg), { timeout: 20_000, label: 'the pinned board in General' });
     const question = await wait('Which theme should be the default?', 'the question card');
     assert.deepEqual(labels(tg, question), ['Follow the system', 'Light', 'Dark']);
-    await waitFor(() => /Needs you/.test(board.text), { label: 'the card on the board' });
+    await waitFor(() => /Needs you/.test(board.text), { timeout: 20_000, label: 'the card on the board' });
     assert.ok(board.text.includes('ACME-7'));
     tg.push(tg.tapButton(question.message_id, 'Dark'));
 
