@@ -1,0 +1,10 @@
+{
+  "telegramTokenFile": "~/.config/paperclip-telegram-demo/telegram-token",
+  "telegramUserId": 123456789,
+  "telegramChatId": -1001234567890,
+  "voice": {
+    "python": "~/.local/share/paperclip-telegram/voice/bin/python",
+    "modelsDir": "~/.local/share/paperclip-telegram/voice/models",
+    "model": "small"
+  }
+}

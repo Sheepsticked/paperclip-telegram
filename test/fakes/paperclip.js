@@ -70,6 +70,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
   let unauthorized = false;
   let dropConnections = false;
   const failures = [];
+  const settledListeners = [];
 
   // Strictly increasing timestamps that stay close to the real clock.
   const tick = () => {
@@ -126,6 +127,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
     interaction.resolvedAt = tick();
     interaction.updatedAt = interaction.resolvedAt;
     interaction.resolvedByUserId = 'board-user-1';
+    for (const listener of settledListeners) listener(interaction);
     return interaction;
   }
 
@@ -805,7 +807,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
       issue.updatedAt = tick();
       return issue;
     },
-    addInteraction(issueId, { kind, title = null, summary = null, payload, createdAt } = {}) {
+    addInteraction(issueId, { kind, title = null, summary = null, payload, createdAt, createdByAgentId = 'agent-1' } = {}) {
       getIssue(issueId);
       const now = createdAt ?? tick();
       const interaction = {
@@ -818,7 +820,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
         continuationPolicy: 'wake_assignee',
         title,
         summary,
-        createdByAgentId: 'agent-1',
+        createdByAgentId,
         createdByUserId: null,
         addresseeAgentId: null,
         addresseeUserId: null,
@@ -836,6 +838,10 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
       };
       interactions.set(interaction.id, interaction);
       return interaction;
+    },
+    // Calls `listener(interaction)` each time a card is answered, confirmed, declined or settled elsewhere.
+    onInteractionSettled(listener) {
+      settledListeners.push(listener);
     },
     // Settles a card as if someone had answered it in the Paperclip UI.
     resolveElsewhere(interactionId, status = 'accepted', result = { version: 1, outcome: status }) {

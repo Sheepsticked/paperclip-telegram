@@ -24,6 +24,7 @@
   },
   "scripts": {
     "start": "node bin/paperclip-telegram.js",
+    "demo": "node scripts/demo.js",
     "test": "node --test"
   }
 }

@@ -290,3 +290,13 @@ When all three are empty the board says `Nothing waiting or running.` Each line 
 When a task is done or cancelled its topic is closed, and the bot notes the time. After `closedTopicDays` days (default 7) the topic is deleted with everything in it, and the bot forgets it, together with offers made in it. Reopening a task before that clears the time. The check runs once an hour. `closedTopicDays: 0` never deletes.
 
 Deleting needs the **Delete messages** right. Without it the bot keeps the topics, tries again at every check and logs `the bot lacks the Delete messages right, so finished topics are kept` at most once an hour. A task whose topic was deleted gets a new topic the next time the bot has something to say about it. General, and topics that are not linked to a task, are never deleted.
+
+## Try it with sample data
+
+From a checkout of this repository, the demo runs the bot against a pretend Paperclip with sample tasks, so you can try the bot or take screenshots with only a bot token and a [group with topics](#group-with-topics). Use a bot of its own, not the one that serves your real tasks. Copy `scripts/demo.example.json`, put your bot token file, user id and group id in it (drop the `voice` block to skip voice notes), and run:
+
+```bash
+npm run demo -- --config path/to/demo.json
+```
+
+A few seconds after the start the group gets the board, a question, a confirmation, a finished task and a failed run. Answering the question or confirming the deploy makes the agents react a little later. The config accepts only `telegramTokenFile`, `telegramUserId`, `telegramChatId`, `voice` and `telegramApiUrl`; every other key is refused, so the demo can never reach a real Paperclip. Every run starts from a clean state in a temporary folder that is removed when you stop it with Ctrl-C; `--state <dir>` keeps the bot's state in a folder of your choice instead.
