@@ -1,0 +1,24 @@
+{
+  "paperclipUrl": "http://127.0.0.1:3100",
+  "uiBaseUrl": "https://paperclip.example.com",
+  "companyId": "00000000-0000-0000-0000-000000000001",
+  "leadAgentId": "00000000-0000-0000-0000-000000000002",
+  "newTaskProjectId": null,
+  "telegramUserId": 123456789,
+  "telegramChatId": 123456789,
+  "topics": "auto",
+  "closedTopicDays": 7,
+  "richMessages": "auto",
+  "telegramTokenFile": "/config/telegram-token",
+  "paperclipTokenFile": "/config/paperclip-token",
+  "pollSeconds": 15,
+  "voice": {
+    "python": "/opt/voice/bin/python",
+    "modelsDir": "/opt/voice/models",
+    "model": "small",
+    "language": null,
+    "beamSize": 1,
+    "threads": 4,
+    "maxSeconds": 300
+  }
+}

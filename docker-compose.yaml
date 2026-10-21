@@ -1,0 +1,30 @@
+services:
+  paperclip-telegram:
+    build:
+      context: .
+      target: ${BOT_TARGET:-bot}
+    image: paperclip-telegram:${BOT_TARGET:-bot}
+    restart: unless-stopped
+    # Host networking lets paperclipUrl be http://127.0.0.1:3100, as with systemd; the bot opens no ports.
+    # On Docker Desktop remove network_mode, add extra_hosts: ["host.docker.internal:host-gateway"] and use http://host.docker.internal:3100.
+    network_mode: host
+    # Must be able to read the mode-600 files in ./config and write ./state.
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      PAPERCLIP_TELEGRAM_CONFIG: /config/config.json
+      STATE_DIRECTORY: /state
+    volumes:
+      - ./config:/config:ro
+      - ./state:/state
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

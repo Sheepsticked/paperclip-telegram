@@ -1,0 +1,7 @@
+.git
+test/
+NOTES.local.md
+config/
+state/
+node_modules/
+*.log
