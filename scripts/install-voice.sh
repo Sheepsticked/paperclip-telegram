@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Sets up local speech-to-text for voice notes: a Python venv with faster-whisper and the "small" model.
-# Safe to run again. Prints the "voice" block to add to the bot config.
+# Sets up local speech-to-text for voice notes: a Python venv with faster-whisper and a Whisper model ("small" by default).
+# Safe to run again. VOICE_DIR and WHISPER_MODEL change the folder and the model. Prints the "voice" block to add to the bot config.
 set -euo pipefail
 
-data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/paperclip-telegram/voice"
+data_dir="${VOICE_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/paperclip-telegram/voice}"
 models_dir="$data_dir/models"
 python_bin="$data_dir/bin/python"
-model="small"
+model="${WHISPER_MODEL:-small}"
 
 command -v python3 >/dev/null 2>&1 || { echo "install-voice: python3 is not on PATH" >&2; exit 1; }
 
