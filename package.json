@@ -3,6 +3,18 @@
   "version": "1.0.0",
   "private": true,
   "description": "Telegram bot to follow and answer Paperclip agents from a phone",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sheepsticked/paperclip-telegram.git"
+  },
+  "keywords": [
+    "paperclip",
+    "telegram",
+    "telegram-bot",
+    "ai-agents",
+    "long-polling"
+  ],
   "type": "module",
   "bin": {
     "paperclip-telegram": "bin/paperclip-telegram.js"
