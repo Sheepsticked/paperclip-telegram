@@ -18,6 +18,9 @@ A Telegram bot that works as a phone remote for [Paperclip](https://github.com/p
 
 ## Screenshots
 
+<details>
+<summary>Four more screenshots: a question, a confirmed card, a Markdown comment and a failed run</summary>
+
 An agent asks a question. Each answer is a button, and the task view is pinned at the top of the topic.
 
 ![A question card with three answer buttons in a task's topic](docs/images/question.png)
@@ -33,6 +36,8 @@ Comments arrive as Markdown, with lists and tables. A long one opens with a tap.
 A failed run sends an alert to the task's topic.
 
 ![A Run failed alert under the task view](docs/images/failed-run.png)
+
+</details>
 
 The screenshots come from the [demo](docs/usage.md#try-it-with-sample-data), which runs the bot against sample tasks.
 
