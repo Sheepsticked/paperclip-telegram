@@ -141,7 +141,7 @@ The labels show what the task will run with: the value picked here, else the age
 
 - Picking a model that does not allow the picked level drops the level.
 - Another agent with the same adapter type keeps the model; the level stays while the model the task will run with allows it. Another adapter type drops both and says `Model and reasoning reset for <agent>`.
-- Nothing picked: the task is created as before. With a pick, the task is created with an adapter override of its own (`assigneeAdapterOverrides`) holding only the model and the adapter's level key, built the way **More** builds it: an agent level that the picked model does not allow is blanked in the override. The agent itself is never changed.
+- With no pick, the task is created without an override. With a pick, the task is created with an adapter override of its own (`assigneeAdapterOverrides`) holding only the model and the adapter's level key, built the way **More** builds it: an agent level that the picked model does not allow is blanked in the override. The agent itself is never changed.
 - The settled offer names what was picked: `Created · ID for Dev in Web · Claude Sonnet 5.5 · High`.
 - The project question still follows **For \<agent>** when there is a project to pick, and keeps the picks. `/new` without `#project` asks it at once and holds the **Model** and **Reasoning** buttons of the named agent (or of the lead agent) above **No project** and **Cancel**; `/new ... #project ...` creates the task at once with no picks.
 - The picks are saved with the offer, so they survive a restart and expire with it after 24 hours. Reading a voice note again in another language starts a new offer without them.
@@ -231,7 +231,7 @@ Reply to any message the bot sent about a task (including the task view and inbo
 
 ## Group with topics
 
-A forum group gives every top-level task its own topic, so each task is a separate conversation and the chat stays tidy. Subtasks do not get topics: their messages go to the topic of the top-level task they belong to, and their id and title are on line 1.
+A forum group gives every top-level task its own topic, so each task is a separate conversation. Subtasks do not get topics: their messages go to the topic of the top-level task they belong to, and their id and title are on line 1.
 
 ### Setup
 

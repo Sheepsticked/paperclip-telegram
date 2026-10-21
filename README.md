@@ -2,19 +2,19 @@
 
 [![test](https://github.com/Sheepsticked/paperclip-telegram/actions/workflows/test.yml/badge.svg)](https://github.com/Sheepsticked/paperclip-telegram/actions/workflows/test.yml)
 
-A Telegram bot that works as a phone remote for [Paperclip](https://github.com/paperclipai/paperclip): follow your agents, answer their questions and manage tasks from your phone.
+A Telegram bot for [Paperclip](https://github.com/paperclipai/paperclip). Use it to follow your agents, answer their questions and manage tasks from your phone.
 
 ![A Telegram group with one topic per task and a pinned board in General that lists what needs you, what is running and what waits for review, and a message in General offered as a new task](docs/images/board.png)
 
 ## What it does
 
-- **Cards with buttons.** When an agent asks you something (a confirmation, a checkbox list or a form), the bot sends a card. Tap a button to answer. Approvals, decisions and stalled reviews that wait for you arrive the same way.
-- **Done and failed alerts.** You get a message when a task is done or ready for review, and an alert when an agent run fails.
-- **One topic per task.** In a group with Topics, every task gets its own topic with a pinned task view. A pinned board in General shows what needs you. Finished topics are deleted after a few days.
-- **Task control.** Open a task to finish, reopen, cancel, comment, assign, set the project, read its documents or stop its run. Pause, resume and run agents. Create tasks from text, photos, files or voice notes.
-- **Voice notes.** Send a voice note instead of typing. It is turned into text on your own machine, and the text is used only after you confirm it.
-- **Model and reasoning choice.** Pick the model and reasoning level of an agent, of one task, or of a new task before you create it.
-- **Works in a muted group.** Mute the group in Telegram. Only the messages that need you mention you, so only those pop up with a sound.
+- When an agent asks you something (a confirmation, a checkbox list or a form), the bot sends a card with buttons. Tap a button to answer. Approvals, decisions and stalled reviews that wait for you arrive the same way.
+- You get a message when a task is done or ready for review, and an alert when an agent run fails.
+- In a group with Topics, every task gets its own topic with a pinned task view. A pinned board in General shows what needs you. Finished topics are deleted after a few days.
+- Open a task to finish, reopen, cancel, comment, assign, set the project, read its documents or stop its run. Pause, resume and run agents. Create tasks from text, photos, files or voice notes.
+- Send a voice note instead of typing. It is turned into text on your own machine, and the text is used only after you confirm it.
+- Pick the model and reasoning level of an agent, of one task, or of a new task before you create it.
+- You can mute the group in Telegram. Only the messages that need you mention you, so only those pop up with a sound.
 
 ## Screenshots
 
@@ -119,7 +119,7 @@ The commands are for `bash`. None of them puts a token on the screen or in your 
 
    The line ends with a negative number such as `-1001234567890 (supergroup)`. Put that number in `telegramChatId`, then run `docker compose restart`. The log now says `topics on`.
 
-**Voice notes (optional).** Set `BOT_TARGET=voice` in `.env` (copy it from `.env.example` first), then run `docker compose up -d --build` again. This builds an image with Python and the Whisper `small` model, so it works offline. The image is about 1 GB bigger. If you deleted the `voice` block from `config/config.json`, copy it back from `docker/config.example.json`, then run `docker compose restart`.
+To add voice notes (optional), set `BOT_TARGET=voice` in `.env` (copy it from `.env.example` first), then run `docker compose up -d --build` again. This builds an image with Python and the Whisper `small` model, so it works offline. The image is about 1 GB bigger. If you deleted the `voice` block from `config/config.json`, copy it back from `docker/config.example.json`, then run `docker compose restart`.
 
 For another model, set `WHISPER_MODEL` in `.env` (for example `base`) and `voice.model` in `config/config.json` to the same name, then run `docker compose up -d --build`.
 
@@ -207,10 +207,10 @@ Send plain text in the main chat and the bot offers to create a task, with butto
 
 A short tour:
 
-- **Answer an agent.** A card arrives with the question and its buttons. Tap one. The card keeps its text, loses its buttons and ends with a line that says what happened.
-- **Follow a task.** In a group each task has a topic, and agent comments appear there. Write in the topic to comment.
-- **Send a file or a photo.** As a reply to a task message, or in the task's topic, it is attached to the task.
-- **Send a voice note.** The bot shows the text it heard. Tap **Send** to use it as a comment or an answer, or to create a task.
+- A card arrives with the agent's question and its buttons. Tap one. The card keeps its text, loses its buttons and ends with a line that says what happened.
+- In a group each task has a topic, and agent comments appear there. Write in the topic to comment.
+- A file or a photo sent as a reply to a task message, or in the task's topic, is attached to the task.
+- After a voice note, the bot shows the text it heard. Tap **Send** to use it as a comment or an answer, or to create a task.
 
 [docs/usage.md](docs/usage.md) describes every message and button.
 
@@ -235,14 +235,14 @@ GitHub Actions runs the tests on Node.js 22 and 24 and builds both Docker target
 
 ## Limitations
 
-- **Polling delay.** Paperclip is polled every `pollSeconds` (15 by default), so a message can come that much later than the event. A board key cannot open Paperclip's websocket.
-- **Failed runs.** Paperclip lists a failed run only after it has used up its retries, so the alert comes after the retries.
-- **Cards.** Item verdicts, task suggestions, connection requests and other card kinds are sent as text with a link. Answer them in Paperclip.
-- **Size limits.** Telegram lets a bot download files up to 20 MB, and Paperclip accepts up to 10 MB. Voice notes are accepted up to 5 minutes by default.
-- **Voice.** Transcription runs on the CPU, so a long note takes a while. A failed audio download is not retried. Only voice notes are read, not audio files or video notes.
-- **Large installations.** Project counts are read from at most 1000 tasks, and a single poll reads at most 2000 changed tasks.
-- **One of each.** One Telegram user, one chat and one Paperclip company per bot.
-- **Albums.** Each photo of an album is handled on its own.
+- Paperclip is polled every `pollSeconds` (15 by default), so a message can come that much later than the event. A board key cannot open Paperclip's websocket.
+- Paperclip lists a failed run only after it has used up its retries, so the alert comes after the retries.
+- Item verdicts, task suggestions, connection requests and other card kinds are sent as text with a link. Answer them in Paperclip.
+- Telegram lets a bot download files up to 20 MB, and Paperclip accepts up to 10 MB. Voice notes are accepted up to 5 minutes by default.
+- Voice transcription runs on the CPU, so a long note takes a while. A failed audio download is not retried. Only voice notes are read, not audio files or video notes.
+- On large installations, project counts are read from at most 1000 tasks, and a single poll reads at most 2000 changed tasks.
+- Each bot serves one Telegram user, one chat and one Paperclip company.
+- Each photo of an album is handled on its own.
 
 ## Credits
 
