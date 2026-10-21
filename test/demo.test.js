@@ -205,7 +205,8 @@ describe('the demo', { concurrency: true }, () => {
     tg.push(tg.tapButton(offer.message_id, 'For Lead'));
     await until(() => labels(tg, offer).includes('Website'), 'the project question');
     tg.push(tg.tapButton(offer.message_id, 'Website'));
-    const created = await until(() => tg.sent().find((m) => m.text.includes('ACME-10')), 'the new task');
+    // The settled offer also names ACME-10 and comes earlier, so wait for the pinned view in the task's topic.
+    const created = await until(() => tg.sent().find((m) => m.pinned && m.text.includes('ACME-10')), 'the new task');
     assert.ok(created.text.includes('To do · Lead · Website'));
     assert.ok(created.text.includes('Model: Claude Sonnet 5.5'), 'the task carries the model picked on the offer');
   });
