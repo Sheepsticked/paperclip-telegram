@@ -4,6 +4,8 @@
 
 A Telegram bot that works as a phone remote for [Paperclip](https://github.com/paperclipai/paperclip): follow your agents, answer their questions and manage tasks from your phone.
 
+![A Telegram group with one topic per task and a pinned board in General that lists what needs you, what is running and what waits for review, and a message in General offered as a new task](docs/images/board.png)
+
 ## What it does
 
 - **Cards with buttons.** When an agent asks you something (a confirmation, a checkbox list or a form), the bot sends a card. Tap a button to answer. Approvals, decisions and stalled reviews that wait for you arrive the same way.
@@ -13,6 +15,26 @@ A Telegram bot that works as a phone remote for [Paperclip](https://github.com/p
 - **Voice notes.** Send a voice note instead of typing. It is turned into text on your own machine, and the text is used only after you confirm it.
 - **Model and reasoning choice.** Pick the model and reasoning level of an agent, of one task, or of a new task before you create it.
 - **Works in a muted group.** Mute the group in Telegram. Only the messages that need you mention you, so only those pop up with a sound.
+
+## Screenshots
+
+An agent asks a question. Each answer is a button, and the task view is pinned at the top of the topic.
+
+![A question card with three answer buttons in a task's topic](docs/images/question.png)
+
+After you confirm, the card keeps its text and ends with what you chose and when. The task is done and its topic closes.
+
+![A confirmed card with its outcome line, followed by a Done message](docs/images/confirm.png)
+
+Comments arrive as Markdown, with lists and tables. A long one opens with a tap.
+
+![A Done message with an opened comment that holds a list and a table](docs/images/done-markdown.png)
+
+A failed run sends an alert to the task's topic.
+
+![A Run failed alert under the task view](docs/images/failed-run.png)
+
+The screenshots come from the [demo](docs/usage.md#try-it-with-sample-data), which runs the bot against sample tasks.
 
 ## How it works
 
