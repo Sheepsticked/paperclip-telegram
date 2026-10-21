@@ -61,5 +61,5 @@ Voice notes are described in [Voice notes](usage.md#voice-notes).
 | --- | --- | --- |
 | `BOT_TARGET` | `.env` | `bot` (default) builds the image without Python. `voice` builds the image with local speech-to-text. |
 | `PUID`, `PGID` | `.env` | User and group the bot runs as (default 1000). They must be able to read the files in `config/` and write `state/`. |
-| `WHISPER_MODEL` | build argument | Model downloaded into the voice image (default `small`). Build it with `docker compose build --build-arg WHISPER_MODEL=base`, set `voice.model` to the same name, and start with `docker compose up -d` (a later `--build` without the argument builds `small` again). |
+| `WHISPER_MODEL` | `.env` | Model downloaded into the voice image (default `small`). Set `voice.model` to the same name. |
 | `PAPERCLIP_TELEGRAM_CONFIG`, `STATE_DIRECTORY` | `docker-compose.yaml` | The paths inside the container: `/config/config.json` and `/state`. |

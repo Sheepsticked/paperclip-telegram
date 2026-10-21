@@ -94,7 +94,7 @@ The commands are for `bash`. None of them puts a token on the screen or in your 
 
 **Voice notes (optional).** Set `BOT_TARGET=voice` in `.env` (copy it from `.env.example` first), then run `docker compose up -d --build` again. This builds an image with Python and the Whisper `small` model, so it works offline. The image is about 1 GB bigger. If you deleted the `voice` block from `config/config.json`, copy it back from `docker/config.example.json`, then run `docker compose restart`.
 
-For another model, run `docker compose build --build-arg WHISPER_MODEL=base`, set `voice.model` to the same name, and start with `docker compose up -d`. Do not add `--build` then, because it would build `small` again.
+For another model, set `WHISPER_MODEL` in `.env` (for example `base`) and `voice.model` in `config/config.json` to the same name, then run `docker compose up -d --build`.
 
 To update, run `git pull` and then `docker compose up -d --build`. To stop and remove the container, run `docker compose down`.
 

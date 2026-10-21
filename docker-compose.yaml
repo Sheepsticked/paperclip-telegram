@@ -3,6 +3,8 @@ services:
     build:
       context: .
       target: ${BOT_TARGET:-bot}
+      args:
+        WHISPER_MODEL: ${WHISPER_MODEL:-small}
     image: paperclip-telegram:${BOT_TARGET:-bot}
     restart: unless-stopped
     # Host networking lets paperclipUrl be http://127.0.0.1:3100, as with systemd; the bot opens no ports.
