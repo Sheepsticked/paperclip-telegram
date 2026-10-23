@@ -997,6 +997,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
         companyId,
         agentId,
         invocationSource: source,
+        contextSnapshot: { issueId },
         status,
         startedAt: status === 'queued' ? null : now,
         finishedAt: RUN_ACTIVE.includes(status) ? null : now,

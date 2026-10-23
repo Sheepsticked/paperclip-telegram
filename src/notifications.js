@@ -58,14 +58,31 @@ async function sendFeedCard(bot, item, cache, sentIssueIds) {
 }
 
 // Feed items that have no message yet and are not skipped, in feed order: cards and inbox items.
-function freshEntries(bot, items) {
+async function freshEntries(bot, items) {
   const { state } = bot;
   const entries = [];
+  const runsByAgent = new Map();
+  const holdBlocker = async (item) => {
+    if (item.sourceKind !== 'blocker_attention' || item.subject?.kind !== 'issue') return false;
+    try {
+      const { assigneeAgentId } = await bot.pc.getIssue(item.subject.id);
+      if (!assigneeAgentId) return false;
+      if (!runsByAgent.has(assigneeAgentId)) {
+        runsByAgent.set(assigneeAgentId, null);
+        runsByAgent.set(assigneeAgentId, await bot.pc.listRuns(bot.config.companyId, { agentId: assigneeAgentId, limit: 50 }));
+      }
+      return runsByAgent.get(assigneeAgentId)?.some((run) =>
+        (run.status === 'queued' || run.status === 'running') && run.contextSnapshot?.issueId === item.subject.id,
+      ) ?? false;
+    } catch {
+      return false;
+    }
+  };
   for (const item of items) {
     if (item.sourceKind === 'issue_thread_interaction') {
       if (!state.cardByInteraction(item.subject.id) && !state.skippedCards.includes(item.subject.id)) entries.push({ type: 'card', item });
     } else if (INBOX_KINDS.has(item.sourceKind) && !item.dismissal?.isActive && isFreshInbox(bot, item)) {
-      entries.push({ type: 'inbox', item });
+      if (!(await holdBlocker(item))) entries.push({ type: 'inbox', item });
     }
   }
   return entries;
@@ -105,7 +122,7 @@ async function sendFresh(bot, items, cache, sentIssueIds) {
   const limitInbox = firstStart || !state.inboxSyncDone;
   const limited = [];
   const free = [];
-  for (const entry of freshEntries(bot, items)) {
+  for (const entry of await freshEntries(bot, items)) {
     if (!(entry.type === 'card' ? limitCards : limitInbox)) free.push(entry);
     // A review of a task that is already in review is not news.
     else if (entry.type === 'inbox' && isPlainReview(entry.item) && state.statuses.get(itemIssueId(entry.item)) === 'in_review') state.skipInbox(entry.item.dedupKey);

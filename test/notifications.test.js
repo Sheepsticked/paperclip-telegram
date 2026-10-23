@@ -18,6 +18,101 @@ async function world(t, options) {
   return w;
 }
 
+for (const status of ['queued', 'running']) {
+  test(`a blocker with a ${status} run is held without state until the run finishes`, async (t) => {
+    const w = await world(t);
+    const bot = await w.primedBot();
+    const issue = w.pc.addIssue({ status: 'blocked', assigneeAgentId: 'agent-1' });
+    w.pc.addBlocker(issue.id, { variant: 'dependency' });
+    const run = w.pc.addRun({ issueId: issue.id, status });
+    assert.equal(run.issueId, undefined, 'the match must use the context snapshot');
+
+    await bot.pollOnce();
+    await bot.pollOnce();
+    assert.equal(w.tg.findMessage('Blocked'), undefined);
+    assert.equal(bot.state.inboxByDedupKey(`blocker:${issue.id}`), null);
+    assert.ok(!bot.state.skippedInbox.includes(`blocker:${issue.id}`));
+    assert.equal(w.pc.requestsTo('GET', /\/heartbeat-runs$/).length, 2, 'each poll reads runs afresh');
+
+    run.status = 'succeeded';
+    await bot.pollOnce();
+    assert.ok(w.tg.findMessage('Blocked'));
+    assert.ok(bot.state.inboxByDedupKey(`blocker:${issue.id}`));
+    await bot.pollOnce();
+    assert.equal(w.pc.requestsTo('GET', /\/heartbeat-runs$/).length, 3, 'an already sent blocker needs no run lookup');
+  });
+}
+
+for (const scenario of ['no run', 'other issue', 'finished', 'unassigned', 'issue read fails', 'run list fails']) {
+  test(`a fresh blocker sends immediately when ${scenario}`, async (t) => {
+    const w = await world(t);
+    const bot = await w.primedBot();
+    const issue = w.pc.addIssue({ status: 'blocked', assigneeAgentId: scenario === 'unassigned' ? null : 'agent-1' });
+    w.pc.addBlocker(issue.id);
+    if (scenario === 'other issue') w.pc.addRun({ issueId: w.pc.addIssue().id, status: 'queued' });
+    if (scenario === 'finished') w.pc.addRun({ issueId: issue.id, status: 'succeeded' });
+    if (scenario === 'issue read fails') w.pc.failRequests('GET', new RegExp(`/api/issues/${issue.id}$`), 500);
+    if (scenario === 'run list fails') w.pc.failRequests('GET', /\/heartbeat-runs$/, 500);
+
+    await bot.pollOnce();
+    assert.ok(w.tg.findMessage('Blocked'));
+    if (scenario === 'unassigned' || scenario === 'issue read fails') {
+      assert.equal(w.pc.requestsTo('GET', /\/heartbeat-runs$/).length, 0);
+    }
+  });
+}
+
+for (const fail of [false, true]) {
+  test(`blockers share one agent run lookup per poll${fail ? ' even on failure' : ''}`, async (t) => {
+    const w = await world(t);
+    const bot = await w.primedBot();
+    for (let i = 0; i < 2; i += 1) {
+      const issue = w.pc.addIssue({ status: 'blocked', assigneeAgentId: 'agent-1' });
+      w.pc.addBlocker(issue.id);
+      w.pc.addRun({ issueId: issue.id, status: 'queued' });
+    }
+    if (fail) w.pc.failRequests('GET', /\/heartbeat-runs$/, 500);
+    await bot.pollOnce();
+    const requests = w.pc.requestsTo('GET', /\/heartbeat-runs$/);
+    assert.equal(requests.length, 1);
+    const query = new URLSearchParams(requests[0].query);
+    assert.equal(query.get('agentId'), 'agent-1');
+    assert.equal(query.get('limit'), '50');
+    assert.equal(w.tg.sent().filter((m) => m.text.includes('<b>Blocked</b>')).length, fail ? 2 : 0);
+  });
+}
+
+test('held blockers do not consume the initial limit and never send if they leave the feed', async (t) => {
+  const w = await world(t);
+  const issue = w.pc.addIssue({ status: 'blocked', assigneeAgentId: 'agent-1' });
+  const blockers = Array.from({ length: 11 }, () => w.pc.addBlocker(issue.id));
+  w.pc.addRun({ issueId: issue.id, status: 'queued' });
+  w.pc.addJoinRequest({ name: 'A new teammate' });
+  const bot = await w.makeBot();
+  await bot.pollOnce();
+  assert.equal(w.tg.findMessage('Blocked'), undefined);
+  assert.equal(w.tg.findMessage('more, see /status'), undefined);
+  assert.ok(w.tg.findMessage('A new teammate'));
+  assert.deepEqual(bot.state.skippedInbox, []);
+  assert.equal(w.pc.requestsTo('GET', /\/heartbeat-runs$/).length, 1);
+  for (const blocker of blockers) blocker.close();
+  await bot.pollOnce();
+  assert.equal(w.tg.findMessage('Blocked'), undefined);
+});
+
+test('other inbox items and cards do not trigger a run lookup', async (t) => {
+  const w = await world(t);
+  const bot = await w.primedBot();
+  const issue = w.pc.addIssue({ status: 'blocked', assigneeAgentId: 'agent-1' });
+  w.pc.addRun({ issueId: issue.id, status: 'queued' });
+  w.pc.addRecovery(issue.id);
+  w.pc.addInteraction(issue.id, { kind: 'request_confirmation', payload: confirmPayload({ prompt: 'Still send this card' }) });
+  await bot.pollOnce();
+  assert.ok(w.tg.findMessage('Recovery'));
+  assert.ok(w.tg.findMessage('Still send this card'));
+  assert.equal(w.pc.requestsTo('GET', /\/heartbeat-runs$/).length, 0);
+});
+
 test('done message quotes the last agent comment and links the task id', async (t) => {
   const w = await world(t);
   const bot = await w.primedBot();
