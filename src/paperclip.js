@@ -204,6 +204,10 @@ export class PaperclipClient {
     return this.request('GET', `/api/companies/${companyId}/heartbeat-runs`, { query: { summary: 'true', ...query } });
   }
 
+  listIssueLiveRuns(issueId) {
+    return this.request('GET', `/api/issues/${issueId}/live-runs`);
+  }
+
   cancelRun(runId) {
     return this.request('POST', `/api/heartbeat-runs/${runId}/cancel`);
   }

@@ -649,6 +649,11 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
     return list.slice(0, limit);
   });
 
+  route('GET', '/api/issues/:id/live-runs', ({ params }) => {
+    const issueId = getIssue(params.id).id;
+    return [...runs].reverse().filter((run) => RUN_ACTIVE.includes(run.status) && run.contextSnapshot?.issueId === issueId);
+  });
+
   route('POST', '/api/heartbeat-runs/:id/cancel', ({ params }) => {
     const run = runs.find((r) => r.id === params.id);
     if (!run) throw new HttpError(404, 'Heartbeat run not found');

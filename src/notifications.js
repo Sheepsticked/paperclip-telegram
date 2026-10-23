@@ -61,19 +61,11 @@ async function sendFeedCard(bot, item, cache, sentIssueIds) {
 async function freshEntries(bot, items) {
   const { state } = bot;
   const entries = [];
-  const runsByAgent = new Map();
   const holdBlocker = async (item) => {
     if (item.sourceKind !== 'blocker_attention' || item.subject?.kind !== 'issue') return false;
     try {
-      const { assigneeAgentId } = await bot.pc.getIssue(item.subject.id);
-      if (!assigneeAgentId) return false;
-      if (!runsByAgent.has(assigneeAgentId)) {
-        runsByAgent.set(assigneeAgentId, null);
-        runsByAgent.set(assigneeAgentId, await bot.pc.listRuns(bot.config.companyId, { agentId: assigneeAgentId, limit: 50 }));
-      }
-      return runsByAgent.get(assigneeAgentId)?.some((run) =>
-        (run.status === 'queued' || run.status === 'running') && run.contextSnapshot?.issueId === item.subject.id,
-      ) ?? false;
+      const runs = await bot.pc.listIssueLiveRuns(item.subject.id);
+      return runs.length > 0;
     } catch {
       return false;
     }
