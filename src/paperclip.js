@@ -1,3 +1,5 @@
+import { TooBigError, readCapped } from './body.js';
+
 export class PaperclipError extends Error {
   constructor(method, path, { status = null, code = null, detail = '', network = false }) {
     super(network ? `paperclip ${method} ${path} failed: ${detail}` : `paperclip ${method} ${path} failed: ${status} ${detail}`);
@@ -11,6 +13,7 @@ export class PaperclipError extends Error {
 
 const ATTENTION_PAGE_LIMIT = 100;
 const UPLOAD_TIMEOUT_MS = 120_000;
+const DOWNLOAD_TIMEOUT_MS = 60_000;
 
 // Board-key client. It never sends a run id header, so the owner's comments stay human comments.
 export class PaperclipClient {
@@ -219,6 +222,33 @@ export class PaperclipClient {
 
   getDocument(issueId, key) {
     return this.request('GET', `/api/issues/${issueId}/documents/${encodeURIComponent(key)}`);
+  }
+
+  // The attachments of a task: id, issueCommentId, contentType, byteSize, originalFilename.
+  listAttachments(issueId) {
+    return this.request('GET', `/api/issues/${issueId}/attachments`);
+  }
+
+  // The bytes of an attachment. A body over `maxBytes` is refused while it streams.
+  async downloadAttachment(attachmentId, { maxBytes, timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}) {
+    const path = `/api/attachments/${encodeURIComponent(attachmentId)}/content`;
+    const network = (err) => new PaperclipError('GET', path, { network: true, detail: err?.cause?.code ?? err?.name ?? 'network error' });
+    let response;
+    try {
+      response = await this.#fetch(`${this.#baseUrl}${path}`, { headers: { authorization: `Bearer ${this.#token}` }, signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err) {
+      throw network(err);
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw new PaperclipError('GET', path, { status: response.status, detail: response.statusText });
+    }
+    try {
+      return await readCapped(response.body, maxBytes);
+    } catch (err) {
+      if (err instanceof TooBigError) throw new PaperclipError('GET', path, { status: 413, detail: 'attachment is too big' });
+      throw network(err);
+    }
   }
 
   uploadAttachment(companyId, issueId, { name, type, data }) {

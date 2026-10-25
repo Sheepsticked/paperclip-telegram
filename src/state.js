@@ -17,6 +17,7 @@ const MAX_ROOTS = 2000;
 const MAX_REVIEW_SENT = 2000;
 const MAX_STATUS_RETRIES = 200;
 const MAX_SHOWN_COMMENTS = 500;
+const MAX_SENT_IMAGES = 500;
 
 export const DEFAULT_SETTINGS = {
   done: true,
@@ -173,6 +174,11 @@ function loadShownComments(saved) {
   return new Set(ids.slice(-MAX_SHOWN_COMMENTS));
 }
 
+function loadSentImages(saved) {
+  const ids = Array.isArray(saved) ? saved.filter((id) => typeof id === 'string') : [];
+  return new Set(ids.slice(-MAX_SENT_IMAGES));
+}
+
 // Failed status messages that are tried again: issue id to the status and the number of failed tries.
 function loadStatusRetries(saved) {
   const retries = new Map();
@@ -234,6 +240,7 @@ export class State {
     this.reviewSent = loadReviewSent(data.reviewSent);
     this.statusRetries = loadStatusRetries(data.statusRetries);
     this.shownComments = loadShownComments(data.shownComments);
+    this.sentImages = loadSentImages(data.sentImages);
     this.topics = loadTopics(data.topics);
     this.roots = loadRoots(data.roots);
     this.boardMessageId = Number.isInteger(data.boardMessageId) ? data.boardMessageId : null;
@@ -276,6 +283,7 @@ export class State {
     this.boardMessageId = null;
     this.boardHash = null;
     this.shownComments.clear();
+    this.sentImages.clear();
     this.inboxSyncDone = false;
     this.cardResync = true;
     return true;
@@ -378,6 +386,17 @@ export class State {
 
   hasShown(commentId) {
     return this.shownComments.has(commentId);
+  }
+
+  // Remembers that an attachment was sent to the chat as a picture, so it is not sent a second time.
+  noteImageSent(attachmentId) {
+    this.sentImages.delete(attachmentId);
+    this.sentImages.add(attachmentId);
+    while (this.sentImages.size > MAX_SENT_IMAGES) this.sentImages.delete(this.sentImages.values().next().value);
+  }
+
+  hasSentImage(attachmentId) {
+    return this.sentImages.has(attachmentId);
   }
 
   // Counts a failed status message; returns the number of failed tries for this issue and status.
@@ -592,6 +611,7 @@ export class State {
       reviewSent: [...this.reviewSent],
       statusRetries: Object.fromEntries(this.statusRetries),
       shownComments: [...this.shownComments],
+      sentImages: [...this.sentImages],
     };
   }
 

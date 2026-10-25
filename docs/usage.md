@@ -152,6 +152,19 @@ Send a photo or a file as a reply to a bot message about a task, or inside the t
 
 Sent on its own, a file with a caption offers "Create a task from this?" with the caption as the text, and the file is attached once the task exists. Without a caption the bot asks for one, or for a reply to a task message. Each photo or file of an album is handled by itself.
 
+## Images in comments
+
+When the bot shows a comment and the comment carries an image, the image follows as a picture right under it. This covers a followed comment and the comment quoted in a **Done** or **In review** message, the latter only when the comment is really quoted. The picture is a reply to that message, in the same topic (or in the one chat when topics are off). Card details, documents, descriptions and the task view send no pictures.
+
+- The images are the ones the comment links to (`![alt](/api/attachments/<id>/content)`, a plain link to the attachment, or the same link under `uiBaseUrl`) and the ones attached to the comment itself. Only the task's own attachments count. PNG, JPEG, WebP and GIF are sent. SVG, PDFs and other files stay links in the comment text.
+- One image is sent as a photo and two to ten as one album. With more than ten, the first ten are sent and the links in the text stay for the rest. A picture has no caption, and the comment text keeps its links.
+- A PNG, JPEG or WebP up to 10 MB is sent as a photo. A GIF, and a picture that Telegram refuses as a photo because of its size or dimensions, is sent as a file of up to 20 MB. Anything bigger is skipped and stays a link. An album holds only photos or only files, so a comment with both sends two groups, photos first.
+- Pictures are always silent, also under an alert such as a finished top-level task, and they never mention you. A reply to a picture is a comment on the same task as a reply to the message above it.
+- The bot remembers the last 500 attachment ids it sent, and an image it already sent is not sent again by a later comment or a **Done** quote. The memory is kept across restarts and cleared when `telegramChatId` changes.
+- If reading the attachment list, a download or an upload fails, the bot logs one short warning and goes on. The comment message is already out and the image stays a link. Nothing is retried. If the bot stops after a comment and before its pictures, the pictures are lost.
+
+There is no setting for this. A picture goes only under a message that is sent, so the **Followed comments**, **Done messages** and **In-review messages** toggles and the mute decide it too.
+
 ## Voice notes
 
 Send a voice note instead of typing. The bot turns it into text on this machine with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (the `small` model, on the CPU), shows you the text it heard and uses it only after you confirm. The audio never leaves the machine and no API key is involved.

@@ -3,6 +3,7 @@ import { updateBoard } from './board.js';
 import { pollFollowing } from './follow.js';
 import { ALERT_LIMIT, MESSAGE_LIMIT, QUOTE_LEVELS, escapeHtml, firstLine, fitMessage, headline, issueUrl, kindWord, link, openRows, prefixOf, quote, runUrl, truncate } from './format.js';
 import { guarded, isTelegramOutage, isUnauthorized } from './guard.js';
+import { sendCommentImages } from './images.js';
 import { INBOX_KINDS, isFreshInbox, itemIssueId, sendInboxItem, syncInbox } from './inbox.js';
 import { PaperclipError } from './paperclip.js';
 import { RICH_ALERT_LIMIT, RICH_LIMIT, RICH_QUOTE_LEVELS, escapeRich, richBody, richJoin } from './rich.js';
@@ -270,8 +271,11 @@ async function sendStatusUpdate(bot, issue) {
     quoted ||= richQuoted;
     return richQuoted ? { ...fitted, rich } : fitted;
   };
-  await bot.sendAbout(issue, build, { alert });
-  if (quoted) bot.state.noteShown(comment.id);
+  const placed = await bot.sendAbout(issue, build, { alert });
+  if (quoted) {
+    bot.state.noteShown(comment.id);
+    await sendCommentImages(bot, issue, comment, placed);
+  }
 }
 
 // Issues whose status message failed earlier may have left the update window, so they are read again.

@@ -122,6 +122,11 @@ export class Bot {
     return params;
   }
 
+  // The chat, topic and reply fields of a silent message that answers `replyTo`.
+  quietReply(replyTo, thread) {
+    return this.#sendParams({ replyTo, thread, alert: false });
+  }
+
   // Sends Markdown as a rich message and returns its id; null when rich messages are off or Telegram refused
   // this one (the caller then sends the plain version). Any other failure is thrown.
   async sendRich(markdown, { keyboard, replyTo, issue, thread, alert = false } = {}) {

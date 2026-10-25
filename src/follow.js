@@ -1,6 +1,7 @@
 import { authorName, isBoardComment } from './comments.js';
 import { QUOTE_LEVELS, fitMessage, headline, issueUrl, openRows, quote } from './format.js';
 import { isTelegramOutage, isUnauthorized } from './guard.js';
+import { sendCommentImages } from './images.js';
 import { RICH_LIMIT, RICH_QUOTE_LEVELS, escapeRich, richBody, richJoin } from './rich.js';
 import { gate } from './settings.js';
 import { PaperclipError } from './paperclip.js';
@@ -38,7 +39,7 @@ async function sendFollowComment(bot, issue, comment) {
   const author = await authorName(bot, comment);
   const { uiBaseUrl } = bot.config;
   const url = issueUrl(uiBaseUrl, issue.identifier);
-  await bot.sendAbout(issue, ({ own }) => {
+  const placed = await bot.sendAbout(issue, ({ own }) => {
     const head = headline(author, issue, { own, url });
     const text = fitMessage((max) => [head, quote(comment.body, max)].filter(Boolean).join('\n'), QUOTE_LEVELS);
     const richHead = headline(author, issue, { own, url, esc: escapeRich });
@@ -47,6 +48,7 @@ async function sendFollowComment(bot, issue, comment) {
     return { text, rich, keyboard: openRows(issue.id, own) };
   });
   bot.state.noteShown(comment.id);
+  await sendCommentImages(bot, issue, comment, placed);
 }
 
 async function sendFollowBurst(bot, issue, count) {

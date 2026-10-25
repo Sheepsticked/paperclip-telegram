@@ -8,6 +8,40 @@ const REACTIONS = ['\u{1F44D}', '\u{1F44E}', '\u2764', '\u{1F525}', '\u{1F389}']
 const FULL_RIGHTS = { can_manage_topics: true, can_pin_messages: true, can_delete_messages: true };
 const BOT_DOWNLOAD_LIMIT = 20 * 1024 * 1024;
 const BUTTON_STYLES = ['danger', 'success', 'primary'];
+const PHOTO_LIMIT = 10 * 1024 * 1024;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+// The width and height in a PNG header, or null for any other data.
+function pngSize(data) {
+  if (data.length < 24 || !data.subarray(0, 8).equals(PNG_SIGNATURE)) return null;
+  return { width: data.readUInt32BE(16), height: data.readUInt32BE(20) };
+}
+
+// The problem Telegram has with a file sent as a photo, or null: a photo is at most 10 MB, its sides add up to at most 10000
+// and the longer side is at most 20 times the shorter.
+function photoProblem(file) {
+  if (file.size === 0) return 'Bad Request: file must be non-empty';
+  if (file.size > PHOTO_LIMIT) return 'Bad Request: file is too big';
+  if (!file.type.startsWith('image/')) return 'Bad Request: IMAGE_PROCESS_FAILED';
+  const size = pngSize(file.data);
+  if (size && (size.width + size.height > 10000 || Math.max(size.width, size.height) > 20 * Math.min(size.width, size.height))) return 'Bad Request: PHOTO_INVALID_DIMENSIONS';
+  return null;
+}
+
+// Multipart fields arrive as strings; the ones Telegram reads as numbers, booleans or JSON are decoded here.
+// Returns the decoded fields and the file parts as { name, type, size, data } by field name.
+async function readUpload(form) {
+  const params = {};
+  const files = new Map();
+  for (const [field, value] of form) {
+    if (typeof value === 'string') params[field] = value;
+    else files.set(field, { name: value.name, type: value.type, size: value.size, data: Buffer.from(await value.arrayBuffer()) });
+  }
+  for (const key of ['chat_id', 'message_thread_id']) if (key in params) params[key] = Number(params[key]);
+  if ('disable_notification' in params) params.disable_notification = params.disable_notification === 'true';
+  for (const key of ['reply_parameters', 'media', 'reply_markup']) if (key in params) params[key] = JSON.parse(params[key]);
+  return { params, files };
+}
 
 // A date-time entity needs a `unix` time (whole seconds); its optional format is `r` or `w?[dD]?[tT]?`.
 const TIME_FORMAT = /^(?:r|w?[dD]?[tT]?)$/;
@@ -254,6 +288,8 @@ export async function startFakeTelegram({
   const written = [];
   const messages = new Map();
   const sends = [];
+  const pictures = [];
+  let nextGroupId = 1;
   const callbackAnswers = [];
   const updates = [];
   const waiters = new Set();
@@ -359,6 +395,41 @@ export async function startFakeTelegram({
       },
     ],
   });
+
+  // Checks an upload call, records its pictures and answers with their messages (or with the error Telegram would give).
+  function sendUpload(res, params, items, method) {
+    if (params.chat_id !== chatId) return error(res, 400, 'Bad Request: chat not found');
+    note('text', params.caption);
+    if (items.some((item) => !item.file)) return error(res, 400, 'Bad Request: there is no file in the request');
+    for (const { kind, file } of items) {
+      if (kind === 'document' && file.size === 0) return error(res, 400, 'Bad Request: file must be non-empty');
+      const problem = kind === 'photo' ? photoProblem(file) : null;
+      if (problem) return error(res, 400, problem);
+    }
+    if (!checkThread(res, params.message_thread_id)) return null;
+    const thread = params.message_thread_id ?? null;
+    const group = method === 'sendMediaGroup' ? nextGroupId++ : null;
+    const result = items.map(({ kind, file }) => {
+      const message = { message_id: nextMessageId++, chat: { id: chatId, type: chat.type }, date: 0, ...(thread ? { message_thread_id: thread, is_topic_message: true } : {}) };
+      pictures.push({
+        messageId: message.message_id,
+        method,
+        kind,
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        data: file.data,
+        replyTo: params.reply_parameters?.message_id ?? null,
+        thread,
+        silent: params.disable_notification === true,
+        caption: params.caption ?? null,
+        group,
+      });
+      sends.push({ messageId: message.message_id, text: '', silent: params.disable_notification === true });
+      return message;
+    });
+    return respond(res, 200, { ok: true, result: method === 'sendMediaGroup' ? result : result[0] });
+  }
 
   const handlers = {
     getUpdates(res, params) {
@@ -494,6 +565,26 @@ export async function startFakeTelegram({
       description = params.description ?? '';
       return respond(res, 200, { ok: true, result: true });
     },
+    // Files the bot sends: one photo, one document or an album of 2 to 10 photos or documents. A photo that
+    // Telegram would refuse (size, dimensions, not an image) is refused here too.
+    sendPhoto(res, params, uploads) {
+      return sendUpload(res, params, [{ kind: 'photo', file: uploads.get('photo') }], 'sendPhoto');
+    },
+    sendDocument(res, params, uploads) {
+      return sendUpload(res, params, [{ kind: 'document', file: uploads.get('document') }], 'sendDocument');
+    },
+    sendMediaGroup(res, params, uploads) {
+      const media = params.media;
+      if (!Array.isArray(media) || media.length < 2 || media.length > 10) return error(res, 400, 'Bad Request: media group must include 2-10 items');
+      const items = [];
+      for (const entry of media) {
+        const name = /^attach:\/\/(.+)$/.exec(entry?.media ?? '')?.[1];
+        if (!['photo', 'document'].includes(entry?.type) || !name || !uploads.has(name)) return error(res, 400, 'Bad Request: wrong media in the album');
+        items.push({ kind: entry.type, file: uploads.get(name) });
+      }
+      if (new Set(items.map((item) => item.kind)).size > 1) return error(res, 400, "Bad Request: can't use the media of the specified type in the album");
+      return sendUpload(res, params, items, 'sendMediaGroup');
+    },
     // A file the owner sent: unknown ids and files over the bot limit are refused like the real API does.
     getFile(res, params) {
       const file = files.get(params.file_id);
@@ -593,7 +684,7 @@ export async function startFakeTelegram({
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => {
+    req.on('end', async () => {
       const download = /^\/file\/bot([^/]+)\/(.+)$/.exec(req.url);
       if (download) {
         downloads.push({ path: download[2], tokenOk: download[1] === token });
@@ -609,12 +700,19 @@ export async function startFakeTelegram({
       if (!match || match[1] !== token) return error(res, 401, 'Unauthorized');
       const method = match[2];
       let params = {};
+      let uploads = new Map();
+      const type = req.headers['content-type'] ?? '';
       try {
-        params = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+        if (type.startsWith('multipart/form-data')) {
+          ({ params, files: uploads } = await readUpload(await new Response(Buffer.concat(chunks), { headers: { 'content-type': type } }).formData()));
+        } else {
+          params = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+        }
       } catch {
         return error(res, 400, 'Bad Request: invalid JSON');
       }
-      calls.push({ method, params, at: Date.now() });
+      // The log keeps the structure of the files, not their bytes.
+      calls.push({ method, params, ...(uploads.size > 0 ? { files: [...uploads].map(([field, file]) => ({ field, name: file.name, type: file.type, size: file.size })) } : {}), at: Date.now() });
       const failure = failures.get(method);
       if (failure && (!failure.when || failure.when(params))) {
         if (failure.times !== Infinity) {
@@ -625,7 +723,7 @@ export async function startFakeTelegram({
       }
       const handler = handlers[method];
       if (!handler) return error(res, 404, 'Not Found');
-      return handler(res, params);
+      return handler(res, params, uploads);
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -682,6 +780,8 @@ export async function startFakeTelegram({
     allowRich() {
       richRefusal = null;
     },
+    // The pictures the bot uploaded (photos and documents, one entry per file), in send order.
+    pictures: () => [...pictures],
     // Messages sent or last edited as rich messages.
     richMessages: () => [...messages.values()].filter((m) => m.rich),
     setForum(value) {

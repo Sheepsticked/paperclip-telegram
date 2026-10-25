@@ -24,6 +24,14 @@ class Reply {
   }
 }
 
+// A route result that is sent as raw bytes instead of JSON.
+class Raw {
+  constructor(headers, data) {
+    this.headers = headers;
+    this.data = data;
+  }
+}
+
 class HttpError extends Error {
   constructor(status, message, code) {
     super(message);
@@ -668,6 +676,27 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
     return doc;
   });
 
+  // The attachment as the list route shows it (no bytes); the paths are the ones the server adds.
+  const attachmentRow = ({ commentId, data, ...row }) => ({
+    ...row,
+    issueCommentId: commentId,
+    contentPath: `/api/attachments/${row.id}/content`,
+    openPath: `/api/attachments/${row.id}/content`,
+    downloadPath: `/api/attachments/${row.id}/content?download=1`,
+  });
+
+  // The newest first, like the server.
+  route('GET', '/api/issues/:id/attachments', ({ params }) => {
+    const issue = getIssue(params.id);
+    return attachments.filter((a) => a.issueId === issue.id).map(attachmentRow).reverse();
+  });
+
+  route('GET', '/api/attachments/:id/content', ({ params }) => {
+    const attachment = attachments.find((a) => a.id === params.id);
+    if (!attachment) throw new HttpError(404, 'Attachment not found');
+    return new Raw({ 'content-type': attachment.contentType, 'content-length': attachment.data.length, 'content-disposition': `inline; filename="${attachment.originalFilename}"` }, attachment.data);
+  });
+
   // Multipart upload with the file in the field "file".
   route('POST', '/api/companies/:cid/issues/:iid/attachments', async ({ params, form }) => {
     const issue = getIssue(params.iid);
@@ -731,6 +760,10 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
           const match = r.regex.exec(url.pathname);
           if (!match) continue;
           const out = await r.handler({ params: match.groups ?? {}, query: url.searchParams, body: form ? {} : (body ?? {}), form });
+          if (out instanceof Raw) {
+            res.writeHead(200, out.headers);
+            return res.end(out.data);
+          }
           return out instanceof Reply ? send(out.status, out.body) : send(200, out);
         }
         return send(404, { error: 'Not found' });
@@ -1014,6 +1047,26 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
       if (agent) agent.lastHeartbeatAt = now;
       if (status === 'running' && issueId) Object.assign(getIssue(issueId), { executionRunId: run.id, executionAgentNameKey: agent?.name.trim().toLowerCase() ?? null, executionLockedAt: now });
       return run;
+    },
+    // A file on a task. By default it is not bound to a comment, like an agent's upload; pass `commentId` to bind it.
+    // `size` is the byte size the list reports when it should differ from the bytes.
+    addAttachment(issueId, { name = 'screenshot.png', type = 'image/png', data = 'IMAGE-BYTES', size, commentId = null } = {}) {
+      const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      const now = tick();
+      const attachment = {
+        id: randomUUID(),
+        companyId,
+        issueId: getIssue(issueId).id,
+        commentId,
+        contentType: type,
+        byteSize: size ?? bytes.length,
+        originalFilename: name,
+        createdAt: now,
+        updatedAt: now,
+        data: bytes,
+      };
+      attachments.push(attachment);
+      return attachmentRow(attachment);
     },
     addDocument(issueId, { key = 'plan', title = 'Plan', body = '' } = {}) {
       const now = tick();

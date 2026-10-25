@@ -1,3 +1,5 @@
+import { TooBigError, readCapped } from './body.js';
+
 export class TelegramError extends Error {
   constructor(method, { status = null, code = null, description = '', retryAfter = null, network = false, aborted = false }) {
     // The request URL carries the bot token, so only the method name and Telegram's own text are reported.
@@ -11,6 +13,18 @@ export class TelegramError extends Error {
     this.network = network;
     this.aborted = aborted;
   }
+}
+
+const UPLOAD_TIMEOUT_MS = 120_000;
+
+// A multipart body: plain fields as strings (objects as JSON) and one part per file `{ field, name, type, data }`.
+function uploadForm(fields, files) {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined && value !== null) form.append(key, typeof value === 'object' ? JSON.stringify(value) : String(value));
+  }
+  for (const { field, name, type, data } of files) form.append(field, new Blob([data], { type }), name);
+  return form;
 }
 
 export function defaultSleep(ms, signal) {
@@ -41,6 +55,7 @@ export class TelegramClient {
     this.#maxRetries = maxRetries;
   }
 
+  // `params` is an object sent as JSON, or a FormData sent as multipart.
   async call(method, params = {}, { signal, timeoutMs = 30_000 } = {}) {
     for (let attempt = 0; ; attempt += 1) {
       try {
@@ -60,8 +75,7 @@ export class TelegramClient {
     try {
       response = await this.#fetch(`${this.#baseUrl}/bot${this.#token}/${method}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(params),
+        ...(params instanceof FormData ? { body: params } : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(params) }),
         signal: combined,
       });
     } catch (err) {
@@ -134,19 +148,28 @@ export class TelegramClient {
       await response.body?.cancel().catch(() => {});
       throw fail({ status: response.status, code: response.status, description: response.statusText || 'download failed' });
     }
-    const chunks = [];
-    let size = 0;
     try {
-      for await (const chunk of response.body) {
-        size += chunk.length;
-        if (maxBytes !== undefined && size > maxBytes) throw fail({ status: 413, code: 413, description: 'file is too big' });
-        chunks.push(chunk);
-      }
+      return await readCapped(response.body, maxBytes);
     } catch (err) {
-      if (err instanceof TelegramError) throw err;
+      if (err instanceof TooBigError) throw fail({ status: 413, code: 413, description: 'file is too big' });
       throw fail({ network: true, description: err?.cause?.code ?? err?.name ?? 'network error' });
     }
-    return Buffer.concat(chunks);
+  }
+
+  // The uploads below take the usual send fields in `params` and the file as `{ name, type, data }`.
+  sendPhoto(params, file) {
+    return this.call('sendPhoto', uploadForm(params, [{ field: 'photo', ...file }]), { timeoutMs: UPLOAD_TIMEOUT_MS });
+  }
+
+  sendDocument(params, file) {
+    return this.call('sendDocument', uploadForm(params, [{ field: 'document', ...file }]), { timeoutMs: UPLOAD_TIMEOUT_MS });
+  }
+
+  // An album of 2 to 10 files that are all photos or all documents (`kind`).
+  sendMediaGroup(params, kind, files) {
+    const media = files.map((file, i) => ({ type: kind, media: `attach://file${i}` }));
+    const form = uploadForm({ ...params, media }, files.map((file, i) => ({ field: `file${i}`, ...file })));
+    return this.call('sendMediaGroup', form, { timeoutMs: UPLOAD_TIMEOUT_MS });
   }
 
   getChat(params) {

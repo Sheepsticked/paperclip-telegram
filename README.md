@@ -10,6 +10,7 @@ A Telegram bot for [Paperclip](https://github.com/paperclipai/paperclip). Use it
 
 - When an agent asks you something (a confirmation, a checkbox list or a form), the bot sends a card with buttons. Tap a button to answer. Approvals, decisions and stalled reviews that wait for you arrive the same way.
 - You get a message when a task is done or ready for review, and an alert when an agent run fails.
+- Images that an agent attaches to a comment arrive as silent pictures right under the comment.
 - In a group with Topics, every task gets its own topic with a pinned task view. A pinned board in General shows what needs you. Finished topics are deleted after a few days.
 - Open a task to finish, reopen, cancel, comment, assign, set the project, read its documents or stop its run. Pause, resume and run agents. Create tasks from text, photos, files or voice notes.
 - Send a voice note instead of typing. It is turned into text on your own machine, and the text is used only after you confirm it.
