@@ -24,10 +24,14 @@ fi
 if [ "$engine" = parakeet ]; then
   device=cpu
   runtime="onnxruntime==1.31.1"
+  other=onnxruntime-gpu
   if nvidia-smi >/dev/null 2>&1; then
     device=auto
     runtime="onnxruntime-gpu[cuda,cudnn]==1.31.1"
+    other=onnxruntime
   fi
+  # Both builds provide the same module, so the one not wanted on this run is removed first.
+  "$python_bin" -m pip uninstall --quiet --disable-pip-version-check --yes "$other" >/dev/null 2>&1 || true
   "$python_bin" -m pip install --quiet --disable-pip-version-check --no-input "onnx-asr[hub]==0.12.0" "$runtime" "av>=15,<17"
   mkdir -p "$models_dir"
   # The first load downloads the model into its folder; later loads only read it.
