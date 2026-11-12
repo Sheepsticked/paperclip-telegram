@@ -128,10 +128,10 @@ test('the helper gets the downloaded audio in a private temporary directory that
   assert.deepEqual(w.tg.downloads.map((d) => [d.path, d.tokenOk]), [[w.tg.files.get('file-1').path, true]]);
   const [start, end] = events(ctx);
   assert.equal(start.event, 'start');
-  assert.deepEqual(start.flags, ['--model', 'base', '--models-dir', path.join(ctx.dir, 'models'), '--threads', '3', '--beam', '2', '--language', 'de']);
+  assert.deepEqual(start.flags, ['--engine', 'whisper', '--device', 'cpu', '--model', 'base', '--models-dir', path.join(ctx.dir, 'models'), '--threads', '3', '--beam', '2', '--language', 'de']);
   assert.equal(start.dirMode, 0o700);
   assert.equal(start.fileMode, 0o600);
-  assert.equal(start.nice, 10);
+  assert.equal(start.nice, os.getPriority(), 'the helper runs at the priority of the bot');
   assert.equal(end.event, 'end');
   assert.equal(fs.existsSync(start.dir), false, 'the temporary directory is gone');
 });
@@ -139,7 +139,7 @@ test('the helper gets the downloaded audio in a private temporary directory that
 test('the default arguments name the small model, 4 threads and beam 1, and no language', async (t) => {
   const ctx = await setup(t);
   await dictate(ctx, { mode: 'text', text: 'Hello' });
-  assert.deepEqual(events(ctx)[0].flags, ['--model', 'small', '--models-dir', path.join(ctx.dir, 'models'), '--threads', '4', '--beam', '1']);
+  assert.deepEqual(events(ctx)[0].flags, ['--engine', 'whisper', '--device', 'cpu', '--model', 'small', '--models-dir', path.join(ctx.dir, 'models'), '--threads', '4', '--beam', '1']);
 });
 
 test('Cancel posts nothing and settles the message as cancelled', async (t) => {
@@ -661,6 +661,8 @@ test('the voice block of the config is checked and gets its defaults', () => {
   assert.deepEqual(parseConfig({ ...base, voice: { python: '/v/bin/python', modelsDir: '/v/models' } }).config.voice, {
     python: '/v/bin/python',
     modelsDir: '/v/models',
+    engine: 'whisper',
+    device: 'cpu',
     model: 'small',
     language: null,
     beamSize: 1,
@@ -669,7 +671,7 @@ test('the voice block of the config is checked and gets its defaults', () => {
   });
   assert.deepEqual(
     parseConfig({ ...base, voice: { python: '~/v/bin/python', modelsDir: '/m', model: 'base', language: 'de', beamSize: 5, threads: 2, maxSeconds: 60 } }).config.voice,
-    { python: path.join(os.homedir(), 'v/bin/python'), modelsDir: '/m', model: 'base', language: 'de', beamSize: 5, threads: 2, maxSeconds: 60 },
+    { python: path.join(os.homedir(), 'v/bin/python'), modelsDir: '/m', engine: 'whisper', device: 'cpu', model: 'base', language: 'de', beamSize: 5, threads: 2, maxSeconds: 60 },
   );
   const problems = (voice) => parseConfig({ ...base, voice }).problems;
   assert.deepEqual(problems('yes'), ['voice must be an object when set']);
@@ -685,13 +687,27 @@ test('the voice block of the config is checked and gets its defaults', () => {
       'voice.maxSeconds must be a positive number of seconds when set',
     ],
   );
+  assert.deepEqual(problems({ python: 'p', modelsDir: 'm', engine: 'vosk', device: 'gpu' }), [
+    'voice.engine must be "whisper" or "parakeet" when set',
+    'voice.device must be "cpu", "cuda" or "auto" when set',
+  ]);
+  assert.deepEqual(problems({ python: 'p', modelsDir: 'm', engine: 'parakeet', language: 'en' }), ['voice.language and voice.languages only work with the whisper engine']);
+  assert.deepEqual(problems({ python: 'p', modelsDir: 'm', engine: 'parakeet', languages: ['en', 'ru'] }), ['voice.language and voice.languages only work with the whisper engine']);
+  const parakeet = parseConfig({ ...base, voice: { python: 'p', modelsDir: 'm', engine: 'parakeet', device: 'auto', language: null } }).config.voice;
+  assert.deepEqual([parakeet.engine, parakeet.device, parakeet.language], ['parakeet', 'auto', null]);
+});
+
+test('with the parakeet engine the helper gets the engine and device, and no language', async (t) => {
+  const ctx = await setup(t, { voice: { engine: 'parakeet', device: 'auto' } });
+  await dictate(ctx, { mode: 'text', text: 'Hello' });
+  assert.deepEqual(events(ctx)[0].flags, ['--engine', 'parakeet', '--device', 'auto', '--model', 'small', '--models-dir', path.join(ctx.dir, 'models'), '--threads', '4', '--beam', '1']);
 });
 
 test('the sample config has a voice block that parses', () => {
   const sample = JSON.parse(fs.readFileSync(fileURLToPath(new URL('../config.example.json', import.meta.url)), 'utf8'));
   const { config, problems } = parseConfig(sample);
   assert.deepEqual(problems, []);
-  assert.deepEqual(Object.keys(config.voice).sort(), ['beamSize', 'language', 'maxSeconds', 'model', 'modelsDir', 'python', 'threads']);
+  assert.deepEqual(Object.keys(config.voice).sort(), ['beamSize', 'device', 'engine', 'language', 'maxSeconds', 'model', 'modelsDir', 'python', 'threads']);
 });
 
 test('the real helper fails with a short message on stderr and nothing on stdout when it cannot read the audio', (t) => {
@@ -727,7 +743,7 @@ test('with languages a note is read in the first one, then in the one the /setti
   const ctx = await setup(t, { voice: EN_RU });
   const { w, bot } = ctx;
   await dictate(ctx, { mode: 'text', text: 'First' });
-  assert.deepEqual(events(ctx)[0].flags, ['--model', 'small', '--models-dir', path.join(ctx.dir, 'models'), '--threads', '4', '--beam', '1', '--language', 'en']);
+  assert.deepEqual(events(ctx)[0].flags, ['--engine', 'whisper', '--device', 'cpu', '--model', 'small', '--models-dir', path.join(ctx.dir, 'models'), '--threads', '4', '--beam', '1', '--language', 'en']);
 
   const view = await openSettings(ctx);
   assert.deepEqual(rows(w, view.message_id).slice(-2), [['Voice · English'], ['Mute 1 h', 'Mute 8 h', 'Unmute']]);

@@ -65,7 +65,9 @@ function nonEmpty(value) {
 
 const isPositiveInteger = (value) => Number.isSafeInteger(value) && value > 0;
 
-export const VOICE_DEFAULTS = { model: 'small', language: null, beamSize: 1, threads: 4, maxSeconds: 300 };
+export const VOICE_DEFAULTS = { engine: 'whisper', device: 'cpu', model: 'small', language: null, beamSize: 1, threads: 4, maxSeconds: 300 };
+const VOICE_ENGINES = ['whisper', 'parakeet'];
+const VOICE_DEVICES = ['cpu', 'cuda', 'auto'];
 
 // The optional `voice.languages` list; null when it is not set. A bad list is reported once, by its first fault.
 function parseVoiceLanguages(raw, problems) {
@@ -95,9 +97,16 @@ function parseVoice(raw, problems) {
   };
   need(nonEmpty(raw.python), 'voice.python must be a non-empty path');
   need(nonEmpty(raw.modelsDir), 'voice.modelsDir must be a non-empty path');
+  need(raw.engine === undefined || VOICE_ENGINES.includes(raw.engine), 'voice.engine must be "whisper" or "parakeet" when set');
+  need(raw.device === undefined || VOICE_DEVICES.includes(raw.device), 'voice.device must be "cpu", "cuda" or "auto" when set');
   need(raw.model === undefined || nonEmpty(raw.model), 'voice.model must be a non-empty string when set');
   need(raw.language === undefined || raw.language === null || nonEmpty(raw.language), 'voice.language must be a language code or null');
   const languages = parseVoiceLanguages(raw, problems);
+  // Parakeet finds the language by itself and cannot be given one.
+  need(
+    raw.engine !== 'parakeet' || ((raw.language === undefined || raw.language === null) && (raw.languages === undefined || raw.languages === null)),
+    'voice.language and voice.languages only work with the whisper engine',
+  );
   need(raw.beamSize === undefined || isPositiveInteger(raw.beamSize), 'voice.beamSize must be a positive integer when set');
   need(raw.threads === undefined || isPositiveInteger(raw.threads), 'voice.threads must be a positive integer when set');
   need(
@@ -108,6 +117,8 @@ function parseVoice(raw, problems) {
   return {
     python: expandHome(raw.python.trim()),
     modelsDir: expandHome(raw.modelsDir.trim()),
+    engine: raw.engine ?? VOICE_DEFAULTS.engine,
+    device: raw.device ?? VOICE_DEFAULTS.device,
     model: raw.model?.trim() ?? VOICE_DEFAULTS.model,
     language: raw.language?.trim() ?? VOICE_DEFAULTS.language,
     ...(languages ? { languages } : {}),

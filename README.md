@@ -46,7 +46,7 @@ The screenshots come from the [demo](docs/usage.md#try-it-with-sample-data), whi
 
 The bot polls Paperclip and uses long polling for Telegram. Both connections start from the bot, so it needs no public URL and opens no port.
 
-It signs in to Paperclip with a board key, so your replies and changes are recorded as yours. It makes no AI calls. Voice is transcribed locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), so audio never leaves your machine.
+It signs in to Paperclip with a board key, so your replies and changes are recorded as yours. It makes no AI calls. Voice is transcribed locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) or Parakeet v3, so audio never leaves your machine.
 
 Only one Telegram user is accepted. Every other update is dropped.
 
@@ -55,7 +55,7 @@ Only one Telegram user is accepted. Every other update is dropped.
 - A Paperclip server that the bot can reach. Tested with Paperclip 2026.1012.0.
 - A Telegram account, and a bot made with [@BotFather](https://t.me/BotFather). A group with Topics is best. A private chat works too.
 - Docker with the Compose plugin, or Node.js 22 or newer on a Linux machine with systemd.
-- For voice: about 1 GB of disk. A GPU is not needed.
+- For voice: about 1 GB of disk for Whisper `small`, or about 3 GB for Parakeet v3 (5 GB with the GPU build). A GPU is not needed, but an NVIDIA GPU makes Parakeet answer in a few seconds.
 - `curl` and `jq` for the setup commands below.
 
 ## Quick start with Docker Compose
@@ -240,14 +240,14 @@ GitHub Actions runs the tests on Node.js 22 and 24 and builds both Docker target
 - Paperclip lists a failed run only after it has used up its retries, so the alert comes after the retries.
 - Item verdicts, task suggestions, connection requests and other card kinds are sent as text with a link. Answer them in Paperclip.
 - Telegram lets a bot download files up to 20 MB, and Paperclip accepts up to 10 MB. Voice notes are accepted up to 5 minutes by default.
-- Voice transcription runs on the CPU, so a long note takes a while. A failed audio download is not retried. Only voice notes are read, not audio files or video notes.
+- On the CPU a long voice note takes a while. A failed audio download is not retried. Only voice notes are read, not audio files or video notes.
 - On large installations, project counts are read from at most 1000 tasks, and a single poll reads at most 2000 changed tasks.
 - Each bot serves one Telegram user, one chat and one Paperclip company.
 - Each photo of an album is handled on its own.
 
 ## Credits
 
-Paperclip's card API was learned from [iosayin/paperclip-telegram](https://github.com/iosayin/paperclip-telegram) (MIT). Voice notes use [faster-whisper](https://github.com/SYSTRAN/faster-whisper).
+Paperclip's card API was learned from [iosayin/paperclip-telegram](https://github.com/iosayin/paperclip-telegram) (MIT). Voice notes use [faster-whisper](https://github.com/SYSTRAN/faster-whisper) and [onnx-asr](https://github.com/istupakov/onnx-asr) with NVIDIA's Parakeet v3.
 
 ## License
 

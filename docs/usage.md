@@ -167,7 +167,7 @@ There is no setting for this. A picture goes only under a message that is sent, 
 
 ## Voice notes
 
-Send a voice note instead of typing. The bot turns it into text on this machine with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (the `small` model, on the CPU), shows you the text it heard and uses it only after you confirm, unless **Auto-send voice** is on (below). The audio never leaves the machine and no API key is involved.
+Send a voice note instead of typing. The bot turns it into text on this machine with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (the `small` model on the CPU by default) or with NVIDIA's [Parakeet v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) through [onnx-asr](https://github.com/istupakov/onnx-asr) (`voice.engine`), shows you the text it heard and uses it only after you confirm, unless **Auto-send voice** is on (below). The audio never leaves the machine and no API key is involved.
 
 Where you send the note decides what happens, as for typed text:
 
@@ -188,15 +188,17 @@ scripts/install-voice.sh
 
 The script is safe to run again. It creates a Python virtual environment in `${XDG_DATA_HOME:-~/.local/share}/paperclip-telegram/voice` with `faster-whisper==1.2.1` and `av>=15,<16` (PyAV 16 and later break that faster-whisper), downloads the `small` model (or the one named in `WHISPER_MODEL`, for example `WHISPER_MODEL=base scripts/install-voice.sh`) into its `models` folder (plan for about 1 GB of disk for the environment and the model together), and prints the `voice` block for the config. It needs `python3` with the `venv` module (`python3-venv` on Debian and Ubuntu) and a network connection for the one-time download. Add the block to the config and restart the service. `VOICE_DIR` changes the folder.
 
+`VOICE_ENGINE=parakeet scripts/install-voice.sh` sets up Parakeet v3 instead, in `.../paperclip-telegram/voice-parakeet`: `onnx-asr`, PyAV and ONNX Runtime (the GPU build with its CUDA libraries when `nvidia-smi` finds a GPU, which then sets `"device": "auto"`), and the model in `models/parakeet-v3`. Plan for about 3 GB of disk for the model, and about 2.5 GB more for the GPU build. Parakeet reads English, Russian and 23 other European languages and finds the language of each note by itself; it writes nothing for silence or noise. On a GPU a note takes a few seconds, most of it loading the model, and long notes are read in pieces of up to a minute, cut at the quietest point, which keeps the GPU memory near 3 GB. The model is loaded for each note, so the GPU is free between notes.
+
 With Docker, use the `voice` image: set `BOT_TARGET=voice` (see the [README](../README.md#quick-start-with-docker-compose)). It runs the same installer while the image is built, so the model is inside the image and the bot downloads nothing at run time. The `voice` block of `docker/config.example.json` already has the paths in the image.
 
 The `voice` keys are listed in [configuration.md](configuration.md#voice).
 
-The bot starts `scripts/transcribe.py` with `nice -n 10`, without a shell, for each note: the audio goes into a private temporary folder that is removed afterwards, the helper is killed when it runs too long or the bot stops, and it never uses the network at run time (`HF_HUB_OFFLINE=1`). You can run it by hand: `<venv>/bin/python scripts/transcribe.py note.ogg --models-dir <venv>/models` prints one JSON line with `text`, `language` and `seconds` (the time the transcription took). How long that is depends on the CPU.
+The bot starts `scripts/transcribe.py` at its own priority, without a shell, for each note: the audio goes into a private temporary folder that is removed afterwards, the helper is killed when it runs too long or the bot stops, and it never uses the network at run time (`HF_HUB_OFFLINE=1`). You can run it by hand: `<venv>/bin/python scripts/transcribe.py note.ogg --models-dir <venv>/models` prints one JSON line with `text`, `language` and `seconds` (the time the transcription took); add `--engine parakeet --device auto` for Parakeet, which reports `language` as `null`. How long that takes depends on the CPU or GPU.
 
 ### Choosing the language
 
-Without `voice.languages` the helper detects the language of each note, or uses `voice.language` when it is set, and no message names a language. Detection can guess wrong, so a list lets you choose instead. With `"languages": ["en", "ru"]`:
+This applies to the `whisper` engine; `parakeet` always finds the language by itself and shows no language buttons. Without `voice.languages` the helper detects the language of each note, or uses `voice.language` when it is set, and no message names a language. Detection can guess wrong, so a list lets you choose instead. With `"languages": ["en", "ru"]`:
 
 - Every note is read in a named language, passed to the helper as `--language <code>`. The transcript names it: `Heard · English` above the quote in a topic or a reply, and `Heard · English:` in the task offer. The language names come from the runtime (`English`, `Russian`); a code it has no name for is shown as the code.
 - With two or more languages, `/settings` has one more button, **Voice · English**. A tap moves to the next language in the list, wrapping around, and answers `Voice: Russian`. The pick is saved in the state file and applies to the notes that arrive after it: a note keeps the language it had when it arrived, also while it waits behind another note.

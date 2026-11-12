@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'transcribe.py');
 const MIN_TIMEOUT_SECONDS = 60;
 const TIMEOUT_FACTOR = 4;
-const NICE_LEVEL = '10';
 const MAX_OUTPUT = 1024 * 1024;
 const MAX_REASON = 200;
 
@@ -56,9 +55,11 @@ export class Transcriber {
   }
 
   #args(file, language) {
-    const { python, modelsDir, model, threads, beamSize } = this.#voice;
+    const { engine, device, modelsDir, model, threads, beamSize } = this.#voice;
     return [
-      '-n', NICE_LEVEL, python, SCRIPT, file,
+      SCRIPT, file,
+      '--engine', engine,
+      '--device', device,
       '--model', model,
       '--models-dir', modelsDir,
       '--threads', String(threads),
@@ -69,7 +70,7 @@ export class Transcriber {
 
   #run(file, language, timeoutMs) {
     return new Promise((resolve, reject) => {
-      const child = spawn('nice', this.#args(file, language), { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(this.#voice.python, this.#args(file, language), { stdio: ['ignore', 'pipe', 'pipe'] });
       this.#child = child;
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');

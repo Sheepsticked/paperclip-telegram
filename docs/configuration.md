@@ -46,11 +46,13 @@ The `voice` block is an object. Its `python` and `modelsDir` are required when t
 | --- | --- | --- | --- |
 | `python` | yes | | The Python of the voice setup (`<venv>/bin/python`). `~/` is expanded. In the Docker voice image it is `/opt/voice/bin/python`. |
 | `modelsDir` | yes | | The folder the model was downloaded to (`<venv>/models`). In the Docker voice image it is `/opt/voice/models`. |
+| `engine` | no | `whisper` | `whisper` uses faster-whisper. `parakeet` uses NVIDIA Parakeet v3 through onnx-asr: it finds the language by itself, so `language` and `languages` are a config error with it, and `model` and `beamSize` are not used. Each engine needs its own setup from `scripts/install-voice.sh`. |
+| `device` | no | `cpu` | `cpu`, `cuda` (an NVIDIA GPU) or `auto`, which tries the GPU and falls back to the CPU when the GPU fails. |
 | `model` | no | `small` | The Whisper model to load. It must be the one that was downloaded: `scripts/install-voice.sh` and the `WHISPER_MODEL` build argument choose it. |
 | `language` | no | `null` | `null` detects the language of every note. A code such as `"en"` fixes it. Not together with `languages`. |
 | `languages` | no | unset | A list of 1 to 4 different [Whisper language codes](https://github.com/openai/whisper/blob/main/whisper/tokenizer.py) (2 or 3 lowercase letters), for example `["en", "ru"]`; the first is the default. The bot then never detects the language: every note is read in a named one. See [Choosing the language](usage.md#choosing-the-language). Setting both `language` and `languages` is a config error. |
 | `beamSize` | no | `1` | Beam size of the search; `1` is the fastest. A positive integer. |
-| `threads` | no | `4` | CPU threads for one transcription. A positive integer. |
+| `threads` | no | `4` | CPU threads for one transcription on the CPU. A positive integer. |
 | `maxSeconds` | no | `300` | The longest note that is accepted. A positive number. |
 
 Voice notes are described in [Voice notes](usage.md#voice-notes).
