@@ -168,7 +168,7 @@ const reEscape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // A pattern for the outcome block that ends a settled message; `detail` is its source text after the kind, `before` and
 // `below` the source text above and under it (`before` anchors the pattern at the start), `rich` selects rich Markdown.
 export function outcomePattern(kind, detail = null, { rich = false, before = null, below = '' } = {}) {
-  const time = rich ? '!\\[\\d\\d:\\d\\d UTC\\]\\(tg://time\\?unix=\\d+&format=r\\)' : '<tg-time unix="\\d+" format="r">\\d\\d:\\d\\d UTC</tg-time>';
+  const time = rich ? '!\\[\\d\\d:\\d\\d UTC\\]\\(tg://time\\?unix=\\d+&format=dt\\)' : '<tg-time unix="\\d+" format="dt">\\d\\d:\\d\\d UTC</tg-time>';
   const body = `<b>${reEscape(kind)}</b>${detail ? ` · ${reEscape(detail)}` : ''} · ${time}`;
   const block = rich ? `==${body}==` : `<blockquote>${body}</blockquote>`;
   return new RegExp(`${before === null ? '' : `^${reEscape(before)}`}${block}${reEscape(below)}$`);

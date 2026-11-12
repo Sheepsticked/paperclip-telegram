@@ -10,7 +10,7 @@ const TASK_URL = `${UI_BASE_URL}/TST/issues/TST-1`;
 const TITLE = 'Build the bot';
 const logText = (w) => w.allLogText();
 // A settled card's last block with its clock-dependent time put as placeholders.
-const SETTLED = '<blockquote><b>Confirmed</b> · Deploy · <tg-time unix="T" format="r">HH:MM UTC</tg-time></blockquote>';
+const SETTLED = '<blockquote><b>Confirmed</b> · Deploy · <tg-time unix="T" format="dt">HH:MM UTC</tg-time></blockquote>';
 const fixedTime = (text) => text.replace(/unix="\d+"/, 'unix="T"').replace(/>\d\d:\d\d UTC</, '>HH:MM UTC<');
 const rowsOf = (w, id) => (w.tg.messages.get(id).markup?.inline_keyboard ?? []).map((row) => row.map((b) => `${b.text}${b.style ? ` [${b.style}]` : ''}`));
 

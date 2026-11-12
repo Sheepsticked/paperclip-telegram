@@ -9,8 +9,8 @@ import { choiceQuestion, confirmPayload, questionsPayload, startWorld, textQuest
 // The instant every settle in this file happens at, as the bot's test clock says.
 const SETTLED_AT = Date.parse('2026-05-01T12:34:56Z');
 const UNIX = SETTLED_AT / 1000;
-const TIME = `<tg-time unix="${UNIX}" format="r">12:34 UTC</tg-time>`;
-const RICH_TIME = `![12:34 UTC](tg://time?unix=${UNIX}&format=r)`;
+const TIME = `<tg-time unix="${UNIX}" format="dt">12:34 UTC</tg-time>`;
+const RICH_TIME = `![12:34 UTC](tg://time?unix=${UNIX}&format=dt)`;
 // The outcome block, given the kind and detail as source text.
 const classic = (body) => `<blockquote>${body} · ${TIME}</blockquote>`;
 const marked = (body) => `==${body} · ${RICH_TIME}==`;
@@ -71,8 +71,8 @@ test('the fake accepts a date-time entity with a valid unix time and refuses one
   assert.match(validateRichMarkdown('![x](https://example.com/a.png)'), /media/);
 
   assert.deepEqual(timeEntities(`a ${TIME} b ${RICH_TIME}`), [
-    { unix: UNIX, format: 'r', text: '12:34 UTC' },
-    { unix: UNIX, format: 'r', text: '12:34 UTC' },
+    { unix: UNIX, format: 'dt', text: '12:34 UTC' },
+    { unix: UNIX, format: 'dt', text: '12:34 UTC' },
   ]);
 });
 
@@ -107,7 +107,7 @@ for (const rich of MODES) {
     assert.equal(w.tg.callbackAnswers.at(-1).text, 'Confirmed');
     assert.equal(sends(w), calls, 'settling sends nothing new');
     assert.equal(w.tg.messages.get(message.message_id).rich, rich);
-    assert.deepEqual(timeEntities(textOf(w, message)), [{ unix: UNIX, format: 'r', text: '12:34 UTC' }]);
+    assert.deepEqual(timeEntities(textOf(w, message)), [{ unix: UNIX, format: 'dt', text: '12:34 UTC' }]);
     assert.deepEqual([...bot.state.cards.values()][0].outcome, { kind: 'Confirmed', detail: 'Deploy', at: '2026-05-01T12:34:56.000Z' });
     assert.equal(w.pc.interactions.get(interaction.id).status, 'accepted');
   });
@@ -332,7 +332,7 @@ test('classic: a card settled in Paperclip shows the time Paperclip recorded, ne
     const shown = new Date(shownMs).toISOString().slice(11, 16);
     assert.equal(
       textOf(w, message),
-      `${head}${gap}Deploy the change?\n\n<blockquote><b>Confirmed in Paperclip</b> · <tg-time unix="${shownMs / 1000}" format="r">${shown} UTC</tg-time></blockquote>`,
+      `${head}${gap}Deploy the change?\n\n<blockquote><b>Confirmed in Paperclip</b> · <tg-time unix="${shownMs / 1000}" format="dt">${shown} UTC</tg-time></blockquote>`,
       resolvedAt,
     );
   }

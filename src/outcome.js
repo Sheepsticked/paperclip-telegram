@@ -10,14 +10,15 @@ export function makeOutcome(kind, detail, nowMs, ref = null) {
   return { kind, detail: text || null, at: new Date(nowMs).toISOString(), ...(ref ? { ref } : {}) };
 }
 
-// The settle time as the date-time entity Telegram shows relative to now ("5 minutes ago"); the visible text, which
-// clients that do not know the entity show, is the UTC clock time. Empty when the outcome has no usable time.
+// The settle time as a date-time entity that Telegram shows as a short date and time in the reader's time zone. A
+// relative time would be redrawn every second and close an open expandable quote. Clients that do not know the entity
+// show the UTC clock time. Empty when the outcome has no usable time.
 function timePart(at, rich) {
   const ms = Date.parse(at);
   if (!Number.isFinite(ms)) return '';
   const unix = Math.floor(ms / 1000);
   const clock = `${new Date(ms).toISOString().slice(11, 16)} UTC`;
-  return rich ? `![${clock}](tg://time?unix=${unix}&format=r)` : `<tg-time unix="${unix}" format="r">${clock}</tg-time>`;
+  return rich ? `![${clock}](tg://time?unix=${unix}&format=dt)` : `<tg-time unix="${unix}" format="dt">${clock}</tg-time>`;
 }
 
 // The highlighted last block of a settled message, as classic HTML or (with `rich`) as rich Markdown.
