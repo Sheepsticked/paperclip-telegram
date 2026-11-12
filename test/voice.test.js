@@ -614,6 +614,9 @@ test('/help names voice notes only when they are set up', async (t) => {
   const on = await setup(t);
   await on.bot.handleUpdate(on.w.tg.message('/help'));
   assert.match(on.w.tg.lastMessage().text, /Voice notes work too, up to 5 minutes long: the bot turns them into text on this machine, shows the text and uses it only after you confirm\./);
+  await autoSendOn(on);
+  await on.bot.handleUpdate(on.w.tg.message('/help'));
+  assert.match(on.w.tg.lastMessage().text, /shows the text and uses it at once in a task topic or a reply \(Auto-send voice in \/settings\)\./);
 
   const off = await setup(t, { noVoice: true });
   await off.bot.handleUpdate(off.w.tg.message('/help'));
@@ -1238,8 +1241,8 @@ test('without languages the v10 messages stay: no row in /settings, no language 
   const { w, bot } = ctx;
   const { thread } = await taskWithTopic(w, bot);
   const view = await openSettings(ctx);
-  assert.equal(rows(w, view.message_id).length, 6);
-  assert.ok(!rows(w, view.message_id).flat().some((label) => /Voice/.test(label)));
+  assert.equal(rows(w, view.message_id).length, 7);
+  assert.ok(!rows(w, view.message_id).flat().some((label) => /^Voice/.test(label)));
   await bot.handleUpdate(w.tg.tap(view.message_id, 'S:v'));
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Unknown action');
   assert.equal(bot.state.voiceLanguage, null);
@@ -1301,4 +1304,95 @@ test('voice.languages is checked: 1 to 4 distinct codes of 2 or 3 lowercase lett
   assert.deepEqual(parse({ languages: ['en', 'ru', 'en'] }).problems, ['voice.languages must not repeat a code']);
   assert.deepEqual(parse({ language: 'en', languages: ['en', 'ru'] }).problems, ['set voice.language or voice.languages, not both']);
   assert.deepEqual(parse({ language: 'en', languages: [] }).problems, ['set voice.language or voice.languages, not both', listProblem]);
+});
+
+// Turns on Auto-send voice through /settings.
+async function autoSendOn(ctx) {
+  const view = await openSettings(ctx);
+  await ctx.bot.handleUpdate(ctx.w.tg.tapButton(view.message_id, 'Auto-send voice'));
+  assert.equal(ctx.w.tg.callbackAnswers.at(-1).text, 'Auto-send voice: on');
+}
+
+test('/settings has Auto-send voice, off by default; the tap is saved and kept across a restart', async (t) => {
+  const ctx = await setup(t);
+  const { w, bot } = ctx;
+  const view = await openSettings(ctx);
+  assert.deepEqual(rows(w, view.message_id).slice(-2), [['Auto-send voice · Off'], ['Mute 1 h', 'Mute 8 h', 'Unmute']]);
+  assert.equal(styles(w, view.message_id)['Auto-send voice · Off'], null);
+
+  await bot.handleUpdate(w.tg.tapButton(view.message_id, 'Auto-send voice'));
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Auto-send voice: on');
+  assert.equal(styles(w, view.message_id)['Auto-send voice · On'], 'success');
+  assert.equal(JSON.parse(fs.readFileSync(w.statePath, 'utf8')).settings.voiceAutoSend, true);
+  assert.equal(w.makeBot().state.settings.voiceAutoSend, true);
+});
+
+test('without a voice block /settings has no Auto-send voice and refuses its tap', async (t) => {
+  const { w, bot } = await setup(t, { noVoice: true });
+  const view = await openSettings({ w, bot });
+  assert.ok(!rows(w, view.message_id).flat().some((label) => /voice/i.test(label)));
+  await bot.handleUpdate(w.tg.tap(view.message_id, 'S:t:voiceAutoSend'));
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Unknown action');
+  assert.equal(bot.state.settings.voiceAutoSend, false);
+});
+
+test('with Auto-send voice a note in a task topic is posted as soon as it is transcribed and settles as sent', async (t) => {
+  const ctx = await setup(t, { forum: true, voice: EN_RU });
+  const { w, bot } = ctx;
+  const { issue, thread } = await taskWithTopic(w, bot);
+  await autoSendOn(ctx);
+
+  const { update, placeholder } = await dictate(ctx, { mode: 'text', text: 'Please use the blue logo' }, { thread });
+  const [comment] = posts(w, '/comments');
+  assert.match(comment.path, new RegExp(`/api/issues/${issue.id}/comments$`));
+  assert.deepEqual(comment.body, { body: 'Please use the blue logo' });
+  assert.deepEqual(w.tg.reactions, [{ messageId: update.message.message_id, emoji: ['\u{1F44D}'] }]);
+  assert.match(textOf(w, placeholder.message_id), outcomePattern('Sent', null, { before: heardIn('English', 'Please use the blue logo') }));
+  assert.deepEqual(w.tg.buttons(placeholder.message_id), [], 'no Send, Cancel or language button is left');
+  assert.equal(bot.state.voice.size, 0);
+
+  // A late tap on the settled message changes nothing.
+  await bot.handleUpdate(w.tg.tap(placeholder.message_id, 'V:s:1'));
+  assert.equal(w.tg.callbackAnswers.at(-1).text, 'Already handled');
+  assert.equal(posts(w, '/comments').length, 1);
+});
+
+test('with Auto-send voice a voice reply to a card question answers it without a tap', async (t) => {
+  const ctx = await setup(t);
+  const { w } = ctx;
+  await autoSendOn(ctx);
+  const { interaction, message } = await withCard(ctx, { kind: 'ask_user_questions', payload: questionsPayload([textQuestion('why', 'What is the reason?')]) });
+
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Because of the audit' }, { replyTo: message.message_id });
+  assert.deepEqual(posts(w, '/respond')[0].body, { answers: [{ questionId: 'why', optionIds: [], otherText: 'Because of the audit' }] });
+  assert.equal(w.pc.interactions.get(interaction.id).status, 'answered');
+  assert.match(w.tg.messages.get(placeholder.message_id).text, outcomePattern('Sent', null, { before: heard('Because of the audit') }));
+});
+
+test('with Auto-send voice a refused send shows Send and Cancel, and Send works then', async (t) => {
+  const ctx = await setup(t, { forum: true });
+  const { w, bot } = ctx;
+  const { thread } = await taskWithTopic(w, bot);
+  await autoSendOn(ctx);
+
+  w.pc.failRequests('POST', /\/comments$/, 500, 1);
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Try twice' }, { thread });
+  assert.equal(w.pc.comments.length, 0);
+  assert.equal(textOf(w, placeholder.message_id), heard('Try twice').trimEnd());
+  assert.deepEqual(labels(w, placeholder.message_id), ['Send', 'Cancel']);
+  assert.equal(bot.state.voice.size, 1, 'the note is kept for Send');
+
+  await bot.handleUpdate(w.tg.tapButton(placeholder.message_id, 'Send'));
+  assert.equal(w.pc.comments.at(-1).body, 'Try twice');
+  assert.match(textOf(w, placeholder.message_id), outcomePattern('Sent', null, { before: heard('Try twice') }));
+});
+
+test('with Auto-send voice a note in General still becomes the task offer', async (t) => {
+  const ctx = await setup(t);
+  const { w } = ctx;
+  await autoSendOn(ctx);
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'A new landing page' });
+  assert.match(textOf(w, placeholder.message_id), /Create a task from this\?/);
+  assert.equal(posts(w, '/issues').length, 0, 'no task is made without a tap');
+  assert.equal(posts(w, '/comments').length, 0);
 });

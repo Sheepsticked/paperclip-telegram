@@ -56,7 +56,7 @@ test('a toggle flips in place, is saved, and the answer names the new value', as
   assert.equal(w.tg.callbackAnswers.at(-1).text, 'Done messages: on');
 
   const restarted = w.makeBot();
-  assert.deepEqual(restarted.state.settings, { done: true, inReview: true, runFailed: true, followedComments: true, autoFollowCreated: true });
+  assert.deepEqual(restarted.state.settings, { done: true, inReview: true, runFailed: true, followedComments: true, autoFollowCreated: true, voiceAutoSend: false });
 });
 
 test('settings survive a restart', async (t) => {

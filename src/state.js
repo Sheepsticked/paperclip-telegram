@@ -25,6 +25,7 @@ export const DEFAULT_SETTINGS = {
   runFailed: true,
   followedComments: true,
   autoFollowCreated: true,
+  voiceAutoSend: false,
 };
 
 const MUTED_KINDS = ['done', 'inReview', 'runFailed', 'comments'];

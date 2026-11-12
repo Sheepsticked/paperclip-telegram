@@ -167,12 +167,14 @@ There is no setting for this. A picture goes only under a message that is sent, 
 
 ## Voice notes
 
-Send a voice note instead of typing. The bot turns it into text on this machine with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (the `small` model, on the CPU), shows you the text it heard and uses it only after you confirm. The audio never leaves the machine and no API key is involved.
+Send a voice note instead of typing. The bot turns it into text on this machine with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (the `small` model, on the CPU), shows you the text it heard and uses it only after you confirm, unless **Auto-send voice** is on (below). The audio never leaves the machine and no API key is involved.
 
 Where you send the note decides what happens, as for typed text:
 
 - **In General** (or anywhere the bot would offer a task for typed text): the bot replies `Transcribing…` and then edits that reply into the task offer: `Heard:`, the text in a quote, then `Create a task from this?` with the usual buttons. The task is created from the text.
 - **In a task topic, or as a reply to a bot message**: the reply becomes **Heard**, the text in a quote, and the buttons **Send** (green) and **Cancel** (red). **Send** handles the text exactly as if you had typed it there: a reply to a card's text question answers it, a reply to a decline prompt is the reason, a reply to a note prompt of a stalled review is the note, and anything else is a comment on the task. If Paperclip refuses it, the buttons stay and you can tap **Send** again. **Cancel** does nothing else.
+
+**Auto-send voice** in `/settings` (off by default, shown only when voice notes are set up) skips the **Send** tap: a note in a task topic or a reply is used as soon as it is transcribed, exactly as **Send** would use it, and the message ends with `Sent` and no buttons, so there is no read-again button either. If Paperclip refuses the text, the message shows **Send** and **Cancel** as without the setting. In General a note still becomes the task offer, as typed text does.
 
 A settled message keeps the text and ends with the outcome line `Sent`, `Cancelled` or `Expired` (see [Settled messages](#settled-messages)); a transcript that waited 24 hours expires. The comment or answer is the text only, with no marker. A long text is folded in an expandable quote; if the message would pass Telegram's length limit the shown text is cut with `…`, and **Send** still uses all of it. The text is HTML-escaped.
 
@@ -207,7 +209,7 @@ Each new comment of a followed task is one message: the agent's name in bold as 
 
 ## Settings and mute
 
-`/settings` has a toggle for each kind of message (done, in review, failed run, followed comments) and for following the tasks you create, plus **Mute 1 h**, **Mute 8 h** and **Unmute**. With two or more `voice.languages` it also has the **Voice** button that picks the language of new voice notes (see [Choosing the language](#choosing-the-language)). A toggle reads `Done messages · On` (green) or `Done messages · Off`. While muted, those messages are not sent; when the mute ends, one line says how many were hidden. Cards that need an answer and inbox items are always sent.
+`/settings` has a toggle for each kind of message (done, in review, failed run, followed comments) and for following the tasks you create, plus **Mute 1 h**, **Mute 8 h** and **Unmute**. With voice notes set up it also has **Auto-send voice** (see [Voice notes](#voice-notes)), and with two or more `voice.languages` the **Voice** button that picks the language of new voice notes (see [Choosing the language](#choosing-the-language)). A toggle reads `Done messages · On` (green) or `Done messages · Off`. While muted, those messages are not sent; when the mute ends, one line says how many were hidden. Cards that need an answer and inbox items are always sent.
 
 Only what needs you makes a sound: cards, approvals, decisions, stalled reviews, blocked tasks, recovery items, join requests, a failed run, **Done** of a top-level task and a rejected Paperclip token. The summary line for many changes makes a sound only when it counts a finished top-level task. Everything else is delivered silently: agent comments, **In review**, **Done** of a subtask, task views, replies to your commands and lists. The mute and the toggles above decide what is sent at all; they do not change the sound.
 
@@ -222,7 +224,7 @@ A private chat gets no mention.
 | --- | --- |
 | `/new [@agent] [#project] <text>` | Creates a task. The first line is the title (100 characters at most), the whole text is the description. `@agent` is an agent's URL key or name without spaces; `#project` is a project's URL key or name. The default is the lead agent and `newTaskProjectId`. Without `#project` (and without a default project) it first asks which project, with buttons for the model and reasoning level. An unknown name gets a reply that lists the valid ones, and nothing is created. Sending the same message twice does not create a second task. |
 | plain text | Offers "Create a task from this?" with the agent, model and reasoning level to pick (see [New tasks](#new-tasks)), then asks for the project. An offer expires after 24 hours. In a task topic, plain text is a comment instead. |
-| voice note | Turns it into text on this machine and shows it before it is used: an offer for a new task in General, **Send** and **Cancel** in a task topic or as a reply. See [Voice notes](#voice-notes). |
+| voice note | Turns it into text on this machine and shows it before it is used: an offer for a new task in General, **Send** and **Cancel** in a task topic or as a reply (or sends it at once with **Auto-send voice** on). See [Voice notes](#voice-notes). |
 | photo or file | Attaches it to the task of the message it replies to, or of the topic it is written in. With a caption and no task it offers a new task. See [Photos and files](#photos-and-files). |
 | `/task <ID>` | Opens a task. In a task topic, without an ID, it opens that topic's task. |
 | `/tasks` | Lists open tasks. |
@@ -231,7 +233,7 @@ A private chat gets no mention.
 | `/following` | Lists the followed tasks. |
 | `/agents` | Lists the agents; a button opens the agent view. |
 | `/projects` | Lists the projects with their open tasks. |
-| `/settings` | Notification toggles, mute and, when `voice.languages` lists two or more, the voice language. |
+| `/settings` | Notification toggles, mute, Auto-send voice when voice notes are set up and, when `voice.languages` lists two or more, the voice language. |
 | `/help`, `/start` | Show the command list, with buttons for `/tasks`, `/status`, `/agents`, `/projects`, `/following` and `/settings`. |
 
 The help buttons run the command as if you had typed it, in the same chat and topic; the help message stays as it is, and a tap shows no pop-up. `/new`, `/task` and `/find` need text, so they have no button.
@@ -240,7 +242,7 @@ The same commands are in the Telegram menu. The bot also sets its profile text (
 
 ## Replies
 
-Reply to any message the bot sent about a task (including the task view and inbox items) and your text becomes a comment on that task. With topics on, the bot reacts to your message with a thumbs-up; otherwise it answers `Comment posted · ID`. A reply to a card with an open text question answers the question instead, a reply to a decline prompt is the decline reason, and a reply to the note prompt of a stalled review is its note. The bot remembers the last 2000 messages; for an older or unrelated message it answers "I don't know which task this is". A photo or file as a reply is attached to the task (see [Photos and files](#photos-and-files)); a voice note as a reply is turned into text first and used after you tap **Send** (see [Voice notes](#voice-notes)); other message types are not supported.
+Reply to any message the bot sent about a task (including the task view and inbox items) and your text becomes a comment on that task. With topics on, the bot reacts to your message with a thumbs-up; otherwise it answers `Comment posted · ID`. A reply to a card with an open text question answers the question instead, a reply to a decline prompt is the decline reason, and a reply to the note prompt of a stalled review is its note. The bot remembers the last 2000 messages; for an older or unrelated message it answers "I don't know which task this is". A photo or file as a reply is attached to the task (see [Photos and files](#photos-and-files)); a voice note as a reply is turned into text first and used after you tap **Send**, or at once with **Auto-send voice** on (see [Voice notes](#voice-notes)); other message types are not supported.
 
 ## Group with topics
 

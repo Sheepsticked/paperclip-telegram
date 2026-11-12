@@ -12,6 +12,15 @@ const TOGGLES = [
   ['autoFollowCreated', 'Follow new tasks'],
 ];
 
+// Sends a voice note in a topic or reply as soon as it is transcribed; shown only where voice notes are set up.
+const AUTO_SEND = ['voiceAutoSend', 'Auto-send voice'];
+
+// The toggles a tap may flip: the shown ones, so a stale button for a hidden one is refused.
+const shownToggles = (bot) => (bot.config.voice ? [...TOGGLES, AUTO_SEND] : TOGGLES);
+
+const toggleButton = (state, [key, label]) =>
+  state.settings[key] ? button(`${label} · On`, `S:t:${key}`, 'success') : button(`${label} · Off`, `S:t:${key}`);
+
 // Which counter a muted message adds to.
 const MUTED_COUNTER = { done: 'done', inReview: 'inReview', runFailed: 'runFailed', followedComments: 'comments' };
 
@@ -37,7 +46,8 @@ export function renderSettings(bot) {
   const lines = ['<b>Settings</b>'];
   lines.push(state.isMuted(bot.now()) ? `Muted until ${untilText(state.muteUntil)}` : 'Notifications are on');
   lines.push('Cards that need an answer are always sent.');
-  const keyboard = TOGGLES.map(([key, label]) => [state.settings[key] ? button(`${label} · On`, `S:t:${key}`, 'success') : button(`${label} · Off`, `S:t:${key}`)]);
+  const keyboard = TOGGLES.map((toggle) => [toggleButton(state, toggle)]);
+  if (bot.config.voice) keyboard.push([toggleButton(state, AUTO_SEND)]);
   if (canSwitchLanguage(bot)) keyboard.push([button(`Voice · ${languageName(switchLanguage(bot))}`, 'S:v')]);
   keyboard.push([
     ...MUTE_HOURS.map((hours) => button(`Mute ${hours} h`, `S:m:${hours}`)),
@@ -73,10 +83,11 @@ export async function handleSettingsCallback(bot, cq) {
   const [, op, arg] = String(cq.data).split(':');
   const { state } = bot;
   let answer = '';
-  if (op === 't' && TOGGLES.some(([key]) => key === arg)) {
+  const toggle = op === 't' ? shownToggles(bot).find(([key]) => key === arg) : null;
+  if (toggle) {
     state.settings[arg] = !state.settings[arg];
     state.save();
-    answer = `${TOGGLES.find(([key]) => key === arg)[1]}: ${state.settings[arg] ? 'on' : 'off'}`;
+    answer = `${toggle[1]}: ${state.settings[arg] ? 'on' : 'off'}`;
   } else if (op === 'm' && MUTE_HOURS.includes(Number(arg))) {
     state.mute(bot.now(), Number(arg));
     state.save();

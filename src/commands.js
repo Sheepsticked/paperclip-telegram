@@ -51,7 +51,9 @@ function helpText(bot) {
   const { voice } = bot.config;
   const voiceNotes = voice
     ? [
-        `Voice notes work too, up to ${lengthWords(voice.maxSeconds)} long: the bot turns them into text on this machine, shows the text and uses it only after you confirm.${
+        `Voice notes work too, up to ${lengthWords(voice.maxSeconds)} long: the bot turns them into text on this machine, shows the text and uses it ${
+          bot.state.settings.voiceAutoSend ? 'at once in a task topic or a reply (Auto-send voice in /settings)' : 'only after you confirm'
+        }.${
           canSwitchLanguage(bot) ? ' The language is set in /settings, and a button under the text reads the note again in another language.' : ''
         }`,
       ]

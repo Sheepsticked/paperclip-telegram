@@ -13,7 +13,7 @@ A Telegram bot for [Paperclip](https://github.com/paperclipai/paperclip). Use it
 - Images that an agent attaches to a comment arrive as silent pictures right under the comment.
 - In a group with Topics, every task gets its own topic with a pinned task view. A pinned board in General shows what needs you. Finished topics are deleted after a few days.
 - Open a task to finish, reopen, cancel, comment, assign, set the project, read its documents or stop its run. Pause, resume and run agents. Create tasks from text, photos, files or voice notes.
-- Send a voice note instead of typing. It is turned into text on your own machine, and the text is used only after you confirm it.
+- Send a voice note instead of typing. It is turned into text on your own machine, and the text is used after you confirm it, or at once if you turn on Auto-send voice in `/settings`.
 - Pick the model and reasoning level of an agent, of one task, or of a new task before you create it.
 - You can mute the group in Telegram. Only the messages that need you mention you, so only those pop up with a sound.
 
@@ -203,7 +203,7 @@ Send plain text in the main chat and the bot offers to create a task, with butto
 | `/following` | Lists the tasks you follow. |
 | `/agents` | Lists the agents. Open one to pause, resume, run it, or pick its model and reasoning level. |
 | `/projects` | Lists the projects with their open tasks. |
-| `/settings` | Choose which messages you get, and mute for 1 or 8 hours. |
+| `/settings` | Choose which messages you get, mute for 1 or 8 hours, and turn on Auto-send voice. |
 | `/help` | Shows the commands, with buttons for the common ones. |
 
 A short tour:

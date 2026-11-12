@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { deliverText } from './commands.js';
 import { expiredOffer, markSettled, offerFromVoice, settledPlain, wasSettled } from './create.js';
 import { FILE_LIMIT_BYTES } from './files.js';
 import { TRANSCRIPT_LEVELS, button, escapeHtml, fitMessage, quote } from './format.js';
@@ -144,11 +145,29 @@ async function show(bot, key, text) {
   }
   Object.assign(job, { status: 'ready', text, readyAt: bot.now() });
   bot.state.save();
+  // With auto-send on, the text goes out at once; if it is refused, Send and Cancel are shown as without it.
+  if (bot.state.settings.voiceAutoSend && (await sendJob(bot, key, job, deliverText))) return undefined;
   if (!(await editReply(bot, job, fitHeard(text, languageLabel(bot, job)), confirmKeyboard(bot, key, job)))) {
     bot.state.voice.delete(key);
     bot.state.save();
   }
   return undefined;
+}
+
+// Sends a ready note through `deliver` and settles its message as sent. The note is taken and saved before the text
+// goes out, so neither a failure nor a restart after Paperclip took it can send it twice. False when it was not used;
+// the note is then kept.
+async function sendJob(bot, key, job, deliver) {
+  bot.state.voice.delete(key);
+  bot.state.save();
+  if (!(await deliver(bot, typedMessage(job)))) {
+    bot.state.voice.set(key, job);
+    bot.state.save();
+    return false;
+  }
+  markSettled(bot, job.messageId);
+  await editReply(bot, job, fitHeard(job.text, languageLabel(bot, job), makeOutcome('Sent', null, bot.now())), []);
+  return true;
 }
 
 // The message the transcript stands in for, as if the owner had typed it there.
@@ -228,20 +247,13 @@ export async function handleVoiceCallback(bot, cq, deliver) {
   const job = bot.state.getVoice(key, bot.now());
   if (!job) return gone(bot, cq);
   if (op === 'l') return readAgain(bot, cq, key, job, code);
-  if (op === 'x' || op === 's') {
-    // The note is taken and saved before the text goes out, so neither a failure nor a restart after Paperclip took
-    // it can send it twice.
+  if (op === 's') return bot.answer(cq.id, (await sendJob(bot, key, job, deliver)) ? 'Sent' : 'Not sent');
+  if (op === 'x') {
     bot.state.voice.delete(key);
     bot.state.save();
-    if (op === 's' && !(await deliver(bot, typedMessage(job)))) {
-      bot.state.voice.set(key, job);
-      bot.state.save();
-      return bot.answer(cq.id, 'Not sent');
-    }
     markSettled(bot, messageId);
-    const outcome = makeOutcome(op === 's' ? 'Sent' : 'Cancelled', null, bot.now());
-    await bot.edit(messageId, fitHeard(job.text, languageLabel(bot, job), outcome), []);
-    return bot.answer(cq.id, outcome.kind);
+    await bot.edit(messageId, fitHeard(job.text, languageLabel(bot, job), makeOutcome('Cancelled', null, bot.now())), []);
+    return bot.answer(cq.id, 'Cancelled');
   }
   return bot.answer(cq.id, 'Unknown action');
 }

@@ -271,7 +271,7 @@ test('an old state file loads with default settings and nothing followed', (t) =
   fs.writeFileSync(file, JSON.stringify({ version: 1, offset: 7, cards: {}, messages: [[5, 'issue-1']], statuses: { 'issue-1': 'done' } }));
   const state = State.load(file);
   assert.equal(state.offset, 7);
-  assert.deepEqual(state.settings, { done: true, inReview: true, runFailed: true, followedComments: true, autoFollowCreated: true });
+  assert.deepEqual(state.settings, { done: true, inReview: true, runFailed: true, followedComments: true, autoFollowCreated: true, voiceAutoSend: false });
   assert.equal(state.following.size, 0);
   assert.equal(state.offers.size, 0);
   assert.equal(state.muteUntil, null);
@@ -283,7 +283,7 @@ test('State ignores malformed settings and counts from a hand-edited file', (t) 
   const file = path.join(tempDir(t), 'state.json');
   fs.writeFileSync(file, JSON.stringify({ settings: { done: 'no', inReview: false, extra: true }, mutedCounts: { done: -3, comments: 2.5, runFailed: 4 } }));
   const state = State.load(file);
-  assert.deepEqual(state.settings, { done: true, inReview: false, runFailed: true, followedComments: true, autoFollowCreated: true });
+  assert.deepEqual(state.settings, { done: true, inReview: false, runFailed: true, followedComments: true, autoFollowCreated: true, voiceAutoSend: false });
   assert.deepEqual(state.mutedCounts, { done: 0, inReview: 0, runFailed: 4, comments: 0 });
 });
 
