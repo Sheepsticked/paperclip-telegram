@@ -1,6 +1,6 @@
 import { handleCallback } from './actions.js';
 import { handleAgentCallback } from './agents.js';
-import { deliverText, handleHelpCallback } from './commands.js';
+import { handleHelpCallback } from './commands.js';
 import { handleOfferCallback } from './create.js';
 import { handleInboxCallback } from './inbox.js';
 import { handleListCallback } from './lists.js';
@@ -17,7 +17,7 @@ const HANDLERS = {
   I: handleInboxCallback,
   G: handleAgentCallback,
   H: handleHelpCallback,
-  V: (bot, cq) => handleVoiceCallback(bot, cq, deliverText),
+  V: (bot, cq) => handleVoiceCallback(bot, cq),
 };
 
 export function routeCallback(bot, cq) {

@@ -146,7 +146,16 @@ async function show(bot, key, text) {
   Object.assign(job, { status: 'ready', text, readyAt: bot.now() });
   bot.state.save();
   // With auto-send on, the text goes out at once; if it is refused, Send and Cancel are shown as without it.
-  if (bot.state.settings.voiceAutoSend && (await sendJob(bot, key, job, deliverText))) return undefined;
+  if (bot.state.settings.voiceAutoSend) {
+    try {
+      if (await sendJob(bot, key, job)) return undefined;
+    } catch (err) {
+      // It may have reached Paperclip, so it is not offered again; the text stays visible to be typed again.
+      bot.log.warn('could not auto-send a voice note', { error: err.message });
+      await editReply(bot, job, fitHeard(text, languageLabel(bot, job)), []);
+      return undefined;
+    }
+  }
   if (!(await editReply(bot, job, fitHeard(text, languageLabel(bot, job)), confirmKeyboard(bot, key, job)))) {
     bot.state.voice.delete(key);
     bot.state.save();
@@ -154,13 +163,13 @@ async function show(bot, key, text) {
   return undefined;
 }
 
-// Sends a ready note through `deliver` and settles its message as sent. The note is taken and saved before the text
+// Handles a ready note like typed text and settles its message as sent. The note is taken and saved before the text
 // goes out, so neither a failure nor a restart after Paperclip took it can send it twice. False when it was not used;
 // the note is then kept.
-async function sendJob(bot, key, job, deliver) {
+async function sendJob(bot, key, job) {
   bot.state.voice.delete(key);
   bot.state.save();
-  if (!(await deliver(bot, typedMessage(job)))) {
+  if (!(await deliverText(bot, typedMessage(job)))) {
     bot.state.voice.set(key, job);
     bot.state.save();
     return false;
@@ -238,16 +247,15 @@ async function readAgainFromOffer(bot, cq, key, code) {
   return queueAgain(bot, cq, messageId, jobKey, code);
 }
 
-// Send, Cancel and the read-again buttons. `deliver(bot, msg)` handles the text like a typed message and says
-// whether it was used.
-export async function handleVoiceCallback(bot, cq, deliver) {
+// Send, Cancel and the read-again buttons.
+export async function handleVoiceCallback(bot, cq) {
   const [, op, key, code] = String(cq.data).split(':');
   const messageId = cq.message?.message_id;
   if (op === 'o') return readAgainFromOffer(bot, cq, key, code);
   const job = bot.state.getVoice(key, bot.now());
   if (!job) return gone(bot, cq);
   if (op === 'l') return readAgain(bot, cq, key, job, code);
-  if (op === 's') return bot.answer(cq.id, (await sendJob(bot, key, job, deliver)) ? 'Sent' : 'Not sent');
+  if (op === 's') return bot.answer(cq.id, (await sendJob(bot, key, job)) ? 'Sent' : 'Not sent');
   if (op === 'x') {
     bot.state.voice.delete(key);
     bot.state.save();

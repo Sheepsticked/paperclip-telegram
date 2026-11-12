@@ -1396,3 +1396,19 @@ test('with Auto-send voice a note in General still becomes the task offer', asyn
   assert.equal(posts(w, '/issues').length, 0, 'no task is made without a tap');
   assert.equal(posts(w, '/comments').length, 0);
 });
+
+test('with Auto-send voice a send that fails outright leaves the text visible without buttons and is not offered again', async (t) => {
+  const ctx = await setup(t, { forum: true });
+  const { w, bot } = ctx;
+  const { thread } = await taskWithTopic(w, bot);
+  await autoSendOn(ctx);
+
+  w.pc.failRequests('POST', /\/comments$/, 500, 1);
+  w.tg.failNext('sendMessage', 400, { ok: false, error_code: 400, description: 'Bad Request: injected' }, Infinity, (p) => p.text !== 'Transcribing…');
+  const { placeholder } = await dictate(ctx, { mode: 'text', text: 'Lost twice' }, { thread });
+  assert.equal(w.pc.comments.length, 0);
+  assert.equal(textOf(w, placeholder.message_id), heard('Lost twice').trimEnd());
+  assert.deepEqual(w.tg.buttons(placeholder.message_id), []);
+  assert.equal(bot.state.voice.size, 0);
+  assert.match(w.allLogText(), /warn could not auto-send a voice note/);
+});
