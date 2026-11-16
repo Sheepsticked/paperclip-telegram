@@ -1,5 +1,6 @@
 import { refreshCard, sendCard } from './actions.js';
 import { updateBoard } from './board.js';
+import { isAgentComment } from './comments.js';
 import { pollFollowing } from './follow.js';
 import { ALERT_LIMIT, MESSAGE_LIMIT, QUOTE_LEVELS, escapeHtml, firstLine, fitMessage, headline, issueUrl, kindWord, link, openRows, prefixOf, quote, runUrl, truncate } from './format.js';
 import { guarded, isTelegramOutage, isUnauthorized } from './guard.js';
@@ -225,7 +226,7 @@ async function listUpdatedIssues(bot, since) {
 async function lastAgentComment(bot, issueId) {
   try {
     const comments = await bot.pc.listComments(issueId, { limit: 10, order: 'desc' });
-    return comments.find((comment) => comment.authorType === 'agent' || (!comment.authorType && comment.authorAgentId)) ?? null;
+    return comments.find(isAgentComment) ?? null;
   } catch (err) {
     // Without the comment the message still goes out, just without a quote.
     if (isUnauthorized(err)) throw err;

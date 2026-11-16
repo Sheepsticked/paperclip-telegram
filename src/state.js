@@ -17,7 +17,7 @@ const MAX_ROOTS = 2000;
 const MAX_REVIEW_SENT = 2000;
 const MAX_STATUS_RETRIES = 200;
 const MAX_SHOWN_COMMENTS = 500;
-const MAX_SENT_IMAGES = 500;
+const MAX_SENT_IMAGES = 1000;
 
 export const DEFAULT_SETTINGS = {
   done: true,
@@ -175,6 +175,9 @@ function loadShownComments(saved) {
   return new Set(ids.slice(-MAX_SHOWN_COMMENTS));
 }
 
+const imageKey = (ownerId, attachmentId) => `${ownerId}/${attachmentId}`;
+
+// Older states hold bare attachment ids; they load and simply match no message.
 function loadSentImages(saved) {
   const ids = Array.isArray(saved) ? saved.filter((id) => typeof id === 'string') : [];
   return new Set(ids.slice(-MAX_SENT_IMAGES));
@@ -389,15 +392,17 @@ export class State {
     return this.shownComments.has(commentId);
   }
 
-  // Remembers that an attachment was sent to the chat as a picture, so it is not sent a second time.
-  noteImageSent(attachmentId) {
-    this.sentImages.delete(attachmentId);
-    this.sentImages.add(attachmentId);
+  // Remembers that an attachment was sent as a picture for one message (a comment or card id), so a retry of that
+  // message does not send it twice while a later message that links it again still does.
+  noteImageSent(ownerId, attachmentId) {
+    const key = imageKey(ownerId, attachmentId);
+    this.sentImages.delete(key);
+    this.sentImages.add(key);
     while (this.sentImages.size > MAX_SENT_IMAGES) this.sentImages.delete(this.sentImages.values().next().value);
   }
 
-  hasSentImage(attachmentId) {
-    return this.sentImages.has(attachmentId);
+  hasSentImage(ownerId, attachmentId) {
+    return this.sentImages.has(imageKey(ownerId, attachmentId));
   }
 
   // Counts a failed status message; returns the number of failed tries for this issue and status.

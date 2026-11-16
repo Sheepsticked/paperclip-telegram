@@ -34,8 +34,9 @@ export function unfollowIssue(bot, issueId) {
   return removed;
 }
 
-// One followed comment: the author's name is the kind, the text follows as a quote.
-async function sendFollowComment(bot, issue, comment) {
+// One comment on its own, silent: the author's name is the kind, the text follows as a quote, its pictures as replies.
+// Used for followed comments and for the comment a card's run posted.
+export async function sendComment(bot, issue, comment) {
   const author = await authorName(bot, comment);
   const { uiBaseUrl } = bot.config;
   const url = issueUrl(uiBaseUrl, issue.identifier);
@@ -98,7 +99,7 @@ async function followOne(bot, issue, entry) {
   } else if (mode === 'send') {
     const sendable = new Set(toSend.map((comment) => comment.id));
     for (const comment of fresh) {
-      if (sendable.has(comment.id)) await sendFollowComment(bot, issue, comment);
+      if (sendable.has(comment.id)) await sendComment(bot, issue, comment);
       moveCursor(entry, comment);
       state.save();
     }

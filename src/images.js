@@ -5,7 +5,8 @@ export const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'im
 // Telegram shows a picture up to 10 MB as a photo; bots send other files up to this size.
 export const PHOTO_LIMIT_BYTES = 10 * 1024 * 1024;
 export const DOCUMENT_LIMIT_BYTES = 20 * 1024 * 1024;
-const MAX_IMAGES = 10;
+const MAX_IMAGES = 30;
+const ALBUM_SIZE = 10;
 const EXTENSIONS = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 // `/api/attachments/<id>` as a relative path or after a base URL; the base is checked by the caller.
@@ -25,18 +26,21 @@ export function linkedAttachmentIds(body, uiBaseUrl) {
 
 const typeOf = (attachment) => String(attachment.contentType ?? '').split(';')[0].trim().toLowerCase();
 
-// The images to send for a comment: the attachments it links to, then the ones bound to it, minus those already sent.
-function pickImages(bot, comment, attachments) {
+// The images to send for one message: the attachments its texts link to, then those bound to `commentId`, minus
+// those already sent for `ownerId`. Returns at most MAX_IMAGES of them and how many more there were.
+function pickImages(bot, { ownerId, texts, commentId }, attachments) {
   const byId = new Map(attachments.map((attachment) => [String(attachment.id).toLowerCase(), attachment]));
-  const linked = linkedAttachmentIds(comment.body, bot.config.uiBaseUrl).map((id) => byId.get(id)).filter(Boolean);
+  const linkedIds = new Set(texts.flatMap((text) => linkedAttachmentIds(text, bot.config.uiBaseUrl)));
+  const linked = [...linkedIds].map((id) => byId.get(id)).filter(Boolean);
   // The server lists the newest first.
-  const bound = attachments.filter((attachment) => attachment.issueCommentId === comment.id && !linked.includes(attachment)).reverse();
+  const bound = commentId ? attachments.filter((attachment) => attachment.issueCommentId === commentId && !linked.includes(attachment)).reverse() : [];
   const usable = (attachment) => {
     const size = attachment.byteSize;
     const sized = !Number.isFinite(size) || (size > 0 && size <= DOCUMENT_LIMIT_BYTES);
-    return IMAGE_TYPES.has(typeOf(attachment)) && sized && !bot.state.hasSentImage(attachment.id);
+    return IMAGE_TYPES.has(typeOf(attachment)) && sized && !bot.state.hasSentImage(ownerId, attachment.id);
   };
-  return [...linked, ...bound].filter(usable).slice(0, MAX_IMAGES);
+  const all = [...linked, ...bound].filter(usable);
+  return { picked: all.slice(0, MAX_IMAGES), more: Math.max(0, all.length - MAX_IMAGES) };
 }
 
 // Short and free of URLs and tokens.
@@ -67,11 +71,11 @@ function mapSent(bot, issue, result) {
 }
 
 // One image on its own. A photo that Telegram refuses (size or dimensions) is sent again as a document.
-async function sendOne(bot, image, { issue, params }) {
+async function sendOne(bot, image, { issue, params, ownerId }) {
   const { id, document, ...file } = image;
   const send = async (asDocument) => {
     mapSent(bot, issue, await (asDocument ? bot.tg.sendDocument(params, file) : bot.tg.sendPhoto(params, file)));
-    bot.state.noteImageSent(id);
+    bot.state.noteImageSent(ownerId, id);
   };
   try {
     await send(document);
@@ -89,13 +93,13 @@ async function sendOne(bot, image, { issue, params }) {
 }
 
 // Images of one kind: a single one on its own, several as an album. An album that Telegram refuses is sent one by one.
-async function sendKind(bot, images, target) {
+async function sendAlbum(bot, images, target) {
   if (images.length === 0) return;
   if (images.length > 1) {
     try {
       const files = images.map(({ name, type, data }) => ({ name, type, data }));
       mapSent(bot, target.issue, await bot.tg.sendMediaGroup(target.params, images[0].document ? 'document' : 'photo', files));
-      for (const image of images) bot.state.noteImageSent(image.id);
+      for (const image of images) bot.state.noteImageSent(target.ownerId, image.id);
       return;
     } catch (err) {
       if (!refused(err)) {
@@ -107,23 +111,45 @@ async function sendKind(bot, images, target) {
   for (const image of images) await sendOne(bot, image, target);
 }
 
-// Sends the images of a comment as silent replies to the message that showed it (`placed` is what `sendAbout` returned).
-// Nothing here may fail the caller: the comment is already out, and an image that does not arrive stays a link in it.
-export async function sendCommentImages(bot, issue, comment, placed) {
+// Images of one kind in albums of up to ALBUM_SIZE.
+async function sendKind(bot, images, target) {
+  for (let i = 0; i < images.length; i += ALBUM_SIZE) await sendAlbum(bot, images.slice(i, i + ALBUM_SIZE), target);
+}
+
+// Sends the images of one message as silent replies to it (`placed` is what `sendAbout` returned).
+// Nothing here may fail the caller: the message is already out, and an image that does not arrive stays a link in it.
+async function sendImages(bot, issue, source, placed) {
   try {
     const attachments = await bot.pc.listAttachments(issue.id);
-    const picked = Array.isArray(attachments) ? pickImages(bot, comment, attachments) : [];
+    const { picked, more } = Array.isArray(attachments) ? pickImages(bot, source, attachments) : { picked: [], more: 0 };
     if (picked.length === 0) return;
     const images = [];
     for (const attachment of picked) {
       const image = await download(bot, attachment);
       if (image) images.push(image);
     }
-    const target = { issue, params: bot.quietReply(placed.messageId, placed.thread) };
+    const params = bot.quietReply(placed.messageId, placed.thread);
+    const target = { issue, params, ownerId: source.ownerId };
     // An album holds only photos or only documents, so the two kinds go separately.
     await sendKind(bot, images.filter((image) => !image.document), target);
     await sendKind(bot, images.filter((image) => image.document), target);
+    if (more > 0) {
+      const sent = await bot.tg.sendMessage({ ...params, text: `${more} more ${more === 1 ? 'picture' : 'pictures'} in Paperclip.` });
+      mapSent(bot, issue, sent);
+    }
   } catch (err) {
     bot.log.warn('could not send the images of a comment', { error: reasonOf(err) });
   }
+}
+
+// The images a comment links to or holds, as replies to the message that showed it.
+export function sendCommentImages(bot, issue, comment, placed) {
+  return sendImages(bot, issue, { ownerId: comment.id, texts: [comment.body], commentId: comment.id }, placed);
+}
+
+// The images a card's prompt, details or tool preview link to, as replies to the card message.
+export function sendCardImages(bot, issue, card, placed) {
+  const texts = [card.prompt, card.details, card.toolAction?.preview].filter(Boolean);
+  if (texts.length === 0) return Promise.resolve();
+  return sendImages(bot, issue, { ownerId: card.interactionId, texts }, placed);
 }

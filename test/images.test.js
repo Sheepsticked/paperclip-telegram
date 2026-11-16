@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { followIssue } from '../src/follow.js';
-import { DOCUMENT_LIMIT_BYTES, PHOTO_LIMIT_BYTES, linkedAttachmentIds } from '../src/images.js';
+import { DOCUMENT_LIMIT_BYTES, PHOTO_LIMIT_BYTES, linkedAttachmentIds, sendCommentImages } from '../src/images.js';
 import { PaperclipClient, PaperclipError } from '../src/paperclip.js';
 import { State } from '../src/state.js';
 import { TelegramClient, TelegramError } from '../src/telegram.js';
@@ -43,13 +43,15 @@ const listReads = (w) => w.pc.requests.filter((r) => r.method === 'GET' && /^\/a
 const contentReads = (w) => w.pc.requests.filter((r) => r.method === 'GET' && /^\/api\/attachments\/[^/]+\/content$/.test(r.path));
 const uploadCalls = (w) => w.tg.calls.filter((c) => ['sendPhoto', 'sendDocument', 'sendMediaGroup'].includes(c.method));
 const warnings = (w) => w.logs.err.filter((line) => line.startsWith('warn '));
+// True when the attachment was noted as sent for any message.
+const sentAnywhere = (bot, id) => [...bot.state.sentImages].some((key) => key.endsWith(`/${id}`));
 const imageWarnings = (w) => warnings(w).filter((line) => /image/.test(line));
 
 test('an image the comment links to is sent under it as a silent photo reply, and the text keeps its link', async (t) => {
   const { w, bot } = await setup(t);
   const issue = await followed(w, bot);
   const shot = w.pc.addAttachment(issue.id, { name: 'board.png', data: png({ tag: 'board' }) });
-  w.pc.addComment(issue.id, { body: `Here is the board\n\n${link(shot)}` });
+  const comment = w.pc.addComment(issue.id, { body: `Here is the board\n\n${link(shot)}` });
   await bot.pollOnce();
 
   const [message] = followMessages(w);
@@ -66,7 +68,7 @@ test('an image the comment links to is sent under it as a silent photo reply, an
   ]);
   assert.equal(listReads(w).length, 1, 'the attachment list is read once');
   assert.equal(contentReads(w).length, 1);
-  assert.ok(bot.state.hasSentImage(shot.id));
+  assert.ok(bot.state.hasSentImage(comment.id, shot.id));
   assert.deepEqual(imageWarnings(w), []);
 });
 
@@ -168,18 +170,33 @@ test('two to ten images go as one album in the order the text links them, withou
   assert.equal(listReads(w).length, 1);
 });
 
-test('more than ten images send the first ten and leave the rest as links', async (t) => {
+test('25 images go out as three albums of up to ten', async (t) => {
   const { w, bot } = await setup(t);
   const issue = await followed(w, bot);
-  const all = Array.from({ length: 12 }, (_, i) => w.pc.addAttachment(issue.id, { name: `shot-${i}.png`, data: png({ tag: `n${i}` }) }));
+  const all = Array.from({ length: 25 }, (_, i) => w.pc.addAttachment(issue.id, { name: `shot-${i}.png`, data: png({ tag: `n${i}` }) }));
   w.pc.addComment(issue.id, { body: all.map(link).join('\n') });
   await bot.pollOnce();
 
-  assert.equal(w.tg.callsTo('sendMediaGroup').length, 1);
-  assert.deepEqual(w.tg.pictures().map((picture) => picture.name), all.slice(0, 10).map((a) => a.originalFilename));
-  assert.equal(contentReads(w).length, 10, 'the rest is not even downloaded');
-  assert.ok(!bot.state.hasSentImage(all[10].id));
-  assert.ok(followMessages(w)[0].text.includes(all[11].id), 'the text keeps every link');
+  const albums = w.tg.callsTo('sendMediaGroup');
+  assert.deepEqual(albums.map((call) => call.params.media.length), [10, 10, 5]);
+  assert.deepEqual(w.tg.pictures().map((picture) => picture.name), all.map((a) => a.originalFilename));
+  assert.equal(followMessages(w).length, 1, 'no "more pictures" line');
+});
+
+test('more than 30 images send 30 in three albums and one silent line for the rest', async (t) => {
+  const { w, bot } = await setup(t);
+  const issue = await followed(w, bot);
+  const all = Array.from({ length: 35 }, (_, i) => w.pc.addAttachment(issue.id, { name: `shot-${i}.png`, data: png({ tag: `n${i}` }) }));
+  const comment = w.pc.addComment(issue.id, { body: all.map(link).join('\n') });
+  await bot.pollOnce();
+
+  assert.deepEqual(w.tg.callsTo('sendMediaGroup').map((call) => call.params.media.length), [10, 10, 10]);
+  assert.deepEqual(w.tg.pictures().map((picture) => picture.name), all.slice(0, 30).map((a) => a.originalFilename));
+  assert.equal(contentReads(w).length, 30, 'the rest is not even downloaded');
+  assert.ok(!bot.state.hasSentImage(comment.id, all[30].id));
+  const [message, more] = followMessages(w);
+  assert.ok(message.text.includes(all[0].id), 'the text keeps its links');
+  assert.deepEqual({ text: more.text, silent: more.silent, replyTo: more.replyTo, keyboard: more.reply_markup ?? null }, { text: '5 more pictures in Paperclip.', silent: true, replyTo: message.message_id, keyboard: null });
 });
 
 test('a GIF and an image over 10 MB go as documents, up to 20 MB', async (t) => {
@@ -235,7 +252,7 @@ test('the size limits are 10 MB for a photo and 20 MB for anything; the byte siz
     [['edge.png', 'photo'], ['over.png', 'document'], ['top.png', 'document']],
   );
   assert.equal(contentReads(w).length, 3, 'the image over 20 MB is never downloaded');
-  assert.ok(!bot.state.hasSentImage(huge.id));
+  assert.ok(!sentAnywhere(bot, huge.id));
   assert.equal(followMessages(w).length, 1, 'the comment is out anyway');
 });
 
@@ -249,32 +266,25 @@ test('a download that runs past its limit while streaming is dropped', async (t)
   assert.equal(followMessages(w).length, 1);
   assert.deepEqual(w.tg.pictures(), []);
   assert.equal(imageWarnings(w).length, 1);
-  assert.ok(!bot.state.hasSentImage(liar.id));
+  assert.ok(!sentAnywhere(bot, liar.id));
 });
 
-test('an image is sent once: a later comment, a restart and a done message do not send it again', async (t) => {
+test('a picture is sent again for a new comment that links it, but not twice for the same comment', async (t) => {
   const { w, bot } = await setup(t);
   const issue = await followed(w, bot);
   const shot = w.pc.addAttachment(issue.id, { name: 'shot.png', data: png() });
-  w.pc.addComment(issue.id, { body: `First ${link(shot)}` });
+  const first = w.pc.addComment(issue.id, { body: `First ${link(shot)}` });
   await bot.pollOnce();
   w.pc.addComment(issue.id, { body: `Second, same picture ${link(shot)}` });
   await bot.pollOnce();
   assert.equal(followMessages(w).length, 2);
-  assert.equal(w.tg.pictures().length, 1);
+  assert.equal(w.tg.pictures().length, 2);
 
+  // A retry of the first comment, after a restart, finds its picture already sent.
   const restarted = w.makeBot();
-  w.pc.addComment(issue.id, { body: `Third, after a restart ${link(shot)}` });
-  await restarted.pollOnce();
-  assert.equal(followMessages(w).length, 3);
-  assert.equal(w.tg.pictures().length, 1);
-
-  w.pc.addComment(issue.id, { body: `Done, ${link(shot)}` });
-  w.pc.setStatus(issue.id, 'done');
-  await restarted.pollOnce();
-  assert.ok(statusMessage(w, 'Done').text.includes('Done, '), 'the done message quotes the last comment');
-  assert.equal(w.tg.pictures().length, 1);
-  assert.equal(contentReads(w).length, 1);
+  await sendCommentImages(restarted, issue, first, { messageId: followMessages(w)[0].message_id, thread: null });
+  assert.equal(w.tg.pictures().length, 2);
+  assert.equal(contentReads(w).length, 2);
 });
 
 test('the done message that quotes a comment sends its image silently under the alert', async (t) => {
@@ -409,7 +419,7 @@ test('a failed list, download or upload leaves the comment, logs one short warni
   await bot.pollOnce();
   assert.equal(w.tg.callsTo('sendPhoto').length, 1);
   assert.deepEqual(w.tg.pictures(), []);
-  assert.ok(!bot.state.hasSentImage(shot.id));
+  assert.ok(!sentAnywhere(bot, shot.id));
   const text = w.allLogText();
   assert.ok(!text.includes('/api/attachments') && !text.includes(UI_BASE_URL) && !text.includes(shot.id), 'the warnings hold no URL or id');
   assert.ok(!text.includes(TELEGRAM_TOKEN) && !text.includes(PAPERCLIP_TOKEN));
@@ -441,8 +451,8 @@ test('one image that cannot be downloaded does not stop the others', async (t) =
   await bot.pollOnce();
 
   assert.deepEqual(w.tg.pictures().map((picture) => [picture.method, picture.name]), [['sendPhoto', 'good.png']]);
-  assert.ok(!bot.state.hasSentImage(bad.id));
-  assert.ok(bot.state.hasSentImage(good.id));
+  assert.ok(!sentAnywhere(bot, bad.id));
+  assert.ok(sentAnywhere(bot, good.id));
 });
 
 test('a photo Telegram refuses for its dimensions is sent again as a document', async (t) => {
@@ -454,7 +464,7 @@ test('a photo Telegram refuses for its dimensions is sent again as a document', 
   for (const attachment of [wide, strip]) {
     w.pc.addComment(issue.id, { body: link(attachment) });
     await bot.pollOnce();
-    assert.ok(bot.state.hasSentImage(attachment.id));
+    assert.ok(sentAnywhere(bot, attachment.id));
   }
 
   assert.deepEqual(w.tg.calls.filter((c) => c.method === 'sendPhoto' || c.method === 'sendDocument').map((c) => c.method), ['sendPhoto', 'sendDocument', 'sendPhoto', 'sendDocument']);
@@ -529,21 +539,26 @@ test('linkedAttachmentIds finds relative links and links under the UI base URL',
   assert.deepEqual(ids(null), []);
 });
 
-test('State remembers sent images in a bounded list, keeps them across a save and drops them with the chat', (t) => {
+test('State remembers sent images per message in a bounded list, keeps them across a save and drops them with the chat', (t) => {
   const state = new State('/nonexistent/state.json');
-  for (let i = 0; i < 501; i += 1) state.noteImageSent(`image-${i}`);
-  assert.ok(!state.hasSentImage('image-0'));
-  assert.ok(state.hasSentImage('image-1'));
-  assert.ok(state.hasSentImage('image-500'));
-  assert.equal(state.sentImages.size, 500);
+  for (let i = 0; i < 1001; i += 1) state.noteImageSent('comment-a', `image-${i}`);
+  assert.ok(!state.hasSentImage('comment-a', 'image-0'));
+  assert.ok(state.hasSentImage('comment-a', 'image-1'));
+  assert.ok(state.hasSentImage('comment-a', 'image-1000'));
+  assert.ok(!state.hasSentImage('comment-b', 'image-1000'), 'another message is not covered');
+  assert.equal(state.sentImages.size, 1000);
 
   const loaded = new State('/nonexistent/state.json', JSON.parse(JSON.stringify(state)));
-  assert.ok(loaded.hasSentImage('image-500'));
-  assert.ok(!loaded.hasSentImage('image-0'));
+  assert.ok(loaded.hasSentImage('comment-a', 'image-1000'));
+  assert.ok(!loaded.hasSentImage('comment-a', 'image-0'));
   assert.equal(new State('/nonexistent/state.json', { sentImages: [1, 'ok', null] }).sentImages.size, 1);
+  // A state from before per-message keys holds bare attachment ids; it loads and matches no message.
+  const old = new State('/nonexistent/state.json', { sentImages: ['3f1c0d2e-0000-4000-8000-000000000001'] });
+  assert.equal(old.sentImages.size, 1);
+  assert.ok(!old.hasSentImage('comment-a', '3f1c0d2e-0000-4000-8000-000000000001'));
 
   loaded.adoptChat(1);
-  assert.ok(loaded.hasSentImage('image-500'), 'the first chat is simply taken');
+  assert.ok(loaded.hasSentImage('comment-a', 'image-1000'), 'the first chat is simply taken');
   loaded.adoptChat(2);
   assert.equal(loaded.sentImages.size, 0);
 });

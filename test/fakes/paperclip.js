@@ -845,7 +845,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
       issue.updatedAt = tick();
       return issue;
     },
-    addInteraction(issueId, { kind, title = null, summary = null, payload, createdAt, createdByAgentId = 'agent-1' } = {}) {
+    addInteraction(issueId, { kind, title = null, summary = null, payload, createdAt, createdByAgentId = 'agent-1', sourceRunId = null, sourceCommentId = null } = {}) {
       getIssue(issueId);
       const now = createdAt ?? tick();
       const interaction = {
@@ -860,6 +860,8 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
         summary,
         createdByAgentId,
         createdByUserId: null,
+        sourceRunId,
+        sourceCommentId,
         addresseeAgentId: null,
         addresseeUserId: null,
         resolvedByAgentId: null,
@@ -898,7 +900,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
       return agent;
     },
     // A comment from the board user, an agent (default), the system, or an agent posting under the local board user.
-    addComment(issueId, { body, authorType = 'agent', authorAgentId, authorUserId, derivedAuthorAgentId = null, deletedAt = null } = {}) {
+    addComment(issueId, { body, authorType = 'agent', authorAgentId, authorUserId, derivedAuthorAgentId = null, deletedAt = null, createdByRunId = null } = {}) {
       const issue = getIssue(issueId);
       const comment = {
         id: randomUUID(),
@@ -909,6 +911,7 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
         derivedAuthorAgentId,
         authorType,
         body,
+        createdByRunId,
         createdAt: tick(),
         updatedAt: tick(),
         deletedAt,

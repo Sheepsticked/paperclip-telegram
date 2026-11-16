@@ -10,6 +10,11 @@ export function isBoardComment(comment) {
   return comment.authorType === 'user' && !authorAgentId(comment) && comment.authorUserId !== NON_HUMAN_USER_ID;
 }
 
+// True for a comment an agent wrote.
+export function isAgentComment(comment) {
+  return comment.authorType === 'agent' || (!comment.authorType && Boolean(comment.authorAgentId));
+}
+
 export async function authorName(bot, comment) {
   const agentId = authorAgentId(comment);
   if (agentId) return (await bot.agentName(agentId)) ?? 'An agent';

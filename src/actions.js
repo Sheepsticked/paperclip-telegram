@@ -15,12 +15,18 @@ import {
   setTextAnswer,
   toggleCheckbox,
 } from './cards.js';
+import { isAgentComment } from './comments.js';
+import { sendComment } from './follow.js';
 import { escapeHtml, truncate } from './format.js';
+import { isTelegramOutage, isUnauthorized } from './guard.js';
+import { sendCardImages } from './images.js';
 import { makeOutcome } from './outcome.js';
 import { PaperclipError } from './paperclip.js';
 import { threadOf, where } from './thread.js';
 
 const MAX_REASON_LENGTH = 4000;
+const CARD_COMMENT_READ = 50;
+const MAX_CARD_COMMENTS = 3;
 
 // Maps a Paperclip failure to what the owner should be told.
 function classify(err) {
@@ -47,7 +53,45 @@ export async function closeCard(bot, card, outcome) {
   await editCardMessage(bot, card);
 }
 
+// The agent comments the chat has not shown that the card's run posted (or that the card names), up to the card's
+// time, oldest first. A card that names neither has none.
+export async function cardComments(bot, interaction, issueId) {
+  const runId = interaction.sourceRunId ?? null;
+  const commentId = interaction.sourceCommentId ?? null;
+  if (!runId && !commentId) return [];
+  const comments = await bot.pc.listComments(issueId, { limit: CARD_COMMENT_READ, order: 'desc' });
+  const cardAt = Date.parse(interaction.createdAt);
+  const fromCard = (comment) => (commentId ? comment.id === commentId : false) || (runId ? comment.createdByRunId === runId : false);
+  const early = (comment) => Number.isNaN(cardAt) || !(Date.parse(comment.createdAt) > cardAt);
+  return comments
+    .filter((comment) => !comment.deletedAt && isAgentComment(comment) && fromCard(comment) && early(comment) && !bot.state.hasShown(comment.id))
+    .slice(0, MAX_CARD_COMMENTS)
+    .reverse();
+}
+
+// Sends the card's comments before the card. A failure is logged and the card still goes out, unless Telegram or
+// the Paperclip token is down, which fails the whole send so it is tried again.
+async function sendCardComments(bot, interaction, issue) {
+  let comments;
+  try {
+    comments = await cardComments(bot, interaction, issue.id);
+  } catch (err) {
+    if (isUnauthorized(err)) throw err;
+    bot.log.warn(`could not read the comments of the card on ${issue.identifier}`, { error: err.message });
+    return;
+  }
+  for (const comment of comments) {
+    try {
+      await sendComment(bot, issue, comment);
+    } catch (err) {
+      if (isUnauthorized(err) || isTelegramOutage(err)) throw err;
+      bot.log.warn(`could not send a comment of the card on ${issue.identifier}`, { error: err.message });
+    }
+  }
+}
+
 export async function sendCard(bot, interaction, issue) {
+await sendCardComments(bot, interaction, issue);
   const card = buildCard({ interaction, issue, key: bot.state.nextCardKey() });
   const sent = await bot.sendAbout(
     issue,
@@ -60,6 +104,7 @@ export async function sendCard(bot, interaction, issue) {
   card.messageId = sent.messageId;
   bot.state.cards.set(card.key, card);
   bot.state.save();
+await sendCardImages(bot, issue, card, sent);
   return card;
 }
 
