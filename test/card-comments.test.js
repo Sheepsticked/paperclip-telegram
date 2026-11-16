@@ -53,6 +53,17 @@ test('a card that names its comment by sourceCommentId sends that comment', asyn
   assert.ok(cardMessage(w));
 });
 
+test('a named comment older than the latest fifty is read on its own', async (t) => {
+  const { w, bot, issue } = await setup(t);
+  const named = w.pc.addComment(issue.id, { body: 'The old named comment' });
+  for (let n = 0; n < 55; n += 1) w.pc.addComment(issue.id, { body: `Filler ${n}`, authorType: 'user' });
+  card(w, issue, { sourceCommentId: named.id });
+  await bot.pollOnce();
+
+  assert.equal(commentMessages(w, 'The old named comment').length, 1);
+  assert.ok(cardMessage(w));
+});
+
 test('only comments of the card run, made before the card, from agents, the last three, oldest first', async (t) => {
   const { w, bot, issue } = await setup(t);
   w.pc.addComment(issue.id, { body: 'Older run comment', createdByRunId: OTHER_RUN });

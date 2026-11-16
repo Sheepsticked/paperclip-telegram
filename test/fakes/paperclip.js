@@ -501,6 +501,13 @@ export async function startFakePaperclip({ token = 'pcp_board_fakekey', companyI
     return list.slice(0, limit);
   });
 
+  route('GET', '/api/issues/:id/comments/:cid', ({ params }) => {
+    const issue = getIssue(params.id);
+    const comment = comments.find((c) => c.issueId === issue.id && c.id === params.cid);
+    if (!comment) throw new HttpError(404, 'Comment not found');
+    return comment;
+  });
+
   route('POST', '/api/issues/:id/comments', ({ params, body }) => {
     const issue = getIssue(params.id);
     if (typeof body.body !== 'string' || !body.body.length) throw new HttpError(400, 'Validation error');

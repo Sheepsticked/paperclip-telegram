@@ -138,7 +138,7 @@ async function sendImages(bot, issue, source, placed) {
       mapSent(bot, issue, sent);
     }
   } catch (err) {
-    bot.log.warn('could not send the images of a comment', { error: reasonOf(err) });
+    bot.log.warn('could not send the images of a message', { error: reasonOf(err) });
   }
 }
 

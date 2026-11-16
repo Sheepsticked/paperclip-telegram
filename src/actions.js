@@ -60,6 +60,8 @@ export async function cardComments(bot, interaction, issueId) {
   const commentId = interaction.sourceCommentId ?? null;
   if (!runId && !commentId) return [];
   const comments = await bot.pc.listComments(issueId, { limit: CARD_COMMENT_READ, order: 'desc' });
+  // A named comment older than the page is read on its own.
+  if (commentId && !comments.some((comment) => comment.id === commentId)) comments.push(await bot.pc.getComment(issueId, commentId));
   const cardAt = Date.parse(interaction.createdAt);
   const fromCard = (comment) => (commentId ? comment.id === commentId : false) || (runId ? comment.createdByRunId === runId : false);
   const early = (comment) => Number.isNaN(cardAt) || !(Date.parse(comment.createdAt) > cardAt);
@@ -83,6 +85,7 @@ async function sendCardComments(bot, interaction, issue) {
   for (const comment of comments) {
     try {
       await sendComment(bot, issue, comment);
+      bot.state.save();
     } catch (err) {
       if (isUnauthorized(err) || isTelegramOutage(err)) throw err;
       bot.log.warn(`could not send a comment of the card on ${issue.identifier}`, { error: err.message });
@@ -91,7 +94,7 @@ async function sendCardComments(bot, interaction, issue) {
 }
 
 export async function sendCard(bot, interaction, issue) {
-await sendCardComments(bot, interaction, issue);
+  await sendCardComments(bot, interaction, issue);
   const card = buildCard({ interaction, issue, key: bot.state.nextCardKey() });
   const sent = await bot.sendAbout(
     issue,
@@ -104,7 +107,7 @@ await sendCardComments(bot, interaction, issue);
   card.messageId = sent.messageId;
   bot.state.cards.set(card.key, card);
   bot.state.save();
-await sendCardImages(bot, issue, card, sent);
+  await sendCardImages(bot, issue, card, sent);
   return card;
 }
 

@@ -135,6 +135,10 @@ export class PaperclipClient {
     return this.request('GET', `/api/issues/${issueId}/comments`, { query });
   }
 
+  getComment(issueId, commentId) {
+    return this.request('GET', `/api/issues/${issueId}/comments/${commentId}`);
+  }
+
   postComment(issueId, body, { attachmentIds } = {}) {
     return this.request('POST', `/api/issues/${issueId}/comments`, { body: { body, ...(attachmentIds?.length ? { attachmentIds } : {}) } });
   }
