@@ -2,6 +2,7 @@ import { findCardByMessage, findCardByReasonPrompt, handleReasonReply, handleTex
 import { commandAgents } from './agents.js';
 import { NEW_USAGE, askProjectForNew, createTask, offerTask, parseNewArgs, resolveTargets } from './create.js';
 import { attachToTask, fileOf } from './files.js';
+import { followAsked } from './follow.js';
 import { button, headline, issueUrl } from './format.js';
 import { handleNoteReply } from './inbox.js';
 import { canSwitchLanguage } from './languages.js';
@@ -138,6 +139,8 @@ async function postComment(bot, msg, issue) {
     await reportFailure(bot, err, msg);
     return false;
   }
+  // A task the owner answers on is followed, so the agent's reply reaches the chat. The comment stands either way.
+  await followAsked(bot, issue).catch((err) => bot.log.warn('could not follow the task of a comment', { error: err.message }));
   if (bot.topics.on && (await bot.react(msg.message_id))) return true;
   const url = issue.identifier ? issueUrl(bot.config.uiBaseUrl, issue.identifier) : null;
   try {

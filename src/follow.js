@@ -28,6 +28,23 @@ export async function followIssue(bot, issue) {
   return dropped;
 }
 
+// Follows a task the owner is asked or answers on, unless it is followed already or closed. A failure is logged,
+// except a rejected Paperclip token. Returns true when the task is now followed by this call.
+export async function followAsked(bot, ref) {
+  if (bot.state.isFollowing(ref.id)) return false;
+  try {
+    const issue = ref.status && ref.title ? ref : await bot.pc.getIssue(ref.id);
+    if (CLOSED.has(issue.status)) return false;
+    const dropped = await followIssue(bot, issue);
+    if (dropped) bot.log.warn(`stopped following ${dropped} to make room`);
+    return true;
+  } catch (err) {
+    if (isUnauthorized(err)) throw err;
+    bot.log.warn(`could not follow ${ref.identifier ?? ref.id}`, { error: err.message });
+    return false;
+  }
+}
+
 export function unfollowIssue(bot, issueId) {
   const removed = bot.state.unfollow(issueId);
   if (removed) bot.state.save();

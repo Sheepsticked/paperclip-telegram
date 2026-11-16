@@ -16,7 +16,7 @@ import {
   toggleCheckbox,
 } from './cards.js';
 import { isAgentComment } from './comments.js';
-import { sendComment } from './follow.js';
+import { followAsked, sendComment } from './follow.js';
 import { escapeHtml, truncate } from './format.js';
 import { isTelegramOutage, isUnauthorized } from './guard.js';
 import { sendCardImages } from './images.js';
@@ -93,7 +93,9 @@ async function sendCardComments(bot, interaction, issue) {
   }
 }
 
+// A task that asks the owner is followed first, so its later comments reach the chat too.
 export async function sendCard(bot, interaction, issue) {
+  await followAsked(bot, issue);
   await sendCardComments(bot, interaction, issue);
   const card = buildCard({ interaction, issue, key: bot.state.nextCardKey() });
   const sent = await bot.sendAbout(

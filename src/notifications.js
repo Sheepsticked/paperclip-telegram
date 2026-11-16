@@ -54,7 +54,7 @@ async function sendFeedCard(bot, item, cache, sentIssueIds) {
   }
   const interaction = list.find((entry) => entry.id === item.subject.id);
   if (!interaction || interaction.status !== 'pending') return false;
-  await sendCard(bot, interaction, { id: issue.id, identifier: issue.identifier, title: issue.title });
+  await sendCard(bot, interaction, { id: issue.id, identifier: issue.identifier, title: issue.title, status: issue.status });
   sentIssueIds.add(issue.id);
   return true;
 }
